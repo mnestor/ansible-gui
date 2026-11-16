@@ -148,3 +148,12 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
 ```sh
 uv run pytest
 ```
+
+## License
+
+ansible-gui is MIT licensed; see [LICENSE](LICENSE).
+
+It never imports Ansible: it runs `ansible-inventory` and `ansible-playbook` as separate programs. The
+container image also contains [ansible-core](https://github.com/ansible/ansible), installed unmodified
+from PyPI, which is licensed under the GNU GPL v3; its source is at https://github.com/ansible/ansible
+and the version is set in the `Dockerfile`. Other bundled components keep their own licenses.

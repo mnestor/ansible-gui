@@ -13,6 +13,7 @@ RUN uv sync --frozen --no-dev \
  && uv pip install --python /app/.venv/bin/python "ansible-core==2.21.4"
 
 FROM python:3.12-slim-bookworm
+LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later"
 ARG UID=10001
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git openssh-client tini ca-certificates \
