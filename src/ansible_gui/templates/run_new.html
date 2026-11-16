@@ -47,9 +47,25 @@
     <label class="check"><input type="checkbox" name="diff" value="1" {% if form.diff %}checked{% endif %}> Show diffs</label>
   </fieldset>
 
+  {% set picked = [] %}
+  {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
   <details class="more" {% if form.tags or form.skip_tags or form.verbosity %}open{% endif %}>
-    <summary>More options</summary>
+    <summary>More options <span class="summary-note">· {{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
     <div class="more-body">
+      <fieldset class="field">
+        <legend class="label">Credentials</legend>
+        <div class="cred-grid">
+        {% for kind, items in cred_choices.items() %}
+          <label class="cred-pick"><span class="help">{{ kinds[kind] }}</span>
+            <select class="input input-small" name="{{ kind }}">
+              <option value="">{% if kind == "vault_password" and settings.vault_password_file %}Server’s vault password file{% else %}None{% endif %}</option>
+              {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+        </div>
+        <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}<a href="/credentials">Manage credentials</a></p>
+      </fieldset>
       <div class="field">
         <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
         <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">

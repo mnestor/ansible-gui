@@ -1,0 +1,3 @@
+# Fixture ssh_config for tests
+Host lab-*
+  User ansible

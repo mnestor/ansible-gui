@@ -68,6 +68,10 @@ Text in the status colour on a tint of 12% status over canvas (`color-mix(in okl
 - Segmented radio (`segmented-inline`): 2–5 mutually exclusive options (Dry run / Apply, verbosity), selected option on `--well`.
 - Preview panel: `--plane` block that holds the live result of a form (matched hosts) and the form's one primary button, whose label states the count and mode ("Dry run on 3 hosts").
 - Status dot: 8px, the host's last run result in the sidebar.
+- Page banner: `banner-ok` (ok tint, ink text) for a completed save, `banner-warn` (changed text on changed tint, 5.4:1 / 6.4:1) for a standing risk. 6px radius inside a page.
+- Kind switch: segmented links (`aria-current`) choosing what a form creates, same look as the segmented radio.
+- Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`).
+- Invalid field: 2px `--danger` outline, message below in `--danger` 600, linked with `aria-describedby`.
 
 ## Voice
 - Plain and specific, sentence case, verbs on buttons ("Reload inventory", "Open in git"). Errors say what failed, the command, and what to do next.

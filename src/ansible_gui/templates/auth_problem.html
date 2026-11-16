@@ -1,0 +1,10 @@
+{% extends "runs_base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block main %}
+<header class="subject">
+  <p class="eyebrow">Sign-in</p>
+  <h1 class="identity">{{ title }}</h1>
+  <p class="subject-meta">{{ detail }}</p>
+  <div class="subject-actions"><a class="btn btn-secondary" href="/auth/login" hx-boost="false">Sign in</a></div>
+</header>
+{% endblock %}

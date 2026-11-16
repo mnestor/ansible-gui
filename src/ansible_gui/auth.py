@@ -1,0 +1,146 @@
+"""Sign-in through an OIDC provider (Pocket ID, Authelia, Keycloak…), plus a same-origin check on writes.
+
+Without ANSIBLE_GUI_OIDC_ISSUER there is no sign-in, and main() refuses to listen
+anywhere but loopback unless told otherwise.
+"""
+
+from __future__ import annotations
+
+import logging
+from urllib.parse import urlencode, urlsplit
+
+from authlib.integrations.starlette_client import OAuth, OAuthError
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from .config import Settings
+
+log = logging.getLogger(__name__)
+
+OPEN_PATHS = ("/static/", "/auth/", "/healthz")
+UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def safe_next(target: str | None) -> str:
+    """Only ever go back to a path on this app."""
+    if not target or not target.startswith("/") or target.startswith("//") or "\\" in target:
+        return "/"
+    return target
+
+
+def current_user(request: Request) -> dict | None:
+    return request.session.get("user") if "session" in request.scope else None
+
+
+def display_name(user: dict | None) -> str:
+    if not user:
+        return "local (no sign-in)"
+    return user.get("username") or user.get("name") or user.get("email") or user.get("sub", "?")
+
+
+class Gate(BaseHTTPMiddleware):
+    """Signed-in users only, and writes only from this app's own pages."""
+
+    def __init__(self, app, settings: Settings):
+        super().__init__(app)
+        self.settings = settings
+
+    def _origin(self, request: Request) -> str:
+        if self.settings.public_url:
+            u = urlsplit(self.settings.public_url)
+        else:
+            u = request.url
+        return f"{u.scheme}://{u.netloc}"
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if request.method in UNSAFE:
+            sent = request.headers.get("origin") or request.headers.get("referer")
+            if sent:
+                u = urlsplit(sent)
+                if f"{u.scheme}://{u.netloc}" != self._origin(request):
+                    return PlainTextResponse("Refused: this request came from another site.", status_code=403)
+        path = request.url.path
+        if not self.settings.auth_enabled or path.startswith(OPEN_PATHS):
+            return await call_next(request)
+        if current_user(request):
+            return await call_next(request)
+        here = path + (f"?{request.url.query}" if request.url.query else "")
+        login = "/auth/login?" + urlencode({"next": here if request.method == "GET" else "/"})
+        if request.headers.get("hx-request"):
+            # htmx swaps would put the login page inside the current one; reload instead.
+            return Response(status_code=204, headers={"HX-Redirect": login})
+        return RedirectResponse(login, status_code=303)
+
+
+def install(app: FastAPI, settings: Settings, templates) -> None:
+    if not settings.auth_enabled:
+        return
+    oauth = OAuth()
+    oauth.register(
+        name="oidc",
+        server_metadata_url=f"{settings.oidc_issuer}/.well-known/openid-configuration",
+        client_id=settings.oidc_client_id,
+        client_secret=settings.oidc_client_secret,
+        client_kwargs={"scope": "openid profile email groups", "code_challenge_method": "S256"},
+    )
+    app.state.oauth = oauth
+    allowed = set(settings.oidc_groups)
+
+    def callback_url(request: Request) -> str:
+        if settings.public_url:
+            return f"{settings.public_url}/auth/callback"
+        return str(request.url_for("auth_callback"))
+
+    def problem(request: Request, title: str, detail: str, status: int) -> HTMLResponse:
+        return templates.TemplateResponse(request, "auth_problem.html",
+                                          {"title": title, "detail": detail, "section": None, "user": None,
+                                           "active_runs": 0, "settings": settings}, status_code=status)
+
+    @app.get("/auth/login")
+    async def auth_login(request: Request, next: str = "/"):
+        request.session["next"] = safe_next(next)
+        try:
+            return await oauth.oidc.authorize_redirect(request, callback_url(request))
+        except Exception as e:  # provider down or misconfigured
+            log.warning("OIDC discovery failed: %s", e)
+            return problem(request, "Can’t reach the sign-in provider",
+                           f"ansible-gui couldn’t load {settings.oidc_issuer}/.well-known/openid-configuration "
+                           f"({e}). Check that the provider is up and ANSIBLE_GUI_OIDC_ISSUER is right, then try again.",
+                           502)
+
+    @app.get("/auth/callback", name="auth_callback")
+    async def auth_callback(request: Request):
+        try:
+            token = await oauth.oidc.authorize_access_token(request)
+        except OAuthError as e:
+            return problem(request, "Sign-in didn’t complete",
+                           f"The provider said: {e.description or e.error}. Start again from the sign-in link.", 400)
+        info = dict(token.get("userinfo") or {})
+        groups = info.get("groups") or []
+        if isinstance(groups, str):
+            groups = [groups]
+        who = info.get("preferred_username") or info.get("email") or info.get("sub")
+        if "*" not in allowed and not allowed.intersection(groups):
+            log.warning("sign-in refused for %s: groups %s, need one of %s", who, groups, sorted(allowed))
+            return problem(request, "You’re signed in, but not allowed here",
+                           f"{who} isn’t in any of the groups allowed to use ansible-gui "
+                           f"({', '.join(sorted(allowed))}). Ask whoever runs your sign-in provider to add you.", 403)
+        target = safe_next(request.session.get("next"))
+        request.session.clear()  # new session on sign-in
+        request.session["user"] = {"sub": info.get("sub"), "username": info.get("preferred_username"),
+                                   "name": info.get("name"), "email": info.get("email"), "groups": groups}
+        log.info("signed in: %s", who)
+        return RedirectResponse(target, status_code=303)
+
+    @app.post("/auth/logout")
+    async def auth_logout(request: Request):
+        request.session.clear()
+        return RedirectResponse("/auth/signed-out", status_code=303)
+
+    @app.get("/auth/signed-out", response_class=HTMLResponse)
+    async def signed_out(request: Request):
+        return problem(request, "Signed out",
+                       "You’re signed out of ansible-gui. Your sign-in provider may still remember you, "
+                       "so signing in again may not ask for a password.", 200)
+

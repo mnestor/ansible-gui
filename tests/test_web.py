@@ -72,4 +72,6 @@ def test_reload_redirects_with_flash():
     r = c.post("/inventory/reload", headers={"referer": "http://testserver/inventory/hosts/web1"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"].startswith("/inventory/hosts/web1?reloaded=")
     r = c.post("/inventory/reload", headers={"referer": "https://evil.example/phish"}, follow_redirects=False)
+    assert r.status_code == 403  # cross-site write refused outright
+    r = c.post("/inventory/reload", headers={"referer": "http://testserver/runs"}, follow_redirects=False)
     assert r.headers["location"].startswith("/inventory?reloaded=")

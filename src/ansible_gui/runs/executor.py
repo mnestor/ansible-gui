@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import shlex
+import shutil
 import subprocess
+import tempfile
 import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..credentials import ssh
+from ..credentials.store import CredentialStore
 from ..inventory.cli import CliOptions
-from .store import RunStore, host_result, now
+from .store import Run, RunStore, host_result, now
 
 log = logging.getLogger(__name__)
 
@@ -26,10 +32,46 @@ def git_commit(project_dir: Path) -> str | None:
     return out.stdout.strip() or None if out.returncode == 0 else None
 
 
+class CredentialMissing(Exception):
+    pass
+
+
+@dataclass
+class Prepared:
+    """What a run needs from the credential store, materialised for this run only."""
+    workdir: Path
+    env: dict[str, str] = field(default_factory=dict)
+    cmdline: list[str] = field(default_factory=list)
+    passwords: dict[str, str] = field(default_factory=dict)
+    agent: ssh.Agent | None = None
+
+    def cleanup(self) -> None:
+        if self.agent:
+            self.agent.stop()
+        for f in self.workdir.glob("*"):
+            if f.is_file():
+                try:  # overwrite before unlinking: these are keys and passwords
+                    f.write_bytes(b"\0" * f.stat().st_size)
+                except OSError:
+                    pass
+        shutil.rmtree(self.workdir, ignore_errors=True)
+
+
+def _write_secret(path: Path, text: str) -> Path:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    return path
+
+
 class Executor:
-    def __init__(self, store: RunStore, opts: CliOptions):
+    def __init__(self, store: RunStore, opts: CliOptions, creds: CredentialStore | None = None,
+                 data_dir: Path | None = None, ssh_config: Path | None = None):
         self.store = store
         self.opts = opts
+        self.creds = creds
+        self.data_dir = data_dir or store.data_dir
+        self.ssh_config = ssh_config
         self._queue: queue.Queue[int] = queue.Queue()
         self._cancel: set[int] = set()
         self._live: dict[int, dict[str, dict[str, int]]] = {}
@@ -86,6 +128,12 @@ class Executor:
         final: dict[str, dict[str, int]] = {}
 
         self.store.update(run_id, status="running", started_at=now(), commit_sha=git_commit(project))
+        try:
+            prepared = self.prepare(run)
+        except CredentialMissing as e:
+            log_file.close()
+            self.store.update(run_id, status="error", finished_at=now(), error=str(e))
+            return
 
         def on_event(ev: dict) -> bool:
             if ev.get("stdout"):
@@ -117,8 +165,7 @@ class Executor:
             cmdline.append("--check")
         if run.diff:
             cmdline.append("--diff")
-        if self.opts.vault_password_file:
-            cmdline += ["--vault-password-file", str(self.opts.vault_password_file)]
+        cmdline += prepared.cmdline
 
         log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
         try:
@@ -132,7 +179,8 @@ class Executor:
                 skip_tags=run.skip_tags or None,
                 verbosity=run.verbosity or None,
                 cmdline=shlex.join(cmdline) if cmdline else None,
-                envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0"},
+                envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **prepared.env},
+                passwords=prepared.passwords or None,
                 event_handler=on_event,
                 cancel_callback=lambda: run_id in self._cancel,
                 quiet=True,
@@ -141,6 +189,7 @@ class Executor:
             if result.status == "canceled":
                 log_file.write("\n[ansible-gui] Run canceled from the web UI.\n")
         finally:
+            prepared.cleanup()
             log_file.close()
 
         stats = final or live
@@ -150,6 +199,65 @@ class Executor:
         if status == "successful" and any(host_result(s) in ("failed", "unreachable") for s in stats.values()):
             status = "failed"
         self.store.update(run_id, status=status, finished_at=now(), rc=result.rc, host_stats=stats)
+
+    def prepare(self, run: Run) -> Prepared:
+        """Write this run's keys and passwords to a private temp dir and start its ssh-agent.
+
+        The run never sees the server user's ssh-agent, ~/.ssh/config or known_hosts:
+        SSH reads only the ssh_config ansible-gui writes (which includes ANSIBLE_GUI_SSH_CONFIG),
+        and talks only to an agent holding the chosen key.
+        """
+        # Short path: the agent socket must fit in a Unix socket address.
+        p = Prepared(workdir=Path(tempfile.mkdtemp(prefix="agui-")))
+        try:
+            chosen = run.credentials or {}
+            loaded = {}
+            for kind in ("ssh_key", "vault_password", "become_password"):
+                ref = chosen.get(kind)
+                if not ref:
+                    continue
+                cred = self.creds.get(ref["id"]) if self.creds else None
+                if not cred or cred.kind != kind:
+                    raise CredentialMissing(f"The credential “{ref['name']}” was deleted before this run started.")
+                if not cred.readable:
+                    raise CredentialMissing(f"The credential “{cred.name}” can’t be decrypted: the secret key changed "
+                                            "since it was saved. Enter its value again on the Credentials page.")
+                loaded[kind] = (cred, self.creds.secret(cred))
+            envs = []
+            for ref in chosen.get("env_secret", []):
+                cred = self.creds.get(ref["id"]) if self.creds else None
+                if cred and cred.readable:
+                    envs.append((cred, self.creds.secret(cred)))
+
+            config = ssh.write_ssh_config(self.data_dir, self.ssh_config)
+            p.cmdline += ["--ssh-common-args", f"-F {shlex.quote(str(config))}"]
+            p.agent = ssh.Agent(p.workdir)
+            p.env["SSH_AUTH_SOCK"] = str(p.agent.socket)
+            p.env["SSH_AGENT_PID"] = str(p.agent.pid)
+
+            if "ssh_key" in loaded:
+                cred, secret = loaded["ssh_key"]
+                key = _write_secret(p.workdir / "id", secret["private_key"])
+                if cred.meta.get("certificate"):
+                    (p.workdir / "id-cert.pub").write_text(cred.meta["certificate"].strip() + "\n")
+                p.agent.add(key)
+                p.env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
+            if "vault_password" in loaded:
+                path = _write_secret(p.workdir / "vault-pass", loaded["vault_password"][1]["password"])
+                p.cmdline += ["--vault-password-file", str(path)]
+            elif self.opts.vault_password_file:
+                p.cmdline += ["--vault-password-file", str(self.opts.vault_password_file)]
+            if "become_password" in loaded:
+                p.cmdline.append("--ask-become-pass")
+                p.passwords[r"^BECOME password.*:\s*?$"] = loaded["become_password"][1]["password"]
+            for cred, secret in envs:
+                name = cred.meta["env"]
+                p.env[name] = secret["value"]
+                p.env[f"{name}_FILE"] = str(_write_secret(p.workdir / f"env-{name}", secret["value"]))
+            return p
+        except BaseException:
+            p.cleanup()
+            raise
 
     def _args(self, run, cmdline: list[str]) -> list[str]:
         args = []

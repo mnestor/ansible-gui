@@ -17,8 +17,15 @@
     <nav class="topnav" aria-label="Sections">
       <a href="/inventory" {% if section == "inventory" %}aria-current="page"{% endif %}>Inventory</a>
       <a href="/runs" {% if section == "runs" %}aria-current="page"{% endif %}>Runs{% if active_runs %} <span class="badge badge-accent tabular">{{ active_runs }}</span>{% endif %}</a>
+      <a href="/credentials" {% if section == "credentials" %}aria-current="page"{% endif %}>Credentials</a>
     </nav>
     {% block topbar_extra %}{% endblock %}
+    {% if user %}
+      <form class="whoami" method="post" action="/auth/logout" hx-boost="false">
+        <span class="whoami-name" title="{{ user.email or '' }}">{{ user.username or user.name or user.email }}</span>
+        <button class="btn btn-quiet" type="submit">Sign out</button>
+      </form>
+    {% endif %}
   </header>
   {% block body %}{% endblock %}
 </body>

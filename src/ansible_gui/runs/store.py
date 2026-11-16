@@ -30,9 +30,12 @@ create table if not exists runs (
   rc integer,
   commit_sha text,
   error text,
-  host_stats text not null default '{}'
+  host_stats text not null default '{}',
+  credentials text not null default '{}'
 );
 """
+# Columns added after the first release; created on start if missing.
+MIGRATIONS = {"credentials": "alter table runs add column credentials text not null default '{}'"}
 
 
 def now() -> str:
@@ -59,6 +62,8 @@ class Run:
     commit_sha: str | None = None
     error: str | None = None
     host_stats: dict[str, dict[str, int]] = field(default_factory=dict)
+    # {"ssh_key": {"id": 1, "name": "lab"}, ..., "env_secret": [{"id": 4, "name": "x", "env": "X"}]}
+    credentials: dict = field(default_factory=dict)
 
     @property
     def finished(self) -> bool:
@@ -100,6 +105,7 @@ def _row(r: sqlite3.Row) -> Run:
         commit_sha=r["commit_sha"],
         error=r["error"],
         host_stats=json.loads(r["host_stats"]),
+        credentials=json.loads(r["credentials"]),
     )
 
 
@@ -111,6 +117,10 @@ class RunStore:
         self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        have = {r["name"] for r in self._db.execute("pragma table_info(runs)")}
+        for col, sql in MIGRATIONS.items():
+            if col not in have:
+                self._db.execute(sql)
         # A restart kills whatever was running; say so instead of showing it as running forever.
         self._db.execute(
             "update runs set status='interrupted', finished_at=?, error=? where status in ('queued','running')",
@@ -127,13 +137,14 @@ class RunStore:
         return self.run_dir(run_id) / "output.log"
 
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
-               diff: bool, verbosity: int, expected_hosts: list[str], trigger: str) -> Run:
+               diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
+               credentials: dict | None = None) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials) values (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
-                 json.dumps(expected_hosts), "queued", trigger, now()),
+                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {})),
             )
             self._db.commit()
             return self.get(cur.lastrowid)

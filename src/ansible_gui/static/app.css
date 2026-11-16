@@ -370,3 +370,33 @@ select.input { appearance: auto; }
 
 .log { max-height: 70vh; overflow: auto; white-space: pre; font-size: var(--fs-xs); line-height: 1.5; }
 @media (max-width: 639px) { .log { white-space: pre-wrap; } }
+
+/* ---------------------------------------------------------------- Sign-in, credentials */
+.whoami { display: flex; align-items: center; gap: var(--s2); margin-left: auto; }
+.topbar .loadstate + .whoami, .topbar form + .whoami { margin-left: var(--s3); }
+.whoami-name { color: var(--ink-muted); font-weight: 600; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 639px) { .whoami-name { display: none; } }
+.help-block { color: var(--ink-muted); max-width: 80ch; margin-bottom: var(--s3); }
+.banner-warn { color: var(--changed); background: color-mix(in oklab, var(--changed) 12%, var(--canvas)); }
+.conf { max-height: 40vh; overflow: auto; white-space: pre; font-size: var(--fs-xs); margin-bottom: var(--s3); max-width: 960px; }
+.creds { max-width: 960px; }
+.creds td.wrap { white-space: normal; overflow-wrap: anywhere; }
+.creds th .badge { margin-left: var(--s1); }
+.row-fresh { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.kind-switch { margin-bottom: var(--s6); }
+.kind-switch a { display: inline-flex; align-items: center; padding: var(--s2) var(--s3); min-height: 30px; font-weight: 600;
+  color: var(--ink-muted); text-decoration: none; border-radius: calc(var(--radius-control) - 2px); }
+.kind-switch a[aria-current] { background: var(--well); color: var(--ink); }
+@media (pointer: coarse) { .kind-switch a { min-height: 44px; } }
+textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1.45; font-family: var(--font-mono); }
+.secret-area { -webkit-text-security: disc; }
+.secret-area:focus { -webkit-text-security: none; }
+.reveal { display: flex; gap: var(--s2); align-items: center; }
+.input[aria-invalid="true"] { outline: 2px solid var(--danger); outline-offset: 0; }
+.danger-zone { max-width: 720px; }
+.summary-note { font-weight: 400; }
+.cred-grid { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); }
+.cred-pick { display: flex; flex-direction: column; gap: var(--s1); min-width: 200px; }
+.page .banner { border-radius: var(--radius-control); margin-bottom: var(--s6); padding-inline: var(--s4); max-width: 960px; }
+.banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); }
+.page .section-head, .page .help-block { max-width: 960px; }

@@ -12,9 +12,14 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
+from . import auth
 from .config import Settings
+from .credentials import ssh as sshtools
+from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
+from .keys import Keys
 from .inventory.model import Layer, Vaulted
 from .inventory.service import InventoryService
 from .runs import playbooks
@@ -88,7 +93,9 @@ def rerun_url(run: Run, mode: str) -> str:
     q = {"playbook": run.playbook, "target": run.target, "mode": mode,
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
          "verbosity": str(run.verbosity)}
-    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v not in ("", None)})
+    for kind in PER_RUN:
+        q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
+    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -96,9 +103,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     opts = settings.cli_options()
     service = InventoryService(opts)
     store = RunStore(settings.data_dir)
-    executor = Executor(store, opts)
+    keys = Keys.load(settings.secret_key, settings.data_dir)
+    creds = CredentialStore(settings.data_dir, keys.fernet)
+    executor = Executor(store, opts, creds, settings.data_dir, settings.ssh_config)
 
     app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None)
+    # Starlette runs the last-added middleware first: the session must exist before the gate looks at it.
+    app.add_middleware(auth.Gate, settings=settings)
+    app.add_middleware(SessionMiddleware, secret_key=keys.session_secret, session_cookie="ansible_gui",
+                       max_age=12 * 3600, same_site="lax",
+                       https_only=bool(settings.public_url and settings.public_url.startswith("https://")))
+    app.state.creds = creds
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.state.executor = executor
     app.state.store = store
@@ -116,6 +131,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
     env.filters["seconds"] = seconds
     env.filters["when"] = when
+    # "Vault password" -> "vault password", but "SSH key" stays "SSH key".
+    env.filters["lcfirst"] = lambda t: t if len(t) > 1 and t[1].isupper() else t[:1].lower() + t[1:]
 
     def layer_text(layer: Layer) -> str:
         if not layer.path:
@@ -127,8 +144,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def render(request: Request, template: str, status: int = 200, **ctx: Any) -> HTMLResponse:
         active = sum(1 for r in store.recent(20) if not r.finished)
         return templates.TemplateResponse(
-            request, template, {"settings": settings, "active_runs": active, **ctx}, status_code=status
+            request, template,
+            {"settings": settings, "active_runs": active, "user": auth.current_user(request), **ctx},
+            status_code=status,
         )
+
+    auth.install(app, settings, templates)
+
+    @app.get("/healthz")
+    def healthz() -> PlainTextResponse:
+        return PlainTextResponse("ok")
 
     # --- inventory -------------------------------------------------------------
     def inventory_page(request: Request, template: str, status: int = 200, **ctx: Any) -> HTMLResponse:
@@ -194,6 +219,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "tags": (src.get("tags") or "").strip(),
             "skip_tags": (src.get("skip_tags") or "").strip(),
             "verbosity": verbosity,
+            **{kind: str(src.get(kind) or "") for kind in PER_RUN},
         }
 
     def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
@@ -205,6 +231,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(
             request, "run_new.html", status,
             section="runs", playbooks=books, form=form, preview=pv, form_error=form_error,
+            cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
+            env_secrets=creds.by_kind("env_secret"),
             hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [],
         )
 
@@ -217,6 +245,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_form(request.query_params)
         if "diff" not in request.query_params:
             form["diff"] = True
+        for kind in PER_RUN:
+            if kind not in request.query_params:
+                default = creds.default(kind)
+                form[kind] = str(default.id) if default else ""
         return launcher(request, form)
 
     @app.get("/runs/preview", response_class=HTMLResponse)
@@ -245,10 +277,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"The targets changed since the preview: they now match {len(pv.hosts)} host(s). Check the list below, then run again.",
                 status=409,
             )
+        chosen: dict = {}
+        for kind in PER_RUN:
+            if not form[kind]:
+                continue
+            cred = creds.get(int(form[kind])) if form[kind].isdigit() else None
+            if not cred or cred.kind != kind:
+                return launcher(request, form, f"That {KINDS[kind].lower()} no longer exists. Choose another.", 400)
+            chosen[kind] = {"id": cred.id, "name": cred.name}
+        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
+                                for c in creds.by_kind("env_secret")]
         run = store.create(
             playbook=form["playbook"], target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
-            expected_hosts=pv.hosts, trigger="web UI",
+            expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
         )
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
@@ -301,6 +343,87 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         executor.cancel(run_id)
         return RedirectResponse(f"/runs/{run_id}", status_code=303)
 
+    # --- credentials -----------------------------------------------------------
+    def ssh_config_panel() -> dict:
+        path = settings.ssh_config
+        panel: dict = {"path": path, "exists": bool(path and path.is_file()), "text": None, "edit": None,
+                       "known_hosts": sshtools.known_hosts_count(settings.data_dir),
+                       "known_hosts_path": settings.data_dir / "ssh" / "known_hosts"}
+        if panel["exists"]:
+            try:
+                panel["text"] = path.read_text(errors="replace")[:20000]
+            except OSError as e:
+                panel["error"] = str(e)
+            try:
+                rel = path.relative_to(settings.project_dir)
+                panel["rel"] = str(rel)
+                panel["edit"] = edit_url(settings.edit_url, Layer(kind="unknown", path=str(rel)))
+            except ValueError:
+                pass
+        inv = service.current().inventory
+        panel["overridden_on"] = sorted(
+            h.name for h in (inv.hosts.values() if inv else [])
+            if any(v.name in ("ansible_ssh_common_args", "ansible_ssh_args") for v in h.vars)
+        )
+        return panel
+
+    @app.get("/credentials", response_class=HTMLResponse)
+    def credentials(request: Request):
+        return render(request, "credentials.html", section="credentials",
+                      groups={kind: creds.by_kind(kind) for kind in KINDS}, kinds=KINDS,
+                      ssh_panel=ssh_config_panel(), saved=request.query_params.get("saved"),
+                      deleted=request.query_params.get("deleted"), key_file=keys.generated_at)
+
+    def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
+                  errors: dict | None = None, status: int = 200) -> HTMLResponse:
+        return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
+                      cred=cred, values=values or {}, errors=errors or {})
+
+    @app.get("/credentials/new", response_class=HTMLResponse)
+    def new_credential(request: Request, kind: str = "ssh_key"):
+        return cred_form(request, kind if kind in KINDS else "ssh_key",
+                         values={"is_default": not creds.by_kind(kind)})
+
+    @app.get("/credentials/{cred_id}", response_class=HTMLResponse)
+    def edit_credential(request: Request, cred_id: int):
+        cred = creds.get(cred_id)
+        if not cred:
+            return RedirectResponse("/credentials", status_code=303)
+        return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
+                                                           "env": cred.meta.get("env", "")})
+
+    async def save_credential(request: Request, cred_id: int | None):
+        data = await request.form()
+        kind = data.get("kind", "")
+        values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value")}
+        values["remove_certificate"] = data.get("remove_certificate") == "1"
+        is_default = data.get("is_default") == "1"
+        try:
+            cred = creds.save(kind=kind, name=data.get("name", ""), values=values, is_default=is_default,
+                              user=auth.display_name(auth.current_user(request)), cred_id=cred_id)
+        except Invalid as e:
+            # Secrets are never echoed back into the page; the form asks for them again.
+            keep = {"name": data.get("name", ""), "env": values["env"], "is_default": is_default,
+                    "certificate": values["certificate"]}
+            return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
+                             keep, e.errors, status=400)
+        return RedirectResponse(f"/credentials?saved={cred.id}", status_code=303)
+
+    @app.post("/credentials")
+    async def create_credential(request: Request):
+        return await save_credential(request, None)
+
+    @app.post("/credentials/{cred_id}")
+    async def update_credential(request: Request, cred_id: int):
+        return await save_credential(request, cred_id)
+
+    @app.post("/credentials/{cred_id}/delete")
+    def delete_credential(cred_id: int):
+        cred = creds.get(cred_id)
+        if cred:
+            creds.delete(cred_id)
+        return RedirectResponse(f"/credentials?deleted={cred.name if cred else ''}", status_code=303)
+
     return app
 
 
@@ -309,10 +432,25 @@ def main() -> None:
 
     import uvicorn
 
+    host = os.environ.get("ANSIBLE_GUI_HOST", "127.0.0.1")
+    check_bind(Settings.from_env(), host, os.environ.get("ANSIBLE_GUI_INSECURE_NO_AUTH") == "1")
     uvicorn.run(
         "ansible_gui.web:create_app",
         factory=True,
-        host=os.environ.get("ANSIBLE_GUI_HOST", "127.0.0.1"),
+        host=host,
         port=int(os.environ.get("ANSIBLE_GUI_PORT", "8080")),
+        proxy_headers=True,
+        forwarded_allow_ips=os.environ.get("ANSIBLE_GUI_TRUSTED_PROXIES", "127.0.0.1"),
+    )
+
+
+def check_bind(settings: Settings, host: str, insecure_ok: bool) -> None:
+    """Without sign-in, anyone who reaches the port can run playbooks. Only allow that on loopback."""
+    if settings.auth_enabled or insecure_ok or host in ("127.0.0.1", "::1", "localhost"):
+        return
+    raise SystemExit(
+        f"Refusing to listen on {host} without sign-in: anyone who can reach it could run playbooks. "
+        "Set ANSIBLE_GUI_OIDC_ISSUER (and its client settings), or ANSIBLE_GUI_INSECURE_NO_AUTH=1 if "
+        "something in front of ansible-gui already does the sign-in."
     )
 

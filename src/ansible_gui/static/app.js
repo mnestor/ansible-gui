@@ -125,6 +125,18 @@
     const tagList = root.querySelector("#tag-suggestions");
     if (tagOptions && tagList) tagList.replaceChildren(tagOptions.content.cloneNode(true));
 
+    // Show/hide a password field.
+    root.querySelectorAll("[data-reveal]").forEach((btn) => {
+      if (!once(btn, "Reveal")) return;
+      btn.addEventListener("click", () => {
+        const input = document.getElementById(btn.dataset.reveal);
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        btn.textContent = show ? "Hide" : "Show";
+        btn.setAttribute("aria-pressed", String(show));
+      });
+    });
+
     // "/" focuses the host search, like most dev tools.
     document.onkeydown = (e) => {
       if (e.key === "/" && find && document.activeElement?.tagName !== "INPUT") {

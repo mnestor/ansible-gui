@@ -18,7 +18,15 @@ uv run ansible-gui            # http://127.0.0.1:8080
 | `ANSIBLE_GUI_PLAYBOOK_DIR` | `.` | Where playbook-adjacent `group_vars/` and `host_vars/` live |
 | `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}` |
-| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history (SQLite) and run logs |
+| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts` |
+| `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs read, relative to the project dir. Unset means none at all |
+| `ANSIBLE_GUI_SECRET_KEY` (or `_FILE`) | generated `data/secret.key` | Encrypts credentials and signs sessions. Set it so a copy of `data/` alone can't decrypt credentials |
+| `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |
+| `ANSIBLE_GUI_OIDC_CLIENT_ID`, `ANSIBLE_GUI_OIDC_CLIENT_SECRET` (or `_FILE`) | | The OIDC client. Redirect URI: `<public url>/auth/callback` |
+| `ANSIBLE_GUI_OIDC_GROUPS` | required with OIDC | Comma-separated groups allowed in (`groups` claim), or `*` for anyone the provider signs in |
+| `ANSIBLE_GUI_PUBLIC_URL` | | e.g. `https://ansible.example.com`; used for the redirect URI, the same-origin check and secure cookies |
+| `ANSIBLE_GUI_TRUSTED_PROXIES` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are believed |
+| `ANSIBLE_GUI_INSECURE_NO_AUTH` | | `1` allows listening beyond loopback without sign-in (only if a proxy in front does it) |
 | `ANSIBLE_GUI_HOST` / `ANSIBLE_GUI_PORT` | `127.0.0.1` / `8080` | Listen address |
 
 Needs `ansible-core` on PATH. Ansible is only ever called as a subprocess, never imported (it is GPLv3).
@@ -38,7 +46,27 @@ project directory as the working directory (so its `ansible.cfg` applies). The l
 `ansible-playbook --list-hosts` which hosts the playbook and `--limit` pattern match, and the run is
 refused if that list changed between the preview and the click. Dry run (`--check`) is the default.
 
-Credentials are not managed yet: runs use the SSH config, keys and agent of the user running the server.
+## Sign-in
+
+With `ANSIBLE_GUI_OIDC_ISSUER` set, every page needs an OIDC sign-in (authorization code with PKCE, scopes
+`openid profile email groups`) by a member of `ANSIBLE_GUI_OIDC_GROUPS`. Without it there is no sign-in, and
+the server refuses to listen anywhere but loopback. Writes (POST) from another origin are refused either way.
+
+## Credentials and SSH
+
+Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
+
+- SSH reads only `data/ssh/ssh_config` (passed as `--ssh-common-args -F …`), which includes
+  `ANSIBLE_GUI_SSH_CONFIG` first, then falls back to `data/ssh/known_hosts` with `StrictHostKeyChecking accept-new`.
+  Your file wins wherever it sets an option. An inventory `ansible_ssh_common_args` replaces the `-F`; the
+  Credentials page lists hosts that do this.
+- Each run gets its own ssh-agent, holding only the SSH key (and certificate) chosen for it, or nothing.
+  `Match exec` commands run with that agent's `SSH_AUTH_SOCK`, so a command that fetches a certificate and
+  `ssh-add`s it works.
+- Stored credentials (Fernet-encrypted in SQLite): SSH keys with optional certificates (no passphrases),
+  vault passwords, become passwords, and environment secrets, which every run gets as `$NAME` and
+  `$NAME_FILE`. They are written to a 0700 temp dir for the run and wiped after it. Values are never shown
+  back in the UI.
 
 ## Tests
 
