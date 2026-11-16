@@ -38,7 +38,7 @@ def test_apply_with_changes_is_not_an_issue():
 
 def test_rerun_hosts_limits_to_those_hosts():
     url = rerun_hosts(run(2, {"b": {"failed": 1}}, credentials={}), "apply", ["b", "c"])
-    assert "target=b%2Cc" in url and "playbook=site.yml" in url and "mode=apply" in url
+    assert "target=b%2Cc" in url and "playbook=0%3Asite.yml" in url and "mode=apply" in url
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-core")

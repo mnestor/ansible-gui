@@ -6,20 +6,24 @@ then run playbooks against the hosts you pick, watch them live, and schedule the
 ## Run it
 
 ```sh
-ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc \
-ANSIBLE_GUI_INVENTORY=inventory/hosts.yml \
-uv run ansible-gui            # http://127.0.0.1:8080
+uv run ansible-gui            # http://127.0.0.1:8080, then add repositories on the Repositories page
+```
+
+Or, for a checkout you manage yourself:
+
+```sh
+ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.yml uv run ansible-gui
 ```
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ANSIBLE_GUI_PROJECT_DIR` | required | Directory you run `ansible-playbook` from |
+| `ANSIBLE_GUI_PROJECT_DIR` | none | A local checkout used as inventory and playbooks. A git repository of the same role on the Repositories page replaces it |
 | `ANSIBLE_GUI_INVENTORY` | `inventory` | Inventory source(s), comma-separated, relative to the project dir |
 | `ANSIBLE_GUI_PLAYBOOK_DIR` | `.` | Where playbook-adjacent `group_vars/` and `host_vars/` live |
 | `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}` |
 | `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts` |
-| `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs read, relative to the project dir. Unset means none at all |
+| `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
 | `ANSIBLE_GUI_SECRET_KEY` (or `_FILE`) | generated `data/secret.key` | Encrypts credentials and signs sessions. Set it so a copy of `data/` alone can't decrypt credentials |
 | `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |
 | `ANSIBLE_GUI_OIDC_CLIENT_ID`, `ANSIBLE_GUI_OIDC_CLIENT_SECRET` (or `_FILE`) | | The OIDC client. Redirect URI: `<public url>/auth/callback` |
@@ -34,6 +38,22 @@ uv run ansible-gui            # http://127.0.0.1:8080
 | `ANSIBLE_GUI_HOST` / `ANSIBLE_GUI_PORT` | `127.0.0.1` / `8080` | Listen address |
 
 Needs `ansible-core` on PATH. Ansible is only ever called as a subprocess, never imported (it is GPLv3).
+
+## Git repositories
+
+Set up on the Repositories page: one inventory repository and any number of playbook repositories,
+each with a branch and, for private repositories, a deploy key picked from the stored SSH keys.
+ansible-gui keeps its own clones in `data/repos/`, and resets each to the tip of its branch on every pull,
+discarding local changes.
+
+Every run, by hand or scheduled, first pulls the inventory repository and the playbook's repository,
+then asks Ansible again which hosts the targets match. If a pull fails, the run is canceled before anything
+touches a host, and an email goes out even for a run started by hand or a schedule set to never email.
+If the hosts changed since the preview, a run started by hand is canceled too; a schedule follows the inventory.
+
+Each run records the playbook commit and the inventory commit. Runs use the playbook repository as the
+working directory, so its `ansible.cfg`, roles and playbook-adjacent `group_vars/` apply. Those
+playbook-repo variables aren't shown on the inventory page, which reads the inventory repository only.
 
 ## How sources are worked out
 

@@ -26,7 +26,7 @@
       <th scope="row" class="mono"><a href="/schedules/{{ s.id }}">{{ s.name }}</a><span class="phone-only help">{{ s.mode }} · {% if not s.enabled %}paused{% elif s.next_run_at %}next {{ s.next_run_at | when }}{% endif %}</span></th>
       <td class="tabular col-wide">{% if not s.enabled %}<span class="badge badge-neutral">paused</span>{% elif s.next_run_at %}<time datetime="{{ s.next_run_at | stamp }}">{{ s.next_run_at | when }}</time>{% else %}—{% endif %}</td>
       <td>{% if s.last_run %}<a class="badge-link" href="/runs/{{ s.last_run.id }}"><span class="badge badge-{{ run_tone(s.last_run) }}">{{ status_label(s.last_run) }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
-      <td class="mono col-wide">{{ s.playbook }}</td>
+      <td class="mono col-wide">{{ pb_label(s) }}</td>
       <td class="mono col-wide">{{ s.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ s.mode }}</td>
       <td class="mono col-wide">{{ s.cron }}</td>

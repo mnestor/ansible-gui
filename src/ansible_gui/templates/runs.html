@@ -23,7 +23,7 @@
   {% for r in runs %}
     <tr>
       <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
-      <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a><span class="phone-only help">{{ r.mode }}</span></th>
+      <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ pb_label(r) }}</a><span class="phone-only help">{{ r.mode }}</span></th>
       <td><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) }}</span></td>
       <td class="mono">{{ r.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ r.mode }}</td>

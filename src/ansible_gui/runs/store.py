@@ -39,6 +39,8 @@ MIGRATIONS = {
     "credentials": "alter table runs add column credentials text not null default '{}'",
     "schedule_id": "alter table runs add column schedule_id integer",
     "notified": "alter table runs add column notified text",
+    "repo_id": "alter table runs add column repo_id integer not null default 0",
+    "inventory_commit": "alter table runs add column inventory_commit text",
 }
 
 
@@ -70,6 +72,8 @@ class Run:
     credentials: dict = field(default_factory=dict)
     schedule_id: int | None = None
     notified: str | None = None  # "Emailed …" or "Email failed: …"
+    repo_id: int = 0  # the playbook repository; 0 is ANSIBLE_GUI_PROJECT_DIR
+    inventory_commit: str | None = None
 
     @property
     def finished(self) -> bool:
@@ -114,6 +118,8 @@ def _row(r: sqlite3.Row) -> Run:
         credentials=json.loads(r["credentials"]),
         schedule_id=r["schedule_id"],
         notified=r["notified"],
+        repo_id=r["repo_id"],
+        inventory_commit=r["inventory_commit"],
     )
 
 
@@ -148,20 +154,22 @@ class RunStore:
 
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
-               credentials: dict | None = None, schedule_id: int | None = None) -> Run:
+               credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at, credentials, schedule_id) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
-                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id),
+                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id),
             )
             self._db.commit()
             return self.get(cur.lastrowid)
 
     def update(self, run_id: int, **fields) -> None:
-        if "host_stats" in fields:
-            fields["host_stats"] = json.dumps(fields["host_stats"])
+        for key in ("host_stats", "expected_hosts"):
+            if key in fields:
+                fields[key] = json.dumps(fields[key])
         cols = ", ".join(f"{k}=?" for k in fields)
         with self._lock:
             self._db.execute(f"update runs set {cols} where id=?", (*fields.values(), run_id))  # noqa: S608 - keys are ours

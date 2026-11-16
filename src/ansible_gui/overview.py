@@ -106,8 +106,13 @@ def email_issue(store) -> Run | None:
     return last if last and last.notified and last.notified.startswith("Email failed") else None
 
 
-def setup_issues(settings, state, creds) -> list[SetupIssue]:
+def setup_issues(settings, state, creds, repos=()) -> list[SetupIssue]:
     out = []
+    for r in repos:
+        if r.last_error:
+            out.append(SetupIssue(f"Can’t pull {r.name} from git",
+                                  f"{r.last_error} Runs that need it are canceled until a pull works.",
+                                  "/repos", "Open repositories"))
     if state.error:
         out.append(SetupIssue(
             "Inventory didn’t load" if not state.inventory else "Inventory reload failed",

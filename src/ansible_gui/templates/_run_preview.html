@@ -15,7 +15,7 @@
     <span class="help">Fix the target pattern or the playbook, then try again.</span></div>
 {% elif not preview.hosts %}
   <p class="preview-note"><strong>No hosts match.</strong>
-    {% if form.target %}<span class="mono">{{ form.target }}</span> doesn’t overlap the hosts in <span class="mono">{{ form.playbook }}</span>.{% else %}The playbook’s plays target no hosts in this inventory.{% endif %}</p>
+    {% if form.target %}<span class="mono">{{ form.target }}</span> doesn’t overlap the hosts in <span class="mono">{{ form.playbook.split(":", 1)[-1] }}</span>.{% else %}The playbook’s plays target no hosts in this inventory.{% endif %}</p>
   <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
     <span class="help">Change the targets to run.</span></div>
 {% else %}

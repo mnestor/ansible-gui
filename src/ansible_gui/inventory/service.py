@@ -29,16 +29,25 @@ def load(opts: CliOptions) -> Inventory:
     return attribution.build(opts.project_dir, opts.sources, opts.playbook_dir, truth, bare)
 
 
+NO_INVENTORY = ("No inventory is set up. Add an inventory repository on the Repositories page, "
+                "or set ANSIBLE_GUI_PROJECT_DIR and ANSIBLE_GUI_INVENTORY.")
+
+
 class InventoryService:
-    def __init__(self, opts: CliOptions):
-        self.opts = opts
+    def __init__(self, opts):
+        """opts: CliOptions, or a callable returning CliOptions (or None when nothing is set up)."""
+        self._opts = opts
         self.state = LoadState()
         self._lock = threading.Lock()
 
     def reload(self) -> LoadState:
         with self._lock:
+            opts = self._opts() if callable(self._opts) else self._opts
+            if opts is None:
+                self.state = LoadState(None, InventoryError(NO_INVENTORY, []), datetime.now(timezone.utc))
+                return self.state
             try:
-                inv = load(self.opts)
+                inv = load(opts)
             except InventoryError as e:
                 self.state = LoadState(self.state.inventory, e, datetime.now(timezone.utc))
             else:

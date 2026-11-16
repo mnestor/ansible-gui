@@ -37,7 +37,7 @@
         {% for r in run_issues %}
           <li class="issue issue-failed">
             <div class="issue-head"><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) | lower }}</span>
-              <strong><span class="mono">{{ r.playbook }}</span> didn’t reach any host</strong>
+              <strong><span class="mono">{{ pb_label(r) }}</span> didn’t reach any host</strong>
               <span class="issue-meta"><a href="/runs/{{ r.id }}">run #{{ r.id }}</a> · {{ (r.started_at or r.created_at) | when }} · {{ r.trigger }}</span></div>
             <p class="issue-detail">{{ r.error or "It failed before any host reported a result, for example a vault, syntax or missing-role error." }}</p>
             <div class="issue-actions"><a class="btn btn-secondary" href="/runs/{{ r.id }}">Read the output</a></div>
@@ -49,7 +49,7 @@
             <div class="issue-head">
               <span class="badge badge-{{ 'changed' if g.kind == 'drift' else g.kind }}">{{ "would change" if g.kind == "drift" else g.kind }}</span>
               <strong>{% if g.kind == "drift" %}{{ n }} host{{ "s" if n != 1 }} would change{% else %}{{ n }} host{{ "s" if n != 1 }} {{ g.kind }}{% endif %}</strong>
-              <span class="issue-meta">in <a href="/runs/{{ g.run.id }}">run #{{ g.run.id }}</a> · <span class="mono">{{ g.run.playbook }}</span> · {{ (g.run.started_at or g.run.created_at) | when }}{% if g.run.schedule_id %} · {{ g.run.trigger }}{% endif %}</span>
+              <span class="issue-meta">in <a href="/runs/{{ g.run.id }}">run #{{ g.run.id }}</a> · <span class="mono">{{ pb_label(g.run) }}</span> · {{ (g.run.started_at or g.run.created_at) | when }}{% if g.run.schedule_id %} · {{ g.run.trigger }}{% endif %}</span>
             </div>
             <ul class="chips issue-hosts">{% for h in g.hosts[:12] %}<li><a class="chip mono" href="/inventory/hosts/{{ h }}">{{ h }}</a></li>{% endfor %}{% if n > 12 %}<li class="help">and {{ n - 12 }} more</li>{% endif %}</ul>
             <div class="issue-actions">
@@ -94,7 +94,7 @@
         <tbody>{% for r in recent %}
           <tr>
             <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
-            <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a></th>
+            <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ pb_label(r) }}</a></th>
             <td><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) }}</span></td>
             <td class="mono col-wide">{{ r.target or "playbook’s hosts" }}</td>
             <td class="col-wide">{{ r.trigger }}</td>
@@ -123,7 +123,7 @@
         <ul class="timeline">{% for sc in upcoming %}
           <li><time class="tabular" datetime="{{ sc.next_run_at | stamp }}">{{ sc.next_run_at | when }}</time>
             <a class="mono" href="/schedules/{{ sc.id }}">{{ sc.name }}</a>
-            <span class="help">{{ sc.mode | lower }} · <span class="mono">{{ sc.playbook }}</span></span></li>
+            <span class="help">{{ sc.mode | lower }} · <span class="mono">{{ pb_label(sc) }}</span></span></li>
         {% endfor %}</ul>
         <p class="help">Server time ({{ tz }}).</p>
       {% endif %}

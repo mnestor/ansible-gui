@@ -1,0 +1,73 @@
+{% extends "runs_base.html" %}
+{% block title %}Repositories{% endblock %}
+{% macro repo_rows(items) %}
+  <div class="table-region">
+  <table class="history repos">
+    <thead><tr>
+      <th scope="col">Name</th><th scope="col">Commit</th><th scope="col" class="col-wide">Last pull</th><th scope="col"><span class="visually-hidden">Actions</span></th>
+    </tr></thead>
+    <tbody>
+    {% for r in items %}
+      <tr>
+        <th scope="row" class="mono wrap">{% if r.local %}{{ r.name }}{% else %}<a href="/repos/{{ r.id }}">{{ r.name }}</a>{% endif %}
+          <span class="phone-only help">{% if r.local %}local directory{% else %}{{ r.branch }}{% endif %}</span>
+          <span class="help mono repo-url">{{ r.path if r.local else r.url }}{% if not r.local %} · {{ r.branch }}{% endif %}</span>
+          {% if r.last_error %}<p class="field-error">Last pull failed: {{ r.last_error }}{% if r.short %} Runs are canceled until it works; the clone stays at {{ r.short }}.{% endif %}</p>{% endif %}
+        </th>
+        <td class="wrap">{% if r.local %}<span class="help">read as it is on disk</span>
+          {% elif r.short %}<span class="mono">{{ r.short }}</span> <span class="help">{{ r.last_subject }}</span>
+          {% else %}<span class="help">not cloned yet</span>{% endif %}</td>
+        <td class="col-wide tabular">{% if r.last_fetch_at %}{{ r.last_fetch_at | when }}{% if r.last_error %} <span class="badge badge-failed">failed</span>{% endif %}{% else %}—{% endif %}</td>
+        <td class="num">{% if not r.local %}
+          <form method="post" action="/repos/{{ r.id }}/pull" hx-boost="false">
+            <button class="btn btn-secondary" type="submit" data-busy-label="Pulling…">Pull now</button>
+          </form>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endmacro %}
+{% block main %}
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Repositories</p>
+    <h1 class="identity">Where playbooks come from</h1>
+  </div>
+  <a class="btn btn-primary" href="/repos/new">Add repository</a>
+</header>
+
+{% set just = repos | selectattr("id", "equalto", (saved or pulled) | int) | first if (saved or pulled) else None %}
+{% if just %}
+  {% if just.last_error %}<p class="banner banner-warn" role="status">{{ "Saved, but the" if saved else "The" }} pull from {{ just.name }} failed: {{ just.last_error }}</p>
+  {% else %}<p class="banner banner-ok" role="status">{{ "Saved and pulled" if saved else "Pulled" }} {{ just.name }}: now at <span class="mono">{{ just.short }}</span> {{ just.last_subject }}.</p>{% endif %}
+{% endif %}
+{% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }} and its clone.</p>{% endif %}
+
+<p class="help-block">Every run pulls the inventory repository and its playbook’s repository first. If a pull fails, the run is canceled, nothing touches a host, and an email goes out. ansible-gui owns these clones: local changes in them are thrown away on each pull.</p>
+
+<section class="section" aria-labelledby="inv-h">
+  <div class="section-head">
+    <h2 id="inv-h" class="section-title">Inventory</h2>
+    {% if not inventory or inventory.local %}<a class="quiet-link" href="/repos/new?role=inventory">Add inventory repository</a>{% endif %}
+  </div>
+  {% if not inventory %}
+    <p class="empty">None yet. The inventory page and every run need one: add the repository that holds your hosts and <span class="mono">group_vars</span>.</p>
+  {% else %}
+    {{ repo_rows([inventory]) }}
+    <p class="help-block">Read from <span class="mono">{{ inventory.sources | join(", ") }}</span>. Its <span class="mono">group_vars</span> and <span class="mono">host_vars</span> apply to every run. A playbook repository can add its own next to its playbooks; those apply only to its playbooks and aren’t shown on the inventory page.</p>
+  {% endif %}
+</section>
+
+<section class="section" aria-labelledby="pb-h">
+  <div class="section-head">
+    <h2 id="pb-h" class="section-title">Playbooks</h2>
+    <a class="quiet-link" href="/repos/new?role=playbooks">Add playbook repository</a>
+  </div>
+  {% if not playbook_repos %}
+    <p class="empty">None yet. Add a repository with playbooks to run.</p>
+  {% else %}
+    {{ repo_rows(playbook_repos) }}
+  {% endif %}
+</section>
+{% endblock %}

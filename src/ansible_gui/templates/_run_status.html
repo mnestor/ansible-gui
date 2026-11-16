@@ -6,7 +6,8 @@
     {% if run.skip_tags %}<div><dt>Skip tags</dt><dd class="mono">{{ run.skip_tags }}</dd></div>{% endif %}
     <div><dt>Started</dt><dd class="tabular">{% if run.started_at %}<time datetime="{{ run.started_at | stamp }}">{{ run.started_at | clock }}</time>{% else %}not yet{% endif %}</dd></div>
     <div><dt>Took</dt><dd class="tabular">{{ run.duration | seconds }}</dd></div>
-    {% if run.commit_sha %}<div><dt>Commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
+    {% if run.commit_sha %}<div><dt>Playbook commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
+    {% if run.inventory_commit %}<div><dt>Inventory commit</dt><dd class="mono">{{ run.inventory_commit }}</dd></div>{% endif %}
     <div><dt>By</dt><dd>{% if run.schedule_id %}<a href="/schedules/{{ run.schedule_id }}">{{ run.trigger }}</a>{% else %}{{ run.trigger }}{% endif %}</dd></div>
     {% set c = run.credentials %}
     {% if c %}<div><dt>Signed in with</dt><dd class="mono">{% for k in ("ssh_key", "vault_password", "become_password") %}{% if c[k] %}{{ c[k].name }} {% endif %}{% endfor %}{% for e in c.env_secret or [] %}${{ e.env }} {% endfor %}{% if not (c.ssh_key or c.vault_password or c.become_password or c.env_secret) %}nothing stored{% endif %}</dd></div>{% endif %}

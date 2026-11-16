@@ -6,13 +6,12 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .inventory.cli import CliOptions
 
 
 @dataclass
 class Settings:
-    project_dir: Path
-    inventory: list[str]
+    project_dir: Path | None = None  # a local checkout; git repositories configured in the UI replace it
+    inventory: list[str] = field(default_factory=lambda: ["inventory"])
     playbook_dir: str = "."
     vault_password_file: Path | None = None
     edit_url: str | None = None  # e.g. https://git.example.com/me/ansible/src/branch/main/{path}#L{line}
@@ -34,15 +33,12 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         project = os.environ.get("ANSIBLE_GUI_PROJECT_DIR")
-        if not project:
-            raise SystemExit(
-                "Set ANSIBLE_GUI_PROJECT_DIR to the directory you run ansible-playbook from "
-                "(the one holding ansible.cfg and your playbooks)."
-            )
         inventory = [s.strip() for s in os.environ.get("ANSIBLE_GUI_INVENTORY", "inventory").split(",") if s.strip()]
         vault = os.environ.get("ANSIBLE_GUI_VAULT_PASSWORD_FILE")
-        project_dir = Path(project).expanduser().resolve()
+        project_dir = Path(project).expanduser().resolve() if project else None
         ssh_config = os.environ.get("ANSIBLE_GUI_SSH_CONFIG")
+        if ssh_config and not project_dir and not Path(ssh_config).expanduser().is_absolute():
+            raise SystemExit("ANSIBLE_GUI_SSH_CONFIG must be an absolute path when ANSIBLE_GUI_PROJECT_DIR isn’t set.")
         issuer = os.environ.get("ANSIBLE_GUI_OIDC_ISSUER") or None
         if issuer and not (os.environ.get("ANSIBLE_GUI_OIDC_CLIENT_ID") and _env_or_file("ANSIBLE_GUI_OIDC_CLIENT_SECRET")):
             raise SystemExit("ANSIBLE_GUI_OIDC_ISSUER is set, so ANSIBLE_GUI_OIDC_CLIENT_ID and "
@@ -58,7 +54,7 @@ class Settings:
             vault_password_file=Path(vault).expanduser() if vault else None,
             edit_url=os.environ.get("ANSIBLE_GUI_EDIT_URL") or None,
             data_dir=Path(os.environ.get("ANSIBLE_GUI_DATA_DIR", "data")).expanduser().resolve(),
-            ssh_config=(project_dir / Path(ssh_config).expanduser()).resolve() if ssh_config else None,
+            ssh_config=((project_dir or Path("/")) / Path(ssh_config).expanduser()).resolve() if ssh_config else None,
             public_url=(os.environ.get("ANSIBLE_GUI_PUBLIC_URL") or "").rstrip("/") or None,
             oidc_issuer=issuer.rstrip("/") if issuer else None,
             oidc_client_id=os.environ.get("ANSIBLE_GUI_OIDC_CLIENT_ID") or None,
@@ -66,15 +62,6 @@ class Settings:
             oidc_groups=groups,
             secret_key=_env_or_file("ANSIBLE_GUI_SECRET_KEY"),
             smtp=SmtpSettings.from_env(),
-        )
-
-    def cli_options(self) -> CliOptions:
-        return CliOptions(
-            project_dir=self.project_dir,
-            sources=self.inventory,
-            playbook_dir=self.playbook_dir,
-            vault_password_file=self.vault_password_file,
-            binary=self.inventory_binary,
         )
 
 

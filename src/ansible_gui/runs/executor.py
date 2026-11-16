@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..credentials import ssh
 from ..credentials.store import CredentialStore
-from ..inventory.cli import CliOptions
+from . import playbooks
 from .store import Run, RunStore, host_result, now
 
 log = logging.getLogger(__name__)
@@ -65,11 +65,11 @@ def _write_secret(path: Path, text: str) -> Path:
 
 
 class Executor:
-    def __init__(self, store: RunStore, opts: CliOptions, creds: CredentialStore | None = None,
+    def __init__(self, store: RunStore, workspace, creds: CredentialStore | None = None,
                  data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None):
         self.on_finish = on_finish or (lambda run_id: None)
         self.store = store
-        self.opts = opts
+        self.workspace = workspace
         self.creds = creds
         self.data_dir = data_dir or store.data_dir
         self.ssh_config = ssh_config
@@ -123,21 +123,55 @@ class Executor:
         run = self.store.get(run_id)
         if run is None or run.status != "queued":
             return
-        project = self.opts.project_dir
         run_dir = self.store.run_dir(run_id)
         (run_dir / "runner").mkdir(exist_ok=True)
         log_file = self.store.log_path(run_id).open("a", encoding="utf-8", buffering=1)
-        live: dict[str, dict[str, int]] = {h: dict.fromkeys(_COUNTERS, 0) for h in run.expected_hosts}
+        self.store.update(run_id, status="running", started_at=now())
+
+        def stop(message: str) -> None:
+            log_file.write(f"[ansible-gui] {message}\n")
+            log_file.close()
+            self.store.update(run_id, status="error", finished_at=now(), error=message)
+
+        repo = self.workspace.playbook_repo(run.repo_id)
+        if repo is None:
+            return stop("Didn’t start: the playbook’s repository was removed.")
+        failed = self.workspace.sync_for_run(repo, lambda line: log_file.write(line + "\n"))
+        if failed:
+            return stop(failed)
+        repo = self.workspace.playbook_repo(run.repo_id)
+        inv_repo = self.workspace.inventory_repo()
+        project = repo.path
+        opts = self.workspace.run_opts(repo)
+        if not (project / run.playbook).is_file():
+            return stop(f"Didn’t start: {run.playbook} isn’t in {repo.name} any more.")
+
+        # The files may have changed since the preview: ask Ansible again which hosts this run hits.
+        pv = playbooks.preview(opts, run.playbook, run.target)
+        if pv.error or not pv.hosts:
+            why = pv.error or f"the targets ({run.target or 'the playbook’s hosts'}) match no hosts"
+            return stop(f"Didn’t start: {why}.")
+        if not run.schedule_id and run.expected_hosts and sorted(pv.hosts) != sorted(run.expected_hosts):
+            return stop(f"Canceled: after pulling from git, the targets match {len(pv.hosts)} host(s) "
+                        f"({', '.join(pv.hosts[:10])}{'…' if len(pv.hosts) > 10 else ''}), not the "
+                        f"{len(run.expected_hosts)} you previewed. Nothing ran. Check the preview and run again.")
+        live: dict[str, dict[str, int]] = {h: dict.fromkeys(_COUNTERS, 0) for h in pv.hosts}
         self._live[run_id] = live
         final: dict[str, dict[str, int]] = {}
-
-        self.store.update(run_id, status="running", started_at=now(), commit_sha=git_commit(project))
+        self.store.update(run_id, expected_hosts=pv.hosts,
+                          commit_sha=(repo.last_commit or "")[:12] if not repo.local else git_commit(project),
+                          inventory_commit=None if not inv_repo else
+                          ((inv_repo.last_commit or "")[:12] if not inv_repo.local else None))
+        run = self.store.get(run_id)
+        if run_id in self._cancel:
+            log_file.write("[ansible-gui] Canceled before Ansible started.\n")
+            log_file.close()
+            self.store.update(run_id, status="canceled", finished_at=now(), error="Canceled before Ansible started.")
+            return
         try:
             prepared = self.prepare(run)
         except CredentialMissing as e:
-            log_file.close()
-            self.store.update(run_id, status="error", finished_at=now(), error=str(e))
-            return
+            return stop(str(e))
 
         def on_event(ev: dict) -> bool:
             if ev.get("stdout"):
@@ -177,7 +211,7 @@ class Executor:
                 private_data_dir=str(run_dir / "runner"),
                 project_dir=str(project),
                 playbook=run.playbook,
-                inventory=[str((project / s).resolve()) for s in self.opts.sources],
+                inventory=opts.sources,
                 limit=run.target or None,
                 tags=run.tags or None,
                 skip_tags=run.skip_tags or None,
@@ -249,8 +283,8 @@ class Executor:
             if "vault_password" in loaded:
                 path = _write_secret(p.workdir / "vault-pass", loaded["vault_password"][1]["password"])
                 p.cmdline += ["--vault-password-file", str(path)]
-            elif self.opts.vault_password_file:
-                p.cmdline += ["--vault-password-file", str(self.opts.vault_password_file)]
+            elif self.workspace.settings.vault_password_file:
+                p.cmdline += ["--vault-password-file", str(self.workspace.settings.vault_password_file)]
             if "become_password" in loaded:
                 p.cmdline.append("--ask-become-pass")
                 p.passwords[r"^BECOME password.*:\s*?$"] = loaded["become_password"][1]["password"]
@@ -265,7 +299,7 @@ class Executor:
 
     def _args(self, run, cmdline: list[str]) -> list[str]:
         args = []
-        for s in self.opts.sources:
+        for s in self.workspace.inventory_sources():
             args += ["-i", s]
         if run.target:
             args += ["--limit", run.target]

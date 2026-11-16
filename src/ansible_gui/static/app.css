@@ -446,3 +446,7 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .preview .actions + .preview-hosts { margin-top: var(--s1); }
 /* Long paths and IDs in prose wrap instead of widening the page. */
 .page p .mono, .page dd.mono, .banner .mono { overflow-wrap: anywhere; }
+/* Repositories: the repo a playbook comes from, quieter than the playbook itself. */
+.repo-prefix { color: var(--ink-muted); }
+.repo-url { display: block; white-space: normal; overflow-wrap: anywhere; font-weight: 400; }
+table.repos th[scope=row] { white-space: normal; }

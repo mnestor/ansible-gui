@@ -109,8 +109,7 @@ def test_missed_runs_are_recorded_once_not_caught_up(app, c):
     make(c)
     sched = app.state.schedules.all()[0]
     app.state.schedules.set_next(sched.id, datetime.now(timezone.utc) - timedelta(hours=5))
-    s2 = Scheduler(app.state.schedules, app.state.store, app.state.executor, app.state.creds,
-                   app.state.executor.opts, tick=3600)
+    s2 = Scheduler(app.state.schedules, app.state.store, app.state.executor, app.state.creds, tick=3600)
     s2.stop()
     runs = app.state.store.for_schedule(sched.id)
     assert len(runs) == 1 and runs[0].status == "skipped" and "Missed" in runs[0].error

@@ -24,6 +24,10 @@ from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
 from .inventory.model import Layer, Vaulted
 from .inventory.service import InventoryService
+from .repos import git as gitsync
+from .repos.store import Invalid as RepoInvalid
+from .repos.store import RepoStore
+from .repos.workspace import Workspace
 from .runs import playbooks
 from .runs.executor import Executor
 from .runs.schedules import Invalid as ScheduleInvalid
@@ -109,7 +113,7 @@ def status_label(run: Run) -> str:
 
 
 def rerun_url(run: Run, mode: str) -> str:
-    q = {"playbook": run.playbook, "target": run.target, "mode": mode,
+    q = {"playbook": f"{run.repo_id}:{run.playbook}", "target": run.target, "mode": mode,
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
          "verbosity": str(run.verbosity)}
     for kind in PER_RUN:
@@ -126,12 +130,14 @@ def rerun_hosts(run: Run, mode: str, hosts: list[str]) -> str:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
-    opts = settings.cli_options()
-    service = InventoryService(opts)
     store = RunStore(settings.data_dir)
     keys = Keys.load(settings.secret_key, settings.data_dir)
     creds = CredentialStore(settings.data_dir, keys.fernet)
-    executor = Executor(store, opts, creds, settings.data_dir, settings.ssh_config)
+    repos = RepoStore(settings.data_dir)
+    ws = Workspace(settings, repos, creds)
+    service = InventoryService(ws.inventory_opts)
+    ws.on_inventory_changed = service.reload
+    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config)
 
     app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None)
     # Starlette runs the last-added middleware first: the session must exist before the gate looks at it.
@@ -143,10 +149,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     schedules = ScheduleStore(settings.data_dir)
     notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
     executor.on_finish = notifier.run_finished
-    scheduler = Scheduler(schedules, store, executor, creds, opts, on_finish=notifier.run_finished)
+    scheduler = Scheduler(schedules, store, executor, creds, on_finish=notifier.run_finished)
     for run_id in store.interrupted_at_start:
         notifier.run_finished(run_id)
     app.state.notifier = notifier
+    app.state.workspace = ws
+    app.state.repos = repos
     app.state.schedules = schedules
     app.state.scheduler = scheduler
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -156,13 +164,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env = templates.env
     env.globals.update(
         present=present,
-        edit_url=lambda layer: edit_url(settings.edit_url, layer),
+        edit_url=lambda layer: edit_url((ws.inventory_repo().edit_url if ws.inventory_repo() else None)
+                                        or settings.edit_url, layer),
         host_result=host_result,
         status_tone=lambda s: STATUS.get(s, ("neutral", s))[0],
         run_tone=run_tone,
         status_label=status_label,
         rerun_url=rerun_url,
         rerun_hosts=rerun_hosts,
+        pb_label=lambda x: ws.label(x.repo_id, x.playbook),
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
@@ -216,7 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {
             "host_issues": ov.host_issues(recent, set(inv.hosts) if inv else None),
             "schedule_issues": ov.schedule_issues(schedules.all(), store),
-            "setup_issues": ov.setup_issues(settings, state, creds),
+            "setup_issues": ov.setup_issues(settings, state, creds, repos.all()),
             "run_issues": ov.run_issues(recent),
             "email_issue": ov.email_issue(store) if settings.smtp else None,
             "active": active, "live": {r.id: executor.live_stats(r.id) or {} for r in active},
@@ -270,7 +280,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- runs ------------------------------------------------------------------
     def known_playbooks() -> list[str]:
-        return playbooks.discover(settings.project_dir, settings.playbook_dir)
+        return [p.key for p in ws.discover()]
+
+    def preview_for(key: str, target: str) -> playbooks.Preview:
+        pb = ws.find(key) if key else None
+        return playbooks.preview(ws.run_opts(pb.repo), pb.path, target) if pb else playbooks.Preview()
 
     def read_form(src) -> dict:
         try:
@@ -290,13 +304,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def form_context(form: dict) -> dict:
         """What the launcher and the schedule form both need: playbooks, live host preview, credentials."""
-        books = known_playbooks()
-        if form["playbook"] not in books:
-            form["playbook"] = books[0] if len(books) == 1 else ""
-        pv = playbooks.preview(opts, form["playbook"], form["target"]) if form["playbook"] else playbooks.Preview()
+        books = ws.discover()
+        keys = [b.key for b in books]
+        form["playbook"] = ws.canonical(form["playbook"])
+        if form["playbook"] not in keys:
+            form["playbook"] = keys[0] if len(keys) == 1 else ""
+        pv = preview_for(form["playbook"], form["target"])
         inv = service.current().inventory
         return dict(
-            playbooks=books, form=form, preview=pv,
+            playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
+            playbook_repos=ws.playbook_repos(), inventory_repo=ws.inventory_repo(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
             env_secrets=creds.by_kind("env_secret"),
             hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [],
@@ -328,9 +345,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def run_preview(request: Request):
         form = read_form(request.query_params)
         form["diff"] = request.query_params.get("diff") == "1"
+        form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             form["playbook"] = ""
-        pv = playbooks.preview(opts, form["playbook"], form["target"]) if form["playbook"] else playbooks.Preview()
+        pv = preview_for(form["playbook"], form["target"])
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
@@ -340,9 +358,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         data = await request.form()
         form = read_form(data)
         form["diff"] = data.get("diff") == "1"
+        form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return launcher(request, form, "Choose one of the playbooks listed.", status=400)
-        pv = playbooks.preview(opts, form["playbook"], form["target"])
+        pv = preview_for(form["playbook"], form["target"])
         if pv.error or not pv.hosts:
             return launcher(request, form, "Nothing to run: the targets match no hosts.", status=400)
         expected = sorted(data.getlist("expected"))
@@ -363,7 +382,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
                                 for c in creds.by_kind("env_secret")]
         run = store.create(
-            playbook=form["playbook"], target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
+            playbook=ws.find(form["playbook"]).path, repo_id=ws.find(form["playbook"]).repo.id,
+            target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
         )
@@ -430,6 +450,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except OSError as e:
                 panel["error"] = str(e)
             try:
+                if not settings.project_dir:
+                    raise ValueError
                 rel = path.relative_to(settings.project_dir)
                 panel["rel"] = str(rel)
                 panel["edit"] = edit_url(settings.edit_url, Layer(kind="unknown", path=str(rel)))
@@ -501,6 +523,84 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(f"/credentials?deleted={cred.name if cred else ''}", status_code=303)
 
 
+    # --- repositories ------------------------------------------------------------
+    def repo_users(repo) -> list:
+        if repo.role != "playbooks":
+            return []
+        return [sc for sc in schedules.all() if sc.repo_id == repo.id]
+
+    @app.get("/repos", response_class=HTMLResponse)
+    def repos_page(request: Request):
+        q = request.query_params
+        return render(request, "repos.html", section="repos", repos=repos.all(),
+                      inventory=ws.inventory_repo(), playbook_repos=ws.playbook_repos(),
+                      ssh_keys={c.id: c for c in creds.by_kind("ssh_key")},
+                      saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"))
+
+    def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
+                  status: int = 200) -> HTMLResponse:
+        return render(request, "repo_form.html", status, section="repos", repo=repo, values=values or {},
+                      errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"),
+                      has_inventory=any(r.role == "inventory" and (not repo or r.id != repo.id) for r in repos.all()),
+                      used_by=repo_users(repo) if repo else [])
+
+    @app.get("/repos/new", response_class=HTMLResponse)
+    def new_repo(request: Request, role: str = ""):
+        has_inv = any(r.role == "inventory" for r in repos.all())
+        role = role if role in ("inventory", "playbooks") else ("playbooks" if has_inv else "inventory")
+        return repo_form(request, values={"role": role, "branch": "main",
+                                          "paths": "inventory/hosts.yml" if role == "inventory" else ""})
+
+    @app.get("/repos/{rid}", response_class=HTMLResponse)
+    def edit_repo(request: Request, rid: int):
+        repo = repos.get(rid)
+        if not repo:
+            return RedirectResponse("/repos", status_code=303)
+        return repo_form(request, repo, values=vars(repo))
+
+    async def save_repo(request: Request, rid: int | None):
+        data = await request.form()
+        form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url")}
+        if form["ssh_key_id"] and not (form["ssh_key_id"].isdigit() and (c := creds.get(int(form["ssh_key_id"])))
+                                       and c.kind == "ssh_key"):
+            return repo_form(request, repos.get(rid) if rid else None, form,
+                             {"ssh_key_id": "That SSH key no longer exists. Choose another."}, status=400)
+        try:
+            repo = repos.save(form, auth.display_name(auth.current_user(request)), rid)
+        except RepoInvalid as e:
+            return repo_form(request, repos.get(rid) if rid else None, form, e.errors, status=400)
+        ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
+        if repo.role == "inventory":
+            service.reload()
+        return RedirectResponse(f"/repos?saved={repo.id}", status_code=303)
+
+    @app.post("/repos")
+    async def create_repo(request: Request):
+        return await save_repo(request, None)
+
+    @app.post("/repos/{rid}")
+    async def update_repo(request: Request, rid: int):
+        return await save_repo(request, rid)
+
+    @app.post("/repos/{rid}/pull")
+    def pull_repo(rid: int):
+        repo = repos.get(rid)
+        if repo:
+            ws.sync(repo)
+            if repo.role == "inventory":
+                service.reload()
+        return RedirectResponse(f"/repos?pulled={rid}", status_code=303)
+
+    @app.post("/repos/{rid}/delete")
+    def delete_repo(rid: int):
+        repo = repos.get(rid)
+        if repo:
+            repos.delete(rid)
+            gitsync.remove_clone(repo)
+            if repo.role == "inventory":
+                service.reload()
+        return RedirectResponse(f"/repos?deleted={repo.name if repo else ''}", status_code=303)
+
     # --- schedules -------------------------------------------------------------
     tz_name = local_now().tzname()
 
@@ -517,7 +617,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       **form_context(form))
 
     def schedule_form(sched) -> dict:
-        form = {"name": sched.name, "cron": sched.cron, "playbook": sched.playbook, "target": sched.target,
+        form = {"name": sched.name, "cron": sched.cron, "playbook": f"{sched.repo_id}:{sched.playbook}",
+                "target": sched.target,
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
                 "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
@@ -567,17 +668,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sched = schedules.get(sid) if sid else None
         if sid and not sched:
             return RedirectResponse("/schedules", status_code=303)
+        form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
         for kind in PER_RUN:
             if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
                 return schedule_page(request, form, sched, status=400,
                                      form_error=f"That {KINDS[kind].lower()} no longer exists. Choose another.")
-        pv = playbooks.preview(opts, form["playbook"], form["target"])
+        pv = preview_for(form["playbook"], form["target"])
         if pv.error or not pv.hosts:
             return schedule_page(request, form, sched, status=400,
                                  form_error="The targets match no hosts, so every run would fail. Change them first.")
         form["enabled"] = sched.enabled if sched else True
+        chosen_pb = ws.find(form["playbook"])
+        form["playbook_path"], form["repo_id"] = chosen_pb.path, chosen_pb.repo.id
         try:
             saved = schedules.save(form, auth.display_name(auth.current_user(request)), sid)
         except ScheduleInvalid as e:

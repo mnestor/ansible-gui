@@ -4,7 +4,7 @@
 <a class="crumb" href="/runs">← All runs</a>
 <header class="subject">
   <p class="eyebrow">Run #{{ run.id }} · {{ run.mode }}</p>
-  <h1 class="identity mono">{{ run.playbook }}</h1>
+  <h1 class="identity mono">{{ pb_label(run) }}</h1>
   <div id="run-status">{% include "_run_status.html" %}</div>
   <div class="run-actions">
     {% if not run.finished %}

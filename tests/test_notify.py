@@ -125,9 +125,13 @@ def test_couldnt_start_and_smtp_failure_are_recorded(app, c):
     app.state.schedules.save({**vars_of(sched), "target": "nothing-matches"}, "t", sched.id)
     FakeSMTP.fail = "550 relay denied"
     run = app.state.scheduler.fire(app.state.schedules.get(sched.id))
+    for _ in range(100):
+        if app.state.store.get(run.id).finished:
+            break
+        time.sleep(0.1)
     app.state.notifier.wait_idle()
     run = app.state.store.get(run.id)
-    assert run.status == "error" and run.notified.startswith("Email failed: 550 relay denied")
+    assert run.status == "error" and "match no hosts" in run.error and run.notified.startswith("Email failed: 550 relay denied")
 
 
 def test_test_email_button(app, c):

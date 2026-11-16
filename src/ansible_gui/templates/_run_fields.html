@@ -4,14 +4,23 @@
     {% if playbooks | length <= 7 %}
       <div class="choices">
         {% for p in playbooks %}
-          <label class="choice"><input type="radio" name="playbook" value="{{ p }}" {% if p == form.playbook %}checked{% endif %} required> <span class="mono">{{ p }}</span></label>
+          <label class="choice"><input type="radio" name="playbook" value="{{ p.key }}" {% if p.key == form.playbook %}checked{% endif %} required>
+            <span class="mono">{% if multi_repo %}<span class="repo-prefix">{{ p.repo.name }} /</span> {% endif %}{{ p.path }}</span></label>
         {% endfor %}
       </div>
     {% else %}
-      <select class="input input-medium" name="playbook" required aria-label="Playbook">
+      <select class="input input-small" name="playbook" required aria-label="Playbook">
         <option value="" disabled {% if not form.playbook %}selected{% endif %}>Choose a playbook</option>
-        {% for p in playbooks %}<option value="{{ p }}" {% if p == form.playbook %}selected{% endif %}>{{ p }}</option>{% endfor %}
+        {% for repo in playbook_repos %}
+          <optgroup label="{{ repo.name }}">
+            {% for p in playbooks if p.repo.id == repo.id %}<option value="{{ p.key }}" {% if p.key == form.playbook %}selected{% endif %}>{{ p.path }}</option>{% endfor %}
+          </optgroup>
+        {% endfor %}
       </select>
+    {% endif %}
+    {% set git_repos = playbook_repos | rejectattr("local") | list %}
+    {% if git_repos or (inventory_repo and not inventory_repo.local) %}
+      <p class="help">Runs pull first{% if inventory_repo and not inventory_repo.local %}: inventory {{ inventory_repo.name }} at <span class="mono">{{ inventory_repo.short or "not cloned" }}</span>{% endif %}{% for r in git_repos %}, {{ r.name }} at <span class="mono">{{ r.short or "not cloned" }}</span>{% endfor %}. <a href="/repos">Repositories</a></p>
     {% endif %}
   </fieldset>
 

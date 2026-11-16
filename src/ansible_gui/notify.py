@@ -18,6 +18,7 @@ from email.message import EmailMessage
 from email.utils import make_msgid
 
 from .config import SmtpSettings
+from .repos.workspace import GIT_CANCELED
 from .runs.store import Run, RunStore, host_result
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,8 @@ def classify(run: Run) -> tuple[str, str]:
     results = {h: host_result(s) for h, s in run.host_stats.items()}
     bad = sorted(h for h, r in results.items() if r in ("failed", "unreachable"))
     if run.status == "error":
+        if (run.error or "").startswith(GIT_CANCELED):
+            return "error", run.error.split(". Nothing ran")[0]
         return "error", run.error or "Couldn’t start."
     if run.status == "skipped":
         return "skipped", run.error or "Skipped."
@@ -107,10 +110,15 @@ class Notifier:
 
     def _handle(self, run_id: int) -> None:
         run = self.runs.get(run_id)
-        if not run or not run.schedule_id or not self.smtp:
+        if not run or not self.smtp:
             return
-        sched = self.schedules.get(run.schedule_id)
+        git_failure = (run.error or "").startswith(GIT_CANCELED)
+        if not run.schedule_id and not git_failure:
+            return  # a run started by hand is being watched; a failed pull is mailed regardless
+        sched = self.schedules.get(run.schedule_id) if run.schedule_id else None
         mode = sched.notify if sched else "problems"
+        if git_failure and mode == "never":
+            mode = "problems"  # a failed pull means the repos are out of reach: always worth a mail
         kind, summary = classify(run)
         if kind == "canceled" or mode == "never":
             return

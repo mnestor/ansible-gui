@@ -17,8 +17,6 @@ from datetime import datetime, timezone
 from croniter import croniter
 
 from ..credentials.store import PER_RUN, CredentialStore, NAME_RE
-from ..inventory.cli import CliOptions
-from . import playbooks
 from .store import RunStore, now
 
 log = logging.getLogger(__name__)
@@ -94,6 +92,7 @@ class Schedule:
     updated_at: datetime
     updated_by: str
     notify: str = "problems"
+    repo_id: int = 0
     last_run: object | None = field(default=None)
 
     @property
@@ -107,8 +106,11 @@ class ScheduleStore:
         self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
-        if "notify" not in {r["name"] for r in self._db.execute("pragma table_info(schedules)")}:
+        have = {r["name"] for r in self._db.execute("pragma table_info(schedules)")}
+        if "notify" not in have:
             self._db.execute("alter table schedules add column notify text not null default 'problems'")
+        if "repo_id" not in have:
+            self._db.execute("alter table schedules add column repo_id integer not null default 0")
 
     def _row(self, r) -> Schedule:
         return Schedule(id=r["id"], name=r["name"], cron=r["cron"], enabled=bool(r["enabled"]), playbook=r["playbook"],
@@ -116,7 +118,7 @@ class ScheduleStore:
                         diff=bool(r["diff"]), verbosity=r["verbosity"], credentials=json.loads(r["credentials"]),
                         next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
                         updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
-                        notify=r["notify"])
+                        notify=r["notify"], repo_id=r["repo_id"])
 
     def all(self) -> list[Schedule]:
         return [self._row(r) for r in self._db.execute("select * from schedules order by lower(name)")]
@@ -143,18 +145,18 @@ class ScheduleStore:
         nxt = next_times(cron, 1)[0].astimezone(timezone.utc).isoformat(timespec="seconds") if enabled else None
         creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
         notify = form.get("notify") if form.get("notify") in ("problems", "always", "never") else "problems"
-        values = (name, cron, int(enabled), form["playbook"], form["target"], form["tags"], form["skip_tags"],
+        values = (name, cron, int(enabled), form.get("playbook_path", form.get("playbook")), form["target"], form["tags"], form["skip_tags"],
                   int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, notify,
-                  now(), user)
+                  form.get("repo_id", 0), now(), user)
         with self._lock:
             if sid:
                 self._db.execute("update schedules set name=?, cron=?, enabled=?, playbook=?, target=?, tags=?, skip_tags=?,"
-                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, updated_at=?, updated_by=?"
+                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, repo_id=?, updated_at=?, updated_by=?"
                                  " where id=?", (*values, sid))
             else:
                 cur = self._db.execute("insert into schedules (name, cron, enabled, playbook, target, tags, skip_tags,"
-                                       " check_mode, diff, verbosity, credentials, next_run_at, notify, updated_at, updated_by,"
-                                       " created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
+                                       " check_mode, diff, verbosity, credentials, next_run_at, notify, repo_id, updated_at,"
+                                       " updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
                 sid = cur.lastrowid
             self._db.commit()
         return self.get(sid)
@@ -183,13 +185,12 @@ class ScheduleStore:
 
 class Scheduler:
     def __init__(self, schedules: ScheduleStore, runs: RunStore, executor, creds: CredentialStore,
-                 opts: CliOptions, tick: float = 15.0, on_finish=None):
+                 tick: float = 15.0, on_finish=None):
         self.on_finish = on_finish or (lambda run_id: None)
         self.schedules = schedules
         self.runs = runs
         self.executor = executor
         self.creds = creds
-        self.opts = opts
         self.tick = tick
         self._stop = threading.Event()
         self._fire_lock = threading.Lock()
@@ -227,7 +228,7 @@ class Scheduler:
     def _record(self, s: Schedule, status: str, error: str, trigger: str | None = None):
         run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity, expected_hosts=[],
-                               trigger=trigger or f"schedule {s.name}", schedule_id=s.id)
+                               trigger=trigger or f"schedule {s.name}", schedule_id=s.id, repo_id=s.repo_id)
         self.runs.update(run.id, status=status, finished_at=now(), error=error)
         self.on_finish(run.id)
         return self.runs.get(run.id)
@@ -239,10 +240,6 @@ class Scheduler:
             busy = next((r for r in self.runs.for_schedule(s.id, 20) if not r.finished), None)
             if busy:
                 return self._record(s, "skipped", f"Skipped: run #{busy.id} of this schedule was still going.", trigger)
-            pv = playbooks.preview(self.opts, s.playbook, s.target)
-            if pv.error or not pv.hosts:
-                why = pv.error or f"the targets ({s.target or 'the playbook’s hosts'}) matched no hosts"
-                return self._record(s, "error", f"Didn’t start: {why}.", trigger)
             chosen: dict = {}
             for kind, cid in s.credentials.items():
                 cred = self.creds.get(cid)
@@ -254,7 +251,8 @@ class Scheduler:
                                     for c in self.creds.by_kind("env_secret")]
             run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                    check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity,
-                                   expected_hosts=pv.hosts, trigger=trigger, credentials=chosen, schedule_id=s.id)
+                                   expected_hosts=[], trigger=trigger, credentials=chosen, schedule_id=s.id,
+                                   repo_id=s.repo_id)
         self.executor.submit(run.id)
         return run
 

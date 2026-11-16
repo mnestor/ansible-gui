@@ -19,6 +19,7 @@
       <a href="/inventory" {% if section == "inventory" %}aria-current="page"{% endif %}>Inventory</a>
       <a href="/runs" {% if section == "runs" %}aria-current="page"{% endif %}>Runs{% if active_runs %} <span class="badge badge-neutral tabular" aria-label="{{ active_runs }} running">{{ active_runs }}</span>{% endif %}</a>
       <a href="/schedules" {% if section == "schedules" %}aria-current="page"{% endif %}>Schedules</a>
+      <a href="/repos" {% if section == "repos" %}aria-current="page"{% endif %}>Repositories</a>
       <a href="/credentials" {% if section == "credentials" %}aria-current="page"{% endif %}>Credentials</a>
     </nav>
     {% block topbar_extra %}{% endblock %}
