@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Not found{% endblock %}
+{% block main %}
+<a class="backlink" href="/inventory">← Inventory</a>
+<header class="subject">
+  <p class="eyebrow">{{ kind | capitalize }}</p>
+  <h1 class="identity mono">{{ name }}</h1>
+  <p class="subject-meta">There is no {{ kind }} with this name in the inventory. It may have been renamed or removed in the last reload. Find it in the list, or reload if you just pushed a change.</p>
+</header>
+{% endblock %}

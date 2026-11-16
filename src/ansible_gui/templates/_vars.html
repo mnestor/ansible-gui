@@ -1,0 +1,78 @@
+{# Variables table. Expects `vars` (list of ResolvedVar) and `empty_text`. #}
+{% set overriding = vars | selectattr("overridden") | list %}
+<div class="vars-toolbar">
+  <label class="visually-hidden" for="varfilter">Filter variables</label>
+  <input id="varfilter" class="input input-small" type="search" placeholder="Filter variables" autocomplete="off" enterkeyhint="search" data-varfilter {% if not vars %}disabled{% endif %}>
+  <p class="vars-count tabular">
+    {{ vars | length }} variable{{ "s" if vars | length != 1 }}{% if overriding %} · {{ overriding | length }} override{{ "s" if overriding | length == 1 }} another source{% endif %}
+  </p>
+</div>
+
+{% if not vars %}
+  <p class="empty">{{ empty_text }}</p>
+{% else %}
+<div class="table-region">
+<table class="vars">
+  <thead>
+    <tr><th scope="col">Variable</th><th scope="col">Value</th><th scope="col">Set in</th></tr>
+  </thead>
+  <tbody>
+  {% for v in vars %}
+    {% set shown = present(v.value) %}
+    <tr data-var="{{ v.name }}" {% if v.mismatch %}class="row-mismatch"{% endif %}>
+      <th scope="row" class="var-name mono">{{ v.name }}</th>
+      <td class="var-value" data-label="Value">
+        {% if shown.kind == "vaulted" %}
+          <span class="badge badge-neutral">vaulted</span>
+        {% elif shown.kind == "block" %}
+          {% if shown.lines > 6 %}
+            <details class="value-more"><summary class="mono">{{ shown.text.splitlines()[0] }} <span class="quiet">… {{ shown.lines }} lines</span></summary><pre class="well">{{ shown.text }}</pre></details>
+          {% else %}
+            <pre class="well">{{ shown.text }}</pre>
+          {% endif %}
+        {% else %}
+          <code class="value value-{{ shown.type }}">{{ shown.text }}</code>
+          {% if shown.type == "template" %}<span class="badge badge-neutral" title="Shown as written; Ansible renders it at run time">template</span>{% endif %}
+        {% endif %}
+        {% if v.mismatch %}<p class="mismatch-note">{{ v.mismatch }}</p>{% endif %}
+      </td>
+      <td class="var-source" data-label="Set in">
+        {% set url = edit_url(v.source) %}
+        {% if v.overridden %}
+          <details class="stack">
+            <summary>
+              <span class="source source-win mono">{{ v.source | where }}</span>
+              <span class="stack-count" title="Overrides {{ v.overridden | length }} lower-precedence source{{ 's' if v.overridden | length != 1 }}">overrides {{ v.overridden | length }}</span>
+              <span class="stack-why stack-why-summary">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %}</span>
+            </summary>
+            <ol class="stack-list">
+              <li class="stack-item stack-win">
+                {% if url %}<a class="mono" href="{{ url }}" target="_blank" rel="noopener">{{ v.source | where }}</a>{% else %}<span class="mono">{{ v.source | where }}</span>{% endif %}
+                <span class="stack-why">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %} · wins</span>
+              </li>
+              {% for s in v.overridden | reverse %}
+                {% set below = present(s.value) %}
+                {% set surl = edit_url(s.layer) %}
+                <li class="stack-item">
+                  {% if surl %}<a class="mono" href="{{ surl }}" target="_blank" rel="noopener">{{ s.layer | where }}</a>{% else %}<span class="mono">{{ s.layer | where }}</span>{% endif %}
+                  <span class="stack-why">{{ s.layer.label }}{% if s.layer.scope == "playbook" %}, playbook dir{% endif %}</span>
+                  <s class="stack-value mono">{% if below.kind == "vaulted" %}vaulted{% elif below.kind == "block" %}{{ below.text.splitlines()[0] }}{% if below.lines > 1 %} …{% endif %}{% else %}{{ below.text }}{% endif %}</s>
+                </li>
+              {% endfor %}
+            </ol>
+          </details>
+        {% else %}
+          {% if url %}<a class="source source-win mono" href="{{ url }}" target="_blank" rel="noopener">{{ v.source | where }}</a>{% else %}<span class="source {{ 'source-unknown' if not v.source.path else 'source-win' }} mono">{{ v.source | where }}</span>{% endif %}
+          <span class="stack-why">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %}</span>
+        {% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<div class="empty" data-varempty hidden>
+  <p>No variables match “<span data-varterm></span>”.</p>
+  <button type="button" class="btn btn-quiet" data-varclear>Clear filter</button>
+</div>
+{% endif %}

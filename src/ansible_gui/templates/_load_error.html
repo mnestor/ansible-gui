@@ -1,0 +1,14 @@
+<section class="panel-error" role="alert">
+  <h1 class="identity">Couldn’t load the inventory</h1>
+  <p>{{ state.error }} Fix the inventory or the settings below, then try again.</p>
+  <pre class="well">$ {{ state.error.command_line }}
+{{ state.error.stderr or "(no output)" }}</pre>
+  <dl class="facts">
+    <dt>Project directory</dt><dd class="mono">{{ settings.project_dir }}</dd>
+    <dt>Inventory</dt><dd class="mono">{{ settings.inventory | join(", ") }}</dd>
+    <dt>Playbook directory</dt><dd class="mono">{{ settings.playbook_dir }}</dd>
+  </dl>
+  <form method="post" action="/inventory/reload">
+    <button class="btn btn-primary" type="submit" data-busy-label="Trying…">Try again</button>
+  </form>
+</section>

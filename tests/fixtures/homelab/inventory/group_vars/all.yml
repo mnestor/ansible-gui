@@ -1,0 +1,3 @@
+# Site-wide defaults
+ntp_server: ntp.home.arpa
+timezone: UTC

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ host.name }}{% endblock %}
+{% block main %}
+<a class="backlink" href="/inventory">← All hosts</a>
+<header class="subject">
+  <p class="eyebrow">Host</p>
+  <h1 class="identity mono">{{ host.name }}</h1>
+  {% set addr = host.var("ansible_host") %}
+  {% set user = host.var("ansible_user") %}
+  <p class="subject-meta">
+    {% if addr and not addr.vaulted %}connects to <span class="mono">{{ addr.value }}</span>{% else %}connects to <span class="mono">{{ host.name }}</span>{% endif %}
+    {% if user and not user.vaulted %} as <span class="mono">{{ user.value }}</span>{% endif %}
+  </p>
+  <ul class="chips" aria-label="Groups">
+    {% for g in host.groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
+    {% if not host.groups %}<li class="quiet">In no group besides all</li>{% endif %}
+  </ul>
+</header>
+
+{% if host.mismatches %}
+  <div class="banner banner-changed" role="status">
+    <p><strong>{{ host.mismatches | length }} variable{{ "s" if host.mismatches | length != 1 }} disagree with Ansible.</strong>
+      The values shown are what Ansible resolves; the file shown for them may be wrong. Marked below.</p>
+  </div>
+{% endif %}
+
+<section class="section" aria-labelledby="vars-h">
+  <h2 id="vars-h" class="section-title">Variables</h2>
+  <p class="scope-note">Inventory variables only, in Ansible’s precedence order. Role defaults, <span class="mono">vars_files</span>, <span class="mono">set_fact</span> and gathered facts are not shown.</p>
+  {% with vars = host.vars, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
+    {% include "_vars.html" %}
+  {% endwith %}
+</section>
+
+<section class="section" aria-labelledby="prec-h">
+  <h2 id="prec-h" class="section-title">Group precedence</h2>
+  <p class="scope-note">Later groups win when two set the same variable.</p>
+  <ol class="precedence">
+    {% for g in host.all_groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
+  </ol>
+</section>
+{% endblock %}

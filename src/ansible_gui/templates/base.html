@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>{% block title %}Inventory{% endblock %} · ansible-gui</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@700&family=Red+Hat+Mono:wght@400;600&family=Red+Hat+Text:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body hx-boost="true" class="{% if selected %}has-selection{% endif %}">
+  <header class="topbar">
+    <a class="brand" href="/inventory">ansible-gui</a>
+    <nav class="topnav" aria-label="Sections">
+      <a href="/inventory" aria-current="page">Inventory</a>
+    </nav>
+    <div class="loadstate">
+      {% if inv %}
+        <span class="loadstate-text">
+          <span class="mono">{{ inv.sources | join(", ") }}</span>
+          · {{ inv.hosts | length }} hosts
+          · loaded <time datetime="{{ inv.loaded_at | stamp }}">{{ inv.loaded_at | clock }}</time>
+        </span>
+      {% endif %}
+      <form method="post" action="/inventory/reload" class="reload-form">
+        <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload inventory</button>
+      </form>
+    </div>
+  </header>
+
+  {% if state.stale %}
+    <div class="banner banner-danger" role="alert">
+      <p><strong>Reload failed at {{ state.error_at | clock }}.</strong>
+        Showing the inventory loaded at {{ inv.loaded_at | clock }}; it may be out of date.
+        {{ state.error }}</p>
+      <details>
+        <summary>Command and output</summary>
+        <pre class="well">$ {{ state.error.command_line }}
+{{ state.error.stderr or "(no output)" }}</pre>
+      </details>
+    </div>
+  {% elif reloaded and reloaded != "failed" %}
+    <div class="banner banner-ok" role="status"><p>Inventory reloaded at {{ reloaded }}.</p></div>
+  {% endif %}
+
+  {% if not inv %}
+    <main class="error-page" id="main">
+      {% include "_load_error.html" %}
+    </main>
+  {% else %}
+  <div class="layout">
+    <nav class="sidebar" aria-label="Hosts and groups">
+      <label class="visually-hidden" for="find">Find a host or group</label>
+      <input id="find" class="input" type="search" placeholder="Find a host or group" autocomplete="off" enterkeyhint="search" data-find>
+      <div class="segmented" role="group" aria-label="Show">
+        <button type="button" data-show="hosts" aria-pressed="{{ 'false' if selected and selected[0] == 'group' else 'true' }}">Hosts <span class="count">{{ inv.hosts | length }}</span></button>
+        <button type="button" data-show="groups" aria-pressed="{{ 'true' if selected and selected[0] == 'group' else 'false' }}">Groups <span class="count">{{ inv.groups | length }}</span></button>
+      </div>
+
+      <ul class="navlist" data-list="hosts" {% if selected and selected[0] == 'group' %}hidden{% endif %}>
+        {% for h in inv.hosts.values() %}
+          {% set addr = h.var("ansible_host") %}
+          <li data-name="{{ h.name }} {{ addr.value if addr and not addr.vaulted else '' }}">
+            <a href="/inventory/hosts/{{ h.name }}" {% if selected == ('host', h.name) %}aria-current="page"{% endif %}>
+              <span class="navlist-name mono">{{ h.name }}</span>
+              {% if addr and not addr.vaulted and addr.value != h.name %}<span class="navlist-meta mono">{{ addr.value }}</span>{% endif %}
+              {% if h.mismatches %}<span class="badge badge-changed" title="Source differs from Ansible for {{ h.mismatches | length }} variable(s)">{{ h.mismatches | length }} ≠</span>{% endif %}
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+
+      <ul class="navlist navtree" data-list="groups" {% if not (selected and selected[0] == 'group') %}hidden{% endif %}>
+        {% for level, g in inv.tree() %}
+          <li data-name="{{ g.name }}" style="--level: {{ level }}">
+            <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
+              <span class="navlist-name mono">{{ g.name }}</span>
+              <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+
+      <div class="navempty" data-empty hidden>
+        <p>Nothing matches “<span data-term></span>”.</p>
+        <button type="button" class="btn btn-quiet" data-clear>Clear search</button>
+      </div>
+    </nav>
+
+    <main class="content" id="main">
+      {% block main %}{% endblock %}
+    </main>
+  </div>
+  {% endif %}
+</body>
+</html>

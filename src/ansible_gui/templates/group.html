@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}{{ group.name }}{% endblock %}
+{% block main %}
+<a class="backlink" href="/inventory">← All groups</a>
+<header class="subject">
+  <p class="eyebrow">Group</p>
+  <h1 class="identity mono">{{ group.name }}</h1>
+  <p class="subject-meta tabular">
+    {{ group.all_hosts | length }} host{{ "s" if group.all_hosts | length != 1 }}
+    {% if group.all_hosts | length != group.hosts | length %}({{ group.hosts | length }} direct){% endif %}
+    · depth {{ group.depth }}{% if group.priority != 1 %} · priority {{ group.priority }}{% endif %}
+  </p>
+  {% if group.parents %}
+    <p class="subject-meta">Inside {% for p in group.parents %}<a class="chip mono" href="/inventory/groups/{{ p }}">{{ p }}</a>{% endfor %}</p>
+  {% endif %}
+  {% if group.children %}
+    <p class="subject-meta">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
+  {% endif %}
+</header>
+
+<section class="section" aria-labelledby="hosts-h">
+  <h2 id="hosts-h" class="section-title">Hosts</h2>
+  {% if group.all_hosts %}
+    <ul class="chips">
+      {% for h in group.all_hosts %}
+        <li><a class="chip mono {% if h not in group.hosts %}chip-inherited{% endif %}" href="/inventory/hosts/{{ h }}" {% if h not in group.hosts %}title="Member through a child group"{% endif %}>{{ h }}</a></li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="empty">No hosts in this group yet. Add them under <span class="mono">{{ group.name }}</span> in the inventory, then reload.</p>
+  {% endif %}
+</section>
+
+<section class="section" aria-labelledby="vars-h">
+  <h2 id="vars-h" class="section-title">Variables set on this group</h2>
+  <p class="scope-note">What this group itself sets. A host may still override them; open a host to see what it actually gets.</p>
+  {% with vars = group.vars, empty_text = "This group sets no variables of its own." %}
+    {% include "_vars.html" %}
+  {% endwith %}
+</section>
+{% endblock %}

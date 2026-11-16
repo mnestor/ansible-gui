@@ -1,0 +1,3 @@
+env: prod
+timezone: America/New_York
+deploy_hook: !unsafe "echo {{ not_a_template }}"
