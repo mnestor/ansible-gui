@@ -39,15 +39,17 @@
     <label class="label" for="ssh_key_id">Sign in with</label>
     <select id="ssh_key_id" class="input input-small" name="ssh_key_id" aria-describedby="key-help{% if errors.ssh_key_id %} key-err{% endif %}" {% if errors.ssh_key_id %}aria-invalid="true"{% endif %}>
       <option value="">Nothing: a public repository</option>
-      {% if git_tokens %}<optgroup label="Git tokens, for HTTPS URLs">
-        {% for k in git_tokens %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.username }}</option>{% endfor %}
-      </optgroup>{% endif %}
-      {% if ssh_keys %}<optgroup label="SSH keys, for SSH URLs">
-        {% for k in ssh_keys %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.fingerprint }}</option>{% endfor %}
-      </optgroup>{% endif %}
+      <optgroup label="Git tokens, for HTTPS URLs">
+        {% for k in git_tokens %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.username }}</option>
+        {% else %}<option disabled>None yet: add one under Credentials</option>{% endfor %}
+      </optgroup>
+      <optgroup label="SSH keys, for SSH URLs">
+        {% for k in ssh_keys %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.fingerprint }}</option>
+        {% else %}<option disabled>None yet: add one under Credentials</option>{% endfor %}
+      </optgroup>
       {% if repo and repo.ssh_key_id and repo.ssh_key_id not in (ssh_keys + git_tokens) | map(attribute="id") | list %}<option value="{{ repo.ssh_key_id }}" selected>Deleted: pick another</option>{% endif %}
     </select>
-    <p class="help" id="key-help">For a private repository: a <a href="/credentials/new?kind=git_token">git token</a> with read-only access for HTTPS, or an SSH deploy key. Stored encrypted in <a href="/credentials">Credentials</a>, used only to pull.</p>
+    <p class="help" id="key-help">For a private repository: a git token with read-only access for HTTPS, or an SSH deploy key. {% if not git_tokens %}<a href="/credentials/new?kind=git_token">Add a git token</a> first; this form isn’t saved when you leave.{% endif %} Stored encrypted in <a href="/credentials">Credentials</a>, used only to pull.</p>
     {% if errors.ssh_key_id %}<p class="field-error" id="key-err">{{ errors.ssh_key_id }}</p>{% endif %}
   </div>
 
