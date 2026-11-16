@@ -66,9 +66,19 @@ then asks Ansible again which hosts the targets match. If a pull fails, the run 
 touches a host, and an email goes out even for a run started by hand or a schedule set to never email.
 If the hosts changed since the preview, a run started by hand is canceled too; a schedule follows the inventory.
 
-Each run records the playbook commit and the inventory commit. Runs use the playbook repository as the
-working directory, so its `ansible.cfg`, roles and playbook-adjacent `group_vars/` apply. Those
-playbook-repo variables aren't shown on the inventory page, which reads the inventory repository only.
+Each run records the playbook commit and the inventory commit. A playbook repository has a **Run from**
+directory: Ansible starts there, so that directory's `ansible.cfg` applies, and the playbooks directly in it
+are listed under their full path from the repository root (`lxc/site.yml`, never just `site.yml`). To run
+two directories of one repository, add it twice with different Run from directories.
+
+Collections: after a pull, if the repository's requirements file changed, `ansible-galaxy collection install`
+puts its collections in `data/collections/<repo>/`, which runs and previews of that repository use. The file
+is the one named on the repository, or else the first of `collections/requirements.yml` and `requirements.yml`
+in the Run from directory, then at the top level. A failed install cancels the run like a failed pull. Roles
+listed in the file are not installed.
+
+The inventory repository can name several inventory files (`lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml`);
+Ansible merges them. Playbook-adjacent `group_vars/` and the playbook repository's own variables aren't shown on the inventory page, which reads the inventory repository only.
 
 ## How sources are worked out
 

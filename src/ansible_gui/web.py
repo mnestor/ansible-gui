@@ -294,7 +294,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def preview_for(key: str, target: str) -> playbooks.Preview:
         pb = ws.find(key) if key else None
-        return playbooks.preview(ws.run_opts(pb.repo), pb.path, target) if pb else playbooks.Preview()
+        return (playbooks.preview(ws.run_opts(pb.repo), str((pb.repo.path / pb.path).resolve()), target)
+                if pb else playbooks.Preview())
 
     def read_form(src) -> dict:
         try:
@@ -573,7 +574,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def save_repo(request: Request, rid: int | None):
         data = await request.form()
-        form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url")}
+        form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url",
+                                             "requirements")}
         if form["ssh_key_id"]:
             c = creds.get(int(form["ssh_key_id"])) if form["ssh_key_id"].isdigit() else None
             want = "git_token" if gitsync.is_https(form["url"].strip()) else "ssh_key"

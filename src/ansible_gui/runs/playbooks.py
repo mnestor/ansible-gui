@@ -58,7 +58,7 @@ def _ansible_playbook(opts: CliOptions, playbook: str, args: list[str]) -> str:
     if opts.vault_password_file:
         cmd += ["--vault-password-file", str(opts.vault_password_file)]
     cmd += [*args, playbook]
-    env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0"}
+    env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **opts.env}
     try:
         proc = subprocess.run(cmd, cwd=opts.project_dir, env=env, capture_output=True, text=True, timeout=opts.timeout)
     except FileNotFoundError:

@@ -22,6 +22,7 @@ create table if not exists repos (
   ssh_key_id integer,              -- a stored SSH key used as the deploy key, or null
   paths text not null default '',  -- inventory: comma-separated sources; playbooks: playbook directory
   edit_url text not null default '',
+  requirements text not null default '',
   last_fetch_at text,
   last_commit text,
   last_subject text,
@@ -52,6 +53,7 @@ class Repo:
     paths: str
     edit_url: str
     path: Path  # the working copy
+    requirements: str = ""  # collections requirements file in the repo; empty means look for the usual places
     last_fetch_at: datetime | None = None
     last_commit: str | None = None
     last_subject: str | None = None
@@ -67,6 +69,11 @@ class Repo:
         return self.paths.strip() or "."
 
     @property
+    def run_dir(self) -> Path:
+        """Where Ansible starts: its ansible.cfg applies, and its playbooks are listed."""
+        return self.path if self.local else (self.path / self.playbook_dir).resolve()
+
+    @property
     def short(self) -> str:
         return (self.last_commit or "")[:10]
 
@@ -78,12 +85,14 @@ class RepoStore:
         self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        if "requirements" not in {r["name"] for r in self._db.execute("pragma table_info(repos)")}:
+            self._db.execute("alter table repos add column requirements text not null default ''")
 
     def _row(self, r) -> Repo:
         dt = lambda v: datetime.fromisoformat(v) if v else None  # noqa: E731
         return Repo(id=r["id"], name=r["name"], role=r["role"], url=r["url"], branch=r["branch"],
                     ssh_key_id=r["ssh_key_id"], paths=r["paths"], edit_url=r["edit_url"],
-                    path=self.root / str(r["id"]), last_fetch_at=dt(r["last_fetch_at"]),
+                    path=self.root / str(r["id"]), requirements=r["requirements"], last_fetch_at=dt(r["last_fetch_at"]),
                     last_commit=r["last_commit"], last_subject=r["last_subject"], last_error=r["last_error"])
 
     def all(self) -> list[Repo]:
@@ -117,8 +126,9 @@ class RepoStore:
         branch = form.get("branch", "").strip() or "main"
         if not re.match(r"^[\w./-]+$", branch) or ".." in branch or branch.startswith("-"):
             errors["branch"] = "That isn’t a valid branch name."
-        paths = form.get("paths", "").strip()
-        bad = [p for p in paths.split(",") if p.strip().startswith(("/", "..")) or "/../" in p]
+        paths = form.get("paths", "").strip().strip("/")
+        reqs = form.get("requirements", "").strip()
+        bad = [p for p in [*paths.split(","), reqs] if p.strip().startswith(("/", "..")) or "/../" in p or p.strip().endswith("/..")]
         if bad:
             errors["paths"] = "Use paths inside the repository, like inventory/hosts.yml."
         if role == "inventory" and not paths:
@@ -127,20 +137,20 @@ class RepoStore:
             raise Invalid(errors)
         key = int(form["ssh_key_id"]) if str(form.get("ssh_key_id") or "").isdigit() else None
         edit = form.get("edit_url", "").strip()
-        values = (name, role, url, branch, key, paths, edit, now(), user)
+        values = (name, role, url, branch, key, paths, edit, reqs if role == "playbooks" else "", now(), user)
         with self._lock:
             if rid:
                 old = self.get(rid)
                 # A new URL or branch means a new clone; forget the old state.
                 reset = old and (old.url != url or old.branch != branch)
                 self._db.execute("update repos set name=?, role=?, url=?, branch=?, ssh_key_id=?, paths=?, edit_url=?,"
-                                 " updated_at=?, updated_by=? where id=?", (*values, rid))
+                                 " requirements=?, updated_at=?, updated_by=? where id=?", (*values, rid))
                 if reset:
                     self._db.execute("update repos set last_commit=null, last_subject=null, last_fetch_at=null,"
                                      " last_error=null where id=?", (rid,))
             else:
                 cur = self._db.execute("insert into repos (name, role, url, branch, ssh_key_id, paths, edit_url,"
-                                       " updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?)",
+                                       " requirements, updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
                                        (*values, now()))
                 rid = cur.lastrowid
             self._db.commit()

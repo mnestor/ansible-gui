@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -32,6 +32,7 @@ class CliOptions:
     vault_password_file: Path | None = None
     binary: str = "ansible-inventory"
     timeout: int = 120
+    env: dict = field(default_factory=dict)  # extra environment, e.g. ANSIBLE_COLLECTIONS_PATH
 
 
 def _run(opts: CliOptions, extra: list[str], env_extra: dict[str, str]) -> dict:
@@ -43,7 +44,7 @@ def _run(opts: CliOptions, extra: list[str], env_extra: dict[str, str]) -> dict:
         cmd += ["--vault-password-file", str(opts.vault_password_file)]
     cmd += ["--list", *extra]
 
-    env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **env_extra}
+    env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **opts.env, **env_extra}
     try:
         proc = subprocess.run(
             cmd,

@@ -242,3 +242,59 @@ def test_credential_kind_must_match_url(app, c, remotes):
     tok = app.state.creds.by_kind("git_token")[0]
     r = add(c, name="lab", role="playbooks", url="git@git.example.com:me/a.git", ssh_key_id=str(tok.id))
     assert r.status_code == 400 and "An SSH URL signs in with an SSH key" in r.text
+
+
+def build_collection(tmp_path: Path) -> Path:
+    """An offline collection, testns.testcol, with one role that prints a marker."""
+    subprocess.run(["ansible-galaxy", "collection", "init", "testns.testcol", "--init-path", str(tmp_path / "src")],
+                   check=True, capture_output=True)
+    root = tmp_path / "src" / "testns" / "testcol"
+    tasks = root / "roles" / "hello" / "tasks"
+    tasks.mkdir(parents=True)
+    (tasks / "main.yml").write_text("- ansible.builtin.debug:\n    msg: hello-from-collection\n")
+    subprocess.run(["ansible-galaxy", "collection", "build", str(root), "--output-path", str(tmp_path)],
+                   check=True, capture_output=True)
+    return next(tmp_path.glob("testns-testcol-*.tar.gz"))
+
+
+def test_run_dir_config_and_collections_apply(app, c, remotes, tmp_path):
+    tarball = build_collection(tmp_path)
+    play = ("- hosts: lab\n  gather_facts: false\n  roles:\n    - local_role\n    - testns.testcol.hello\n")
+    files = {
+        "lxc/ansible.cfg": "[defaults]\nroles_path = myroles\n",
+        "lxc/myroles/local_role/tasks/main.yml": "- ansible.builtin.debug:\n    msg: hello-from-run-dir-config\n",
+        "lxc/site.yml": play,
+        "lockdown/site.yml": FIXTURE / "site.yml",
+        "collections/requirements.yml": f"collections:\n  - name: {tarball}\n    type: file\n",
+    }
+    mono, _ = make_remote(tmp_path, "mono", files)
+    assert add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
+    assert add(c, name="lxc", role="playbooks", url=f"file://{mono}", paths="lxc").status_code == 303
+    assert add(c, name="lockdown", role="playbooks", url=f"file://{mono}", paths="lockdown").status_code == 303
+    lxc = next(r for r in app.state.repos.all() if r.name == "lxc")
+    assert not lxc.last_error, lxc.last_error
+    launcher = c.get("/runs/new").text
+    # the same file name from two places stays two playbooks, named by their full path
+    assert "lxc/site.yml" in launcher and "lockdown/site.yml" in launcher
+    r = c.post("/runs", data={"playbook": f"{lxc.id}:lxc/site.yml", "target": "box1", "mode": "check",
+                              "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
+    assert r.status_code == 303, r.text[-400:]
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful", log[-1500:]
+    assert "hello-from-run-dir-config" in log and "hello-from-collection" in log
+
+
+def test_broken_collections_file_cancels_the_run(app, c, remotes, tmp_path):
+    bad, _ = make_remote(tmp_path, "bad", {"site.yml": FIXTURE / "site.yml",
+                                            "requirements.yml": "collections:\n  - name: /nonexistent.tar.gz\n    type: file\n"})
+    add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml")
+    add(c, name="bad", role="playbooks", url=f"file://{bad}")
+    repo = next(r for r in app.state.repos.all() if r.name == "bad")
+    assert repo.last_error and "Installing its collections failed" in repo.last_error
+    r = c.post("/runs", data={"playbook": f"{repo.id}:site.yml", "target": "box1", "mode": "check",
+                              "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
+    assert r.status_code == 303
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.status == "error" and "collections failed" in run.error and "Nothing ran" in run.error
+    assert run.host_stats == {}

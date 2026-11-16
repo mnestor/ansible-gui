@@ -11,7 +11,7 @@
       <tr>
         <th scope="row" class="mono wrap">{% if r.local %}{{ r.name }}{% else %}<a href="/repos/{{ r.id }}">{{ r.name }}</a>{% endif %}
           <span class="phone-only help">{% if r.local %}local directory{% else %}{{ r.branch }}{% endif %}</span>
-          <span class="help mono repo-url">{{ r.path if r.local else r.url }}{% if not r.local %} · {{ r.branch }}{% endif %}</span>
+          <span class="help mono repo-url">{{ r.path if r.local else r.url }}{% if not r.local %} · {{ r.branch }}{% if r.role == "playbooks" and r.paths %} · runs from {{ r.paths }}{% endif %}{% endif %}</span>
           {% if r.last_error %}<p class="field-error">Last pull failed: {{ r.last_error }}{% if r.short %} Runs are canceled until it works; the clone stays at {{ r.short }}.{% endif %}</p>{% endif %}
         </th>
         <td class="wrap">{% if r.local %}<span class="help">read as it is on disk</span>

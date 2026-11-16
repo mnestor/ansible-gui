@@ -7,7 +7,11 @@ replaces the local directory for that role.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -79,8 +83,65 @@ class Workspace:
                           vault_password_file=self.settings.vault_password_file, binary=self.settings.inventory_binary)
 
     def run_opts(self, repo: Repo) -> CliOptions:
-        return CliOptions(project_dir=repo.path, sources=self.inventory_sources(), playbook_dir=repo.playbook_dir,
-                          vault_password_file=self.settings.vault_password_file)
+        """Ansible starts in the repo's run directory, so its ansible.cfg applies; playbooks are passed
+        as absolute paths and the inventory as absolute sources."""
+        return CliOptions(project_dir=repo.run_dir, sources=self.inventory_sources(), playbook_dir=repo.playbook_dir,
+                          vault_password_file=self.settings.vault_password_file, env=self.ansible_env(repo))
+
+    # --- collections ----------------------------------------------------------------
+    def collections_dir(self, repo: Repo) -> Path:
+        return self.settings.data_dir / "collections" / str(repo.id)
+
+    def ansible_env(self, repo: Repo) -> dict:
+        if repo.local:
+            return {}
+        base = ["~/.ansible/collections", "/usr/share/ansible/collections"]
+        return {"ANSIBLE_COLLECTIONS_PATH": ":".join([str(self.collections_dir(repo)), *base])}
+
+    def requirements_file(self, repo: Repo) -> Path | None:
+        if repo.requirements:
+            return repo.path / repo.requirements
+        run = Path(repo.playbook_dir)
+        for rel in (run / "collections/requirements.yml", run / "requirements.yml",
+                    Path("collections/requirements.yml"), Path("requirements.yml")):
+            if (repo.path / rel).is_file():
+                return repo.path / rel
+        return None
+
+    def install_collections(self, repo: Repo, log_line=lambda _l: None) -> str | None:
+        """Install the repo's collections when its requirements file changed. None, or why it failed."""
+        if repo.local:
+            return None
+        req = self.requirements_file(repo)
+        target = self.collections_dir(repo)
+        if req is None:
+            return None
+        if not req.is_file():
+            return f"its collections file {repo.requirements} isn’t in the repository"
+        digest = hashlib.sha256(req.read_bytes()).hexdigest()
+        stamp = target / ".requirements.sha256"
+        if stamp.is_file() and stamp.read_text().strip() == digest:
+            return None
+        log_line(f"[ansible-gui] Installing collections from {req.relative_to(repo.path)}")
+        fresh = target.with_name(target.name + ".new")
+        shutil.rmtree(fresh, ignore_errors=True)
+        fresh.mkdir(parents=True)
+        cmd = ["ansible-galaxy", "collection", "install", "-r", str(req), "-p", str(fresh), "--force"]
+        try:
+            proc = subprocess.run(cmd, cwd=repo.run_dir, capture_output=True, text=True, timeout=600,
+                                  env={**os.environ, "ANSIBLE_NOCOLOR": "1"})
+        except (OSError, subprocess.TimeoutExpired) as e:
+            shutil.rmtree(fresh, ignore_errors=True)
+            return f"installing its collections failed: {e}"
+        if proc.returncode != 0:
+            shutil.rmtree(fresh, ignore_errors=True)
+            lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
+            return f"installing its collections failed: {lines[-1] if lines else 'ansible-galaxy exited with ' + str(proc.returncode)}"
+        (fresh / ".requirements.sha256").write_text(digest)
+        shutil.rmtree(target, ignore_errors=True)
+        fresh.rename(target)
+        log_line(f"[ansible-gui] Collections installed")
+        return None
 
     def discover(self) -> list[Playbook]:
         out = []
@@ -139,6 +200,11 @@ class Workspace:
             self.repos.record_fetch(repo.id, None, None, str(e))
             return str(e)
         self.repos.record_fetch(repo.id, result.commit, result.subject, None)
+        if repo.role == "playbooks":
+            error = self.install_collections(repo)
+            if error:
+                self.repos.record_fetch(repo.id, None, None, error[0].upper() + error[1:] + ".")
+                return error
         if repo.role == "inventory" and result.changed:
             self.on_inventory_changed()
         return None
@@ -151,7 +217,7 @@ class Workspace:
             error = self.sync(r)
             if error:
                 log_line(f"[ansible-gui] Pull failed: {error}")
-                return f"{GIT_CANCELED} {r.name} from git: {error}. Nothing ran."
+                return f"{GIT_CANCELED} {r.name} from git: {error.rstrip('.')}. Nothing ran."
             fresh = self.repos.get(r.id)
             log_line(f"[ansible-gui] {r.name} is at {fresh.short} {fresh.last_subject or ''}")
         return None

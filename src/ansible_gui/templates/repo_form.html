@@ -54,9 +54,10 @@
   </div>
 
   {% if values.role == "inventory" %}
-    {{ text("paths", "Inventory files", "Inside the repository, comma-separated, like <span class=\"mono\">inventory/hosts.yml</span>. A directory works too.", "input-small", "inventory/hosts.yml") }}
+    {{ text("paths", "Inventory files", "Inside the repository, comma-separated, like <span class=\"mono\">lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml</span>. Ansible merges them, each with its own <span class=\"mono\">group_vars</span> and <span class=\"mono\">host_vars</span>. A directory works too.", "input-small", "inventory/hosts.yml") }}
   {% else %}
-    {{ text("paths", "Playbook directory", "Inside the repository. Empty means the top level. Only playbooks directly in it are listed.", "input-small", "playbooks", optional=True) }}
+    {{ text("paths", "Run from", "The directory Ansible starts in, inside the repository: its <span class=\"mono\">ansible.cfg</span> applies, and the playbooks directly in it are listed. Empty means the top level. To run two directories of one repository (say <span class=\"mono\">lxc</span> and <span class=\"mono\">lockdown</span>), add the repository twice.", "input-small", "lxc", optional=True) }}
+    {{ text("requirements", "Collections file", "Installed after each pull that changes it, before the run. Empty looks for <span class=\"mono\">collections/requirements.yml</span> or <span class=\"mono\">requirements.yml</span> in the run directory, then at the top level.", "input-small", "collections/requirements.yml", optional=True) }}
   {% endif %}
   {{ text("edit_url", "Open in git link", "For the inventory page’s links, with <span class=\"mono\">{path}</span> and <span class=\"mono\">{line}</span>, like <span class=\"mono\">https://git.example.com/me/ansible/src/branch/main/{path}#L{line}</span>.", "", optional=True) }}
 

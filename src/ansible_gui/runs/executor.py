@@ -141,13 +141,14 @@ class Executor:
             return stop(failed)
         repo = self.workspace.playbook_repo(run.repo_id)
         inv_repo = self.workspace.inventory_repo()
-        project = repo.path
+        project = repo.run_dir
         opts = self.workspace.run_opts(repo)
-        if not (project / run.playbook).is_file():
+        playbook = str((repo.path / run.playbook).resolve())
+        if not (repo.path / run.playbook).is_file():
             return stop(f"Didn’t start: {run.playbook} isn’t in {repo.name} any more.")
 
         # The files may have changed since the preview: ask Ansible again which hosts this run hits.
-        pv = playbooks.preview(opts, run.playbook, run.target)
+        pv = playbooks.preview(opts, playbook, run.target)
         if pv.error or not pv.hosts:
             why = pv.error or f"the targets ({run.target or 'the playbook’s hosts'}) match no hosts"
             return stop(f"Didn’t start: {why}.")
@@ -159,7 +160,7 @@ class Executor:
         self._live[run_id] = live
         final: dict[str, dict[str, int]] = {}
         self.store.update(run_id, expected_hosts=pv.hosts,
-                          commit_sha=(repo.last_commit or "")[:12] if not repo.local else git_commit(project),
+                          commit_sha=(repo.last_commit or "")[:12] if not repo.local else git_commit(repo.path),
                           inventory_commit=None if not inv_repo else
                           ((inv_repo.last_commit or "")[:12] if not inv_repo.local else None))
         run = self.store.get(run_id)
@@ -210,14 +211,14 @@ class Executor:
             result = ansible_runner.run(
                 private_data_dir=str(run_dir / "runner"),
                 project_dir=str(project),
-                playbook=run.playbook,
+                playbook=playbook,
                 inventory=opts.sources,
                 limit=run.target or None,
                 tags=run.tags or None,
                 skip_tags=run.skip_tags or None,
                 verbosity=run.verbosity or None,
                 cmdline=shlex.join(cmdline) if cmdline else None,
-                envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **prepared.env},
+                envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
                 passwords=prepared.passwords or None,
                 event_handler=on_event,
                 cancel_callback=lambda: run_id in self._cancel,
