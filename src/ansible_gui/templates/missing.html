@@ -1,7 +1,7 @@
 {% extends "inventory_base.html" %}
 {% block title %}Not found{% endblock %}
 {% block main %}
-<a class="backlink" href="/inventory">← Inventory</a>
+<a class="backlink" href="/inventory/{{ listing }}">← All {{ listing }}</a>
 <header class="subject">
   <p class="eyebrow">{{ kind | capitalize }}</p>
   <h1 class="identity mono">{{ name }}</h1>

@@ -30,7 +30,7 @@ Neutrals are cool slate (a server room, not paper). Tokens live in `src/ansible_
 
 ## Layout
 - Widths: `--rail` 180px (nav rail), `--rail-icon` 56px (icon rail), `--sidebar` 288px (inventory host list), `--icon` 20px.
-- Bands: phone under 640 (top bar and menu), tablet 640–899 (icon rail on every page), desktop 900 and up (full rail; icon rail on Inventory so the variables keep their width), wide 1200 and up (the Overview's side column).
+- Bands: phone under 640 (top bar and menu), tablet 640–899 (icon rail on every page), desktop 900 and up (full rail, or the icon rail on every page if collapsed), wide 1200 and up (the Overview's side column). The rail is the same width on every page: it never changes between sections.
 
 ## Radii
 - `--radius-control` 6px: buttons, inputs, badges.
@@ -82,7 +82,7 @@ Accent badges are only for the winning source. "Running", "default" and the acti
 - Lost-contact banner: `banner-warn`, `role="status"`, shown when a live poll fails and hidden on the next success.
 - Invalid field: 2px `--danger` outline, message below in `--danger` 600, linked with `aria-describedby`.
 
-- Nav rail: `--plane` column, sticky, full window height. Brand, the six sections (20px inline SVG icon, stroke `currentColor`, plus label), then the signed-in name and Sign out at the bottom. Items 36px (44px on touch), `--ink-muted` text, hover tint, current as Selected. The Runs count is a neutral badge, read as hidden text ("2 running").
+- Nav rail: `--plane` column, sticky, full window height. Brand, the sections (Overview, Hosts, Groups, Runs, Schedules, Repositories, Credentials; 20px inline SVG icon, stroke `currentColor`, plus label), then the signed-in name, Sign out and Collapse at the bottom. Collapse switches every page to the icon rail and is remembered per browser. Hosts and Groups each open the inventory with that one list in the second column; there is no Hosts/Groups switch inside the page. Items 36px (44px on touch), `--ink-muted` text, hover tint, current as Selected. The Runs count is a neutral badge, read as hidden text ("2 running").
 - Icon rail: the same rail at 56px. Labels are visually hidden; a tooltip (`--well`, 13px 600, 6px radius) shows on hover and keyboard focus. The Runs count overlays the icon as a 16px block, `--plane` text on `--ink-muted`. Brand becomes an "a" monogram.
 - Phone menu: a sticky `--plane` top bar with the brand and a `<details>` Menu button (secondary). A neutral 8px dot on it when runs are active. The sheet overlays the page, 44px items at 15px; Escape and a tap outside close it.
 - Skip link: first focusable element, hidden until focused, `--well` background.

@@ -8,25 +8,27 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@700&family=Red+Hat+Mono:wght@400;600&family=Red+Hat+Text:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css">
+  <script>try { if (localStorage.getItem("rail") === "icon") document.documentElement.dataset.rail = "icon"; } catch (e) {}</script>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body hx-boost="true" class="{% block bodyclass %}{% endblock %}">
 {% set show_nav = show_nav if show_nav is defined else True %}
-{% set icon_rail = section == "inventory" %}
 {% macro icon(name) -%}
 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
 {%- if name == "home" %}<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>
-{%- elif name == "inventory" %}<rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h.01M8 17h.01"/>
+{%- elif name == "groups" %}<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>
+{%- elif name == "hosts" %}<rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h.01M8 17h.01"/>
 {%- elif name == "runs" %}<path d="M7 5l12 7-12 7z"/>
 {%- elif name == "schedules" %}<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>
 {%- elif name == "repos" %}<circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 7v10"/><path d="M17 10c0 4-10 2-10 7"/>
 {%- elif name == "credentials" %}<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M17 6l3 3"/>
+{%- elif name == "collapse" %}<path d="M15 6l-6 6 6 6"/>
 {%- elif name == "signout" %}<path d="M14 4h5v16h-5"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>
 {%- endif %}</svg>
 {%- endmacro %}
 {% macro nav_links() %}
-  {% set items = [("home", "/", "Overview"), ("inventory", "/inventory", "Inventory"), ("runs", "/runs", "Runs"),
+  {% set items = [("home", "/", "Overview"), ("hosts", "/inventory/hosts", "Hosts"), ("groups", "/inventory/groups", "Groups"), ("runs", "/runs", "Runs"),
                   ("schedules", "/schedules", "Schedules"), ("repos", "/repos", "Repositories"), ("credentials", "/credentials", "Credentials")] %}
   <nav class="navrail" aria-label="Sections">
     {% for key, href, label in items %}
@@ -50,7 +52,7 @@
   {% endif %}
 {% endmacro %}
   <a class="skip-link" href="#main" hx-boost="false">Skip to content</a>
-  <div class="app {% if icon_rail %}app-icon-rail{% endif %} {% if not show_nav %}app-no-nav{% endif %}">
+  <div class="app {% if not show_nav %}app-no-nav{% endif %}">
     <header class="topbar">
       <a class="brand" href="/">ansible-gui</a>
       {% if show_nav %}
@@ -64,10 +66,15 @@
       {% endif %}
     </header>
     {% if show_nav %}
-    <div class="rail">
+    <div class="rail" id="rail">
       <a class="brand rail-brand" href="/"><span class="rail-label">ansible-gui</span><span class="rail-mono" aria-hidden="true">a</span></a>
       {{ nav_links() }}
-      {{ account() }}
+      <div class="rail-foot">
+        {{ account() }}
+        <button class="rail-item rail-toggle" type="button" data-rail-toggle aria-controls="rail">
+          {{ icon("collapse") }}<span class="rail-label">Collapse</span><span class="rail-tip" aria-hidden="true">Expand</span>
+        </button>
+      </div>
     </div>
     {% endif %}
     <div class="app-main">

@@ -75,3 +75,13 @@ def test_reload_redirects_with_flash():
     assert r.status_code == 403  # cross-site write refused outright
     r = c.post("/inventory/reload", headers={"referer": "http://testserver/runs"}, follow_redirects=False)
     assert r.headers["location"].startswith("/inventory?reloaded=")
+
+
+def test_rail_lists_hosts_and_groups_and_the_second_rail_shows_one_list():
+    c = client()
+    page = c.get("/inventory/groups/web").text
+    assert 'href="/inventory/groups" aria-current="page"' in page
+    assert 'data-list="groups"' in page and 'data-list="hosts"' not in page and "data-show" not in page
+    page = c.get("/inventory/hosts").text
+    assert 'href="/inventory/hosts" aria-current="page"' in page and 'data-list="groups"' not in page
+    assert "data-rail-toggle" in page

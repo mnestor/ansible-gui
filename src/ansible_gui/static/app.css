@@ -469,26 +469,27 @@ table.repos th[scope=row] { white-space: normal; }
   .rail { position: sticky; top: 0; height: 100dvh; z-index: 10;
     display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4) 0; background: var(--plane); }
   .rail-brand { padding: var(--s2) calc(3px + var(--s3)); }
-  .rail .account { margin-top: auto; display: flex; flex-direction: column; gap: var(--s1); }
+  .rail-foot { margin-top: auto; display: flex; flex-direction: column; gap: var(--s1); }
+  .rail .account { display: flex; flex-direction: column; gap: var(--s1); }
   .rail .account-name { padding-inline: calc(3px + var(--s3)); color: var(--ink-muted); font-weight: 600;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 @media (min-width: 640px) and (max-height: 480px) { .rail { overflow-y: auto; } }
 @media (min-width: 900px) {
-  .app:not(.app-icon-rail):not(.app-no-nav) { grid-template-columns: var(--rail) minmax(0, 1fr); }
+  :root:not([data-rail="icon"]) .app:not(.app-no-nav) { grid-template-columns: var(--rail) minmax(0, 1fr); }
 }
-/* Icon rail: on Inventory, so the host list and the variables keep their width */
+/* Icon rail: when collapsed (remembered per browser), the same on every page */
 @media (min-width: 640px) {
-  .app-icon-rail .rail .rail-label, .app-icon-rail .rail .account-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .app-icon-rail .rail .rail-mono { display: inline; font-size: var(--fs-lg); }
-  .app-icon-rail .rail .rail-brand { padding: var(--s2) 0; text-align: center; }
-  .app-icon-rail .rail .rail-item { justify-content: center; padding: var(--s3) 0; min-height: 44px; }
-  .app-icon-rail .rail .rail-count { position: absolute; top: var(--s1); right: var(--s1); margin: 0; min-width: 16px; height: 16px;
+  [data-rail="icon"] .rail .rail-label, [data-rail="icon"] .rail .account-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  [data-rail="icon"] .rail .rail-mono { display: inline; font-size: var(--fs-lg); }
+  [data-rail="icon"] .rail .rail-brand { padding: var(--s2) 0; text-align: center; }
+  [data-rail="icon"] .rail .rail-item { justify-content: center; padding: var(--s3) 0; min-height: 44px; }
+  [data-rail="icon"] .rail .rail-count { position: absolute; top: var(--s1); right: var(--s1); margin: 0; min-width: 16px; height: 16px;
     padding: 0 var(--s1); line-height: 16px; text-align: center; background: var(--ink-muted); color: var(--plane); }
-  .app-icon-rail .rail .rail-tip { position: absolute; left: calc(100% + var(--s2)); top: 50%; transform: translateY(-50%); z-index: 30;
+  [data-rail="icon"] .rail .rail-tip { position: absolute; left: calc(100% + var(--s2)); top: 50%; transform: translateY(-50%); z-index: 30;
     padding: var(--s1) var(--s2); background: var(--well); color: var(--ink); white-space: nowrap;
     font: 600 var(--fs-sm)/1.2 var(--font-text); border-radius: var(--radius-control); pointer-events: none; }
-  .app-icon-rail .rail .rail-item:focus-visible .rail-tip { display: block; }
+  [data-rail="icon"] .rail .rail-item:focus-visible .rail-tip { display: block; }
 }
 /* ...and on every page between 640 and 899 */
 @media (min-width: 640px) and (max-width: 899px) {
@@ -503,7 +504,7 @@ table.repos th[scope=row] { white-space: normal; }
     font: 600 var(--fs-sm)/1.2 var(--font-text); border-radius: var(--radius-control); pointer-events: none; }
   .rail .rail-item:focus-visible .rail-tip { display: block; }
 }
-@media (min-width: 640px) and (hover: hover) { .app-icon-rail .rail-item:hover .rail-tip { display: block; } }
+@media (min-width: 640px) and (hover: hover) { [data-rail="icon"] .rail-item:hover .rail-tip { display: block; } }
 @media (min-width: 640px) and (max-width: 899px) and (hover: hover) { .rail .rail-item:hover .rail-tip { display: block; } }
 
 /* Phone: a top bar with a disclosure menu */
@@ -534,3 +535,9 @@ table.repos th[scope=row] { white-space: normal; }
 .app-main { display: flex; flex-direction: column; min-height: 100dvh; }
 .app-main > .layout { flex: 1; }
 @media (max-width: 639px) { .app-main { min-height: calc(100dvh - 68px); } }
+
+/* Collapse toggle: the chevron points the way the rail will move */
+.rail-toggle .icon { transition: transform var(--ease); }
+[data-rail="icon"] .rail-toggle .icon { transform: rotate(180deg); }
+@media (min-width: 640px) and (max-width: 899px) { .rail-toggle { display: none; } }
+@media (max-width: 639px) { .rail-toggle { display: none; } }

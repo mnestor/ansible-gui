@@ -37,15 +37,24 @@
     </main>
   {% else %}
   <div class="layout">
-    <nav class="sidebar" aria-label="Hosts and groups">
-      <label class="visually-hidden" for="find">Find a host or group</label>
-      <input id="find" class="input" type="search" placeholder="Find a host or group" autocomplete="off" enterkeyhint="search" data-find>
-      <div class="segmented" role="group" aria-label="Show">
-        <button type="button" data-show="hosts" aria-pressed="{{ 'false' if selected and selected[0] == 'group' else 'true' }}">Hosts <span class="count">{{ inv.hosts | length }}</span></button>
-        <button type="button" data-show="groups" aria-pressed="{{ 'true' if selected and selected[0] == 'group' else 'false' }}">Groups <span class="count">{{ inv.groups | length }}</span></button>
-      </div>
+    <nav class="sidebar" aria-label="{{ "Groups" if listing == "groups" else "Hosts" }}">
+      {% set noun = "group" if listing == "groups" else "host" %}
+      <label class="visually-hidden" for="find">Find a {{ noun }}</label>
+      <input id="find" class="input" type="search" placeholder="Find a {{ noun }}" autocomplete="off" enterkeyhint="search" data-find>
 
-      <ul class="navlist" data-list="hosts" {% if selected and selected[0] == 'group' %}hidden{% endif %}>
+      {% if listing == "groups" %}
+      <ul class="navlist navtree" data-list="groups">
+        {% for level, g in inv.tree() %}
+          <li data-name="{{ g.name }}" style="--level: {{ level }}">
+            <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
+              <span class="navlist-name mono">{{ g.name }}</span>
+              <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
+            </a>
+          </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <ul class="navlist" data-list="hosts">
         {% for h in inv.hosts.values() %}
           {% set addr = h.var("ansible_host") %}
           {% set last = last_results.get(h.name) %}
@@ -59,17 +68,7 @@
           </li>
         {% endfor %}
       </ul>
-
-      <ul class="navlist navtree" data-list="groups" {% if not (selected and selected[0] == 'group') %}hidden{% endif %}>
-        {% for level, g in inv.tree() %}
-          <li data-name="{{ g.name }}" style="--level: {{ level }}">
-            <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
-              <span class="navlist-name mono">{{ g.name }}</span>
-              <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
+      {% endif %}
 
       <div class="navempty" data-empty hidden>
         <p>Nothing matches “<span data-term></span>”.</p>

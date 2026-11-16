@@ -152,6 +152,24 @@
   });
   document.addEventListener("htmx:afterSettle", () => setup(document));
 
+  // Rail width: one choice for every page, remembered in this browser.
+  function railState() {
+    const icon = document.documentElement.dataset.rail === "icon";
+    document.querySelectorAll("[data-rail-toggle]").forEach((b) => {
+      b.querySelector(".rail-label").textContent = icon ? "Expand" : "Collapse";
+    });
+  }
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-rail-toggle]")) return;
+    const icon = document.documentElement.dataset.rail !== "icon";
+    if (icon) document.documentElement.dataset.rail = "icon";
+    else delete document.documentElement.dataset.rail;
+    try { localStorage.setItem("rail", icon ? "icon" : "full"); } catch (err) {}
+    railState();
+  });
+  document.addEventListener("htmx:afterSettle", railState);
+  document.addEventListener("DOMContentLoaded", railState);
+
   // Phone menu: a <details> that works without script; this adds Escape and tap-outside to close.
   document.addEventListener("keydown", (e) => {
     const open = document.querySelector("[data-menu][open]");

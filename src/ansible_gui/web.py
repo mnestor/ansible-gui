@@ -206,11 +206,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return PlainTextResponse("ok")
 
     # --- inventory -------------------------------------------------------------
-    def inventory_page(request: Request, template: str, status: int = 200, **ctx: Any) -> HTMLResponse:
+    def inventory_page(request: Request, template: str, status: int = 200, listing: str = "hosts",
+                       **ctx: Any) -> HTMLResponse:
         state = service.current()
         return render(
             request, template, status,
-            section="inventory",
+            section=listing, listing=listing,
             state=state,
             inv=state.inventory,
             reloaded=request.query_params.get("reloaded"),
@@ -252,8 +253,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return resp
 
     @app.get("/inventory", response_class=HTMLResponse)
+    @app.get("/inventory/hosts", response_class=HTMLResponse)
     def overview(request: Request):
         return inventory_page(request, "overview.html", selected=None)
+
+    @app.get("/inventory/groups", response_class=HTMLResponse)
+    def groups_overview(request: Request):
+        return inventory_page(request, "overview.html", listing="groups", selected=None)
 
     @app.get("/inventory/hosts/{name}", response_class=HTMLResponse)
     def host(request: Request, name: str):
@@ -268,8 +274,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv = service.current().inventory
         g = inv.groups.get(name) if inv else None
         if inv and not g:
-            return inventory_page(request, "missing.html", status=404, kind="group", name=name, selected=None)
-        return inventory_page(request, "group.html", group=g, selected=("group", name))
+            return inventory_page(request, "missing.html", status=404, listing="groups", kind="group", name=name,
+                                  selected=None)
+        return inventory_page(request, "group.html", listing="groups", group=g, selected=("group", name))
 
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:
