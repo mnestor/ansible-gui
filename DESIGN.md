@@ -11,7 +11,7 @@ World: inventory files, rack labels, terminal logs. The signature element comes 
 - Figures (counts, durations, times) use the text face with `tabular-nums`, not mono.
 
 ## Color
-Neutrals are cool slate (a server room, not paper). Tokens live in `app/static/app.css` under `:root` and `[data-theme=dark]` / `prefers-color-scheme: dark`.
+Neutrals are cool slate (a server room, not paper). Tokens live in `src/ansible_gui/static/app.css` under `:root` and `[data-theme=dark]` / `prefers-color-scheme: dark`.
 
 | Token | Light | Dark | Why |
 |---|---|---|---|
@@ -28,6 +28,10 @@ Neutrals are cool slate (a server room, not paper). Tokens live in `app/static/a
 | `--changed` | `#7a5300` | `#d6a02a` | Ansible "changed", and attribution warnings |
 | `--unreachable` | `#9c2367` | `#f075b5` | Ansible "unreachable" |
 
+## Layout
+- Widths: `--rail` 180px (nav rail), `--rail-icon` 56px (icon rail), `--sidebar` 288px (inventory host list), `--icon` 20px.
+- Bands: phone under 640 (top bar and menu), tablet 640–899 (icon rail on every page), desktop 900 and up (full rail; icon rail on Inventory so the variables keep their width), wide 1200 and up (the Overview's side column).
+
 ## Radii
 - `--radius-control` 6px: buttons, inputs, badges.
 - 0 on panes and tables: planes meet edge to edge.
@@ -41,9 +45,9 @@ Neutrals are cool slate (a server room, not paper). Tokens live in `app/static/a
 
 ## States
 - Hover: background `color-mix(in oklab, var(--ink) 6%, transparent)` on rows and quiet buttons; primary button `color-mix(in oklab, var(--accent) 88%, black)`.
-- Focus: 2px outline `var(--accent)`, offset 2px, on every focusable element (`:focus-visible`).
+- Focus: 2px outline `var(--accent)`, offset 2px, on every focusable element (`:focus-visible`). Exception: rail items take an inset ring (offset -2px), since an outside ring is clipped at the window edge.
 - Disabled: 45% opacity, `cursor: not-allowed`.
-- Selected (sidebar item): `--well` background + 3px left bar in `--accent`.
+- Selected (sidebar or rail item): `--well` background + 3px left bar in `--accent`, with `aria-current="page"`.
 
 ## Status and badges
 Text in the status colour on a tint of 12% status over canvas (`color-mix(in oklab, var(--status) 12%, var(--canvas))`).
@@ -77,6 +81,12 @@ Accent badges are only for the winning source. "Running", "default" and the acti
 - Side block: `--plane` panel, 6px radius, for the Overview's side column (running, next 24 hours, counts).
 - Lost-contact banner: `banner-warn`, `role="status"`, shown when a live poll fails and hidden on the next success.
 - Invalid field: 2px `--danger` outline, message below in `--danger` 600, linked with `aria-describedby`.
+
+- Nav rail: `--plane` column, sticky, full window height. Brand, the six sections (20px inline SVG icon, stroke `currentColor`, plus label), then the signed-in name and Sign out at the bottom. Items 36px (44px on touch), `--ink-muted` text, hover tint, current as Selected. The Runs count is a neutral badge, read as hidden text ("2 running").
+- Icon rail: the same rail at 56px. Labels are visually hidden; a tooltip (`--well`, 13px 600, 6px radius) shows on hover and keyboard focus. The Runs count overlays the icon as a 16px block, `--plane` text on `--ink-muted`. Brand becomes an "a" monogram.
+- Phone menu: a sticky `--plane` top bar with the brand and a `<details>` Menu button (secondary). A neutral 8px dot on it when runs are active. The sheet overlays the page, 44px items at 15px; Escape and a tap outside close it.
+- Skip link: first focusable element, hidden until focused, `--well` background.
+- Inventory status strip: above the two panes, `--ink-muted` text: sources (mono), host count, load time, and Reload inventory (secondary) at the end. Hidden when the inventory didn't load; the error panel offers Try again.
 
 ## Voice
 - Plain and specific, sentence case, verbs on buttons ("Reload inventory", "Open in git"). Errors say what failed, the command, and what to do next.

@@ -152,6 +152,25 @@
   });
   document.addEventListener("htmx:afterSettle", () => setup(document));
 
+  // Phone menu: a <details> that works without script; this adds Escape and tap-outside to close.
+  document.addEventListener("keydown", (e) => {
+    const open = document.querySelector("[data-menu][open]");
+    if (e.key === "Escape" && open) {
+      open.open = false;
+      open.querySelector("summary").focus();
+    }
+  });
+  document.addEventListener("pointerdown", (e) => {
+    const open = document.querySelector("[data-menu][open]");
+    if (open && !open.contains(e.target)) open.open = false;
+  });
+  // After a boosted page change, start keyboard and screen-reader users at the content, not the top.
+  document.addEventListener("htmx:afterSettle", (e) => {
+    if (!e.detail.boosted) return;
+    const main = document.getElementById("main");
+    if (main && document.activeElement === document.body) main.focus({ preventScroll: true });
+  });
+
   // A live poll that fails (server restarting, network gone) says so instead of freezing silently.
   function pollTrouble(e, lost) {
     const id = e.detail.elt && e.detail.elt.id;

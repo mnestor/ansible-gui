@@ -99,7 +99,7 @@ def install(app: FastAPI, settings: Settings, templates) -> None:
 
     def problem(request: Request, title: str, detail: str, status: int, provider_logout: str | None = None) -> HTMLResponse:
         return templates.TemplateResponse(request, "auth_problem.html",
-                                          {"title": title, "detail": detail, "section": None, "user": None,
+                                          {"title": title, "detail": detail, "section": None, "user": None, "show_nav": False,
                                            "active_runs": 0, "settings": settings, "status": status,
                                            "provider_logout": provider_logout}, status_code=status)
 

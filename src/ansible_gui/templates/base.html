@@ -12,24 +12,67 @@
   <script src="/static/app.js" defer></script>
 </head>
 <body hx-boost="true" class="{% block bodyclass %}{% endblock %}">
-  <header class="topbar">
-    <a class="brand" href="/">ansible-gui</a>
-    <nav class="topnav" aria-label="Sections">
-      <a href="/" {% if section == "home" %}aria-current="page"{% endif %}>Overview</a>
-      <a href="/inventory" {% if section == "inventory" %}aria-current="page"{% endif %}>Inventory</a>
-      <a href="/runs" {% if section == "runs" %}aria-current="page"{% endif %}>Runs{% if active_runs %} <span class="badge badge-neutral tabular" aria-label="{{ active_runs }} running">{{ active_runs }}</span>{% endif %}</a>
-      <a href="/schedules" {% if section == "schedules" %}aria-current="page"{% endif %}>Schedules</a>
-      <a href="/repos" {% if section == "repos" %}aria-current="page"{% endif %}>Repositories</a>
-      <a href="/credentials" {% if section == "credentials" %}aria-current="page"{% endif %}>Credentials</a>
-    </nav>
-    {% block topbar_extra %}{% endblock %}
-    {% if user %}
-      <form class="whoami" method="post" action="/auth/logout" hx-boost="false">
-        <span class="whoami-name" title="{{ user.email or '' }}">{{ user.username or user.name or user.email }}</span>
-        <button class="btn btn-quiet" type="submit">Sign out</button>
-      </form>
+{% set show_nav = show_nav if show_nav is defined else True %}
+{% set icon_rail = section == "inventory" %}
+{% macro icon(name) -%}
+<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+{%- if name == "home" %}<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>
+{%- elif name == "inventory" %}<rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h.01M8 17h.01"/>
+{%- elif name == "runs" %}<path d="M7 5l12 7-12 7z"/>
+{%- elif name == "schedules" %}<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>
+{%- elif name == "repos" %}<circle cx="7" cy="5" r="2"/><circle cx="7" cy="19" r="2"/><circle cx="17" cy="8" r="2"/><path d="M7 7v10"/><path d="M17 10c0 4-10 2-10 7"/>
+{%- elif name == "credentials" %}<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9"/><path d="M17 6l3 3"/>
+{%- elif name == "signout" %}<path d="M14 4h5v16h-5"/><path d="M10 8l-4 4 4 4"/><path d="M6 12h10"/>
+{%- endif %}</svg>
+{%- endmacro %}
+{% macro nav_links() %}
+  {% set items = [("home", "/", "Overview"), ("inventory", "/inventory", "Inventory"), ("runs", "/runs", "Runs"),
+                  ("schedules", "/schedules", "Schedules"), ("repos", "/repos", "Repositories"), ("credentials", "/credentials", "Credentials")] %}
+  <nav class="navrail" aria-label="Sections">
+    {% for key, href, label in items %}
+      <a class="rail-item" href="{{ href }}" {% if section == key %}aria-current="page"{% endif %}>
+        {{ icon(key) }}<span class="rail-label">{{ label }}</span>
+        {% if key == "runs" and active_runs %}<span class="visually-hidden">, {{ active_runs }} running</span><span class="badge badge-neutral rail-count tabular" aria-hidden="true">{{ "99+" if active_runs > 99 else active_runs }}</span>{% endif %}
+        <span class="rail-tip" aria-hidden="true">{{ label }}</span>
+      </a>
+    {% endfor %}
+  </nav>
+{% endmacro %}
+{% macro account(phone=False) %}
+  {% if user %}
+    <form class="account" method="post" action="/auth/logout" hx-boost="false">
+      <span class="account-name" title="{{ user.email or '' }}">{{ user.username or user.name or user.email }}</span>
+      <button class="{% if phone %}btn btn-secondary{% else %}rail-item rail-signout{% endif %}" type="submit">
+        {% if not phone %}{{ icon("signout") }}{% endif %}<span class="rail-label">Sign out</span>
+        {% if not phone %}<span class="rail-tip" aria-hidden="true">Sign out</span>{% endif %}
+      </button>
+    </form>
+  {% endif %}
+{% endmacro %}
+  <a class="skip-link" href="#main" hx-boost="false">Skip to content</a>
+  <div class="app {% if icon_rail %}app-icon-rail{% endif %} {% if not show_nav %}app-no-nav{% endif %}">
+    <header class="topbar">
+      <a class="brand" href="/">ansible-gui</a>
+      {% if show_nav %}
+      <details class="menu" data-menu>
+        <summary class="btn btn-secondary">Menu{% if active_runs %}<span class="menu-dot" aria-hidden="true"></span><span class="visually-hidden">, {{ active_runs }} running</span>{% endif %}</summary>
+        <div class="menu-sheet">
+          {{ nav_links() }}
+          {{ account(phone=True) }}
+        </div>
+      </details>
+      {% endif %}
+    </header>
+    {% if show_nav %}
+    <div class="rail">
+      <a class="brand rail-brand" href="/"><span class="rail-label">ansible-gui</span><span class="rail-mono" aria-hidden="true">a</span></a>
+      {{ nav_links() }}
+      {{ account() }}
+    </div>
     {% endif %}
-  </header>
-  {% block body %}{% endblock %}
+    <div class="app-main">
+      {% block body %}{% endblock %}
+    </div>
+  </div>
 </body>
 </html>

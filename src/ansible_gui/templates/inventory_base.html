@@ -1,20 +1,6 @@
 {% extends "base.html" %}
 {% block bodyclass %}{% if selected %}has-selection{% endif %}{% endblock %}
 
-{% block topbar_extra %}
-  <div class="loadstate">
-    {% if inv %}
-      <span class="loadstate-text">
-        <span class="mono">{{ inv.sources | join(", ") }}</span>
-        · {{ inv.hosts | length }} hosts
-        · loaded <time datetime="{{ inv.loaded_at | stamp }}">{{ inv.loaded_at | clock }}</time>
-      </span>
-    {% endif %}
-    <form method="post" action="/inventory/reload" class="reload-form">
-      <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload inventory</button>
-    </form>
-  </div>
-{% endblock %}
 
 {% block body %}
   {% if state.stale %}
@@ -32,8 +18,21 @@
     <div class="banner banner-ok" role="status"><p>Inventory reloaded at {{ reloaded }}.</p></div>
   {% endif %}
 
+  {% if inv %}
+  <div class="status-strip">
+    <span class="status-strip-text">
+      <span class="mono">{{ inv.sources | join(", ") }}</span>
+      · <span class="tabular">{{ inv.hosts | length }}</span> hosts
+      · loaded <time class="tabular" datetime="{{ inv.loaded_at | stamp }}">{{ inv.loaded_at | clock }}</time>
+    </span>
+    <form method="post" action="/inventory/reload" class="reload-form">
+      <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload inventory</button>
+    </form>
+  </div>
+  {% endif %}
+
   {% if not inv %}
-    <main class="error-page" id="main">
+    <main class="error-page" id="main" tabindex="-1">
       {% include "_load_error.html" %}
     </main>
   {% else %}
@@ -78,7 +77,7 @@
       </div>
     </nav>
 
-    <main class="content" id="main">
+    <main class="content" id="main" tabindex="-1">
       {% block main %}{% endblock %}
     </main>
   </div>
