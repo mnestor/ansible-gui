@@ -14,6 +14,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from ..runs.store import now
 from . import ssh
+from ..db import Database
 
 KINDS = {
     "ssh_key": "SSH key",
@@ -72,9 +73,8 @@ class Credential:
 class CredentialStore:
     def __init__(self, data_dir: Path, fernet: Fernet):
         self._fernet = fernet
-        self._lock = threading.Lock()
-        self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = Database(data_dir / "ansible-gui.db")
+        self._lock = self._db.lock
         self._db.executescript(SCHEMA)
 
     def _row(self, r: sqlite3.Row) -> Credential:

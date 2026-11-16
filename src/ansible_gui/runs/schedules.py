@@ -18,6 +18,7 @@ from croniter import croniter
 
 from ..credentials.store import PER_RUN, CredentialStore, NAME_RE
 from .store import RunStore, now
+from ..db import Database
 
 log = logging.getLogger(__name__)
 
@@ -103,9 +104,8 @@ class Schedule:
 
 class ScheduleStore:
     def __init__(self, data_dir):
-        self._lock = threading.Lock()
-        self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = Database(data_dir / "ansible-gui.db")
+        self._lock = self._db.lock
         self._db.executescript(SCHEMA)
         have = {r["name"] for r in self._db.execute("pragma table_info(schedules)")}
         if "notify" not in have:

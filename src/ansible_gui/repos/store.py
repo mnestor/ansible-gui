@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..credentials.store import NAME_RE
 from ..runs.store import now
+from ..db import Database
 
 SCHEMA = """
 create table if not exists repos (
@@ -81,9 +82,8 @@ class Repo:
 class RepoStore:
     def __init__(self, data_dir: Path):
         self.root = data_dir / "repos"
-        self._lock = threading.Lock()
-        self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = Database(data_dir / "ansible-gui.db")
+        self._lock = self._db.lock
         self._db.executescript(SCHEMA)
         if "requirements" not in {r["name"] for r in self._db.execute("pragma table_info(repos)")}:
             self._db.execute("alter table repos add column requirements text not null default ''")

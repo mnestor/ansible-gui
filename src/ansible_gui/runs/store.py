@@ -8,6 +8,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from ..db import Database
 
 FINISHED = {"successful", "failed", "canceled", "error", "interrupted", "skipped"}
 
@@ -130,9 +131,8 @@ class RunStore:
     def __init__(self, data_dir: Path):
         self.data_dir = data_dir
         data_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
-        self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
-        self._db.row_factory = sqlite3.Row
+        self._db = Database(data_dir / "ansible-gui.db")
+        self._lock = self._db.lock
         self._db.executescript(SCHEMA)
         have = {r["name"] for r in self._db.execute("pragma table_info(runs)")}
         for col, sql in MIGRATIONS.items():
