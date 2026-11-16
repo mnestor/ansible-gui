@@ -400,3 +400,4 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .page .banner { border-radius: var(--radius-control); margin-bottom: var(--s6); padding-inline: var(--s4); max-width: 960px; }
 .banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); }
 .page .section-head, .page .help-block { max-width: 960px; }
+.table-region + .help { margin-top: var(--s2); }

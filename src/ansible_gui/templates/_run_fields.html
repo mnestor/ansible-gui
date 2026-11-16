@@ -1,0 +1,76 @@
+{# Playbook, targets, mode and options: shared by the launcher and the schedule form. #}
+  <fieldset class="field">
+    <legend class="label">Playbook</legend>
+    {% if playbooks | length <= 7 %}
+      <div class="choices">
+        {% for p in playbooks %}
+          <label class="choice"><input type="radio" name="playbook" value="{{ p }}" {% if p == form.playbook %}checked{% endif %} required> <span class="mono">{{ p }}</span></label>
+        {% endfor %}
+      </div>
+    {% else %}
+      <select class="input input-medium" name="playbook" required aria-label="Playbook">
+        <option value="" disabled {% if not form.playbook %}selected{% endif %}>Choose a playbook</option>
+        {% for p in playbooks %}<option value="{{ p }}" {% if p == form.playbook %}selected{% endif %}>{{ p }}</option>{% endfor %}
+      </select>
+    {% endif %}
+  </fieldset>
+
+  <div class="field">
+    <label class="label" for="target">Targets</label>
+    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions">
+    <datalist id="target-suggestions">
+      {% for g in groups %}<option value="{{ g }}">{% endfor %}
+      {% for h in hosts %}<option value="{{ h }}">{% endfor %}
+    </datalist>
+    <p class="help" id="target-help">A host, a group, or any <span class="mono">--limit</span> pattern, like <span class="mono">web:!web2</span>. Leave empty to use the playbook’s own hosts.</p>
+  </div>
+
+  <fieldset class="field">
+    <legend class="label">Mode</legend>
+    <div class="segmented segmented-inline">
+      <label><input type="radio" name="mode" value="check" {% if form.mode != "apply" %}checked{% endif %}> Dry run</label>
+      <label><input type="radio" name="mode" value="apply" {% if form.mode == "apply" %}checked{% endif %}> Apply changes</label>
+    </div>
+    <label class="check"><input type="checkbox" name="diff" value="1" {% if form.diff %}checked{% endif %}> Show diffs</label>
+  </fieldset>
+
+  {% set picked = [] %}
+  {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
+  <details class="more" {% if form.tags or form.skip_tags or form.verbosity %}open{% endif %}>
+    <summary>More options <span class="summary-note">· {{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
+    <div class="more-body">
+      <fieldset class="field">
+        <legend class="label">Credentials</legend>
+        <div class="cred-grid">
+        {% for kind, items in cred_choices.items() %}
+          <label class="cred-pick"><span class="help">{{ kinds[kind] }}</span>
+            <select class="input input-small" name="{{ kind }}">
+              <option value="">{% if kind == "vault_password" and settings.vault_password_file %}Server’s vault password file{% else %}None{% endif %}</option>
+              {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+        </div>
+        <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}<a href="/credentials">Manage credentials</a></p>
+      </fieldset>
+      <div class="field">
+        <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
+        <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
+        <p class="help" id="tags-help">Comma-separated. Runs only tasks with these tags.</p>
+      </div>
+      <div class="field">
+        <label class="label" for="skip_tags">Skip tags <span class="optional">(optional)</span></label>
+        <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" autocomplete="off" spellcheck="false" list="tag-suggestions">
+      </div>
+      <datalist id="tag-suggestions"></datalist>
+      <fieldset class="field">
+        <legend class="label">Verbosity</legend>
+        <div class="segmented segmented-inline">
+          {% for n in range(5) %}
+            <label><input type="radio" name="verbosity" value="{{ n }}" {% if form.verbosity == n %}checked{% endif %}> {{ "default" if n == 0 else "-" ~ "v" * n }}</label>
+          {% endfor %}
+        </div>
+      </fieldset>
+    </div>
+  </details>
+

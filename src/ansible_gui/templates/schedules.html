@@ -1,0 +1,41 @@
+{% extends "runs_base.html" %}
+{% block title %}Schedules{% endblock %}
+{% block main %}
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Schedules</p>
+    <h1 class="identity">What runs on its own</h1>
+  </div>
+  <a class="btn btn-primary" href="/schedules/new">New schedule</a>
+</header>
+{% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }}. Its past runs stay in the history.</p>{% endif %}
+
+{% if not schedules %}
+  <p class="empty">Nothing is scheduled. A schedule runs a playbook on a cron timetable, as a dry run or for real, with the credentials you pick.
+    <a class="btn btn-secondary" href="/schedules/new">New schedule</a></p>
+{% else %}
+<div class="table-region">
+<table class="history">
+  <thead><tr>
+    <th scope="col">Name</th><th scope="col">Next run</th><th scope="col">Last run</th>
+    <th scope="col" class="col-wide">Playbook</th><th scope="col" class="col-wide">Targets</th>
+    <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">When</th>
+  </tr></thead>
+  <tbody>
+  {% for s in schedules %}
+    <tr>
+      <th scope="row" class="mono"><a href="/schedules/{{ s.id }}">{{ s.name }}</a></th>
+      <td class="tabular">{% if not s.enabled %}<span class="badge badge-neutral">paused</span>{% elif s.next_run_at %}<time datetime="{{ s.next_run_at | stamp }}">{{ s.next_run_at | when }}</time>{% else %}—{% endif %}</td>
+      <td>{% if s.last_run %}<a class="badge-link" href="/runs/{{ s.last_run.id }}"><span class="badge badge-{{ status_tone(s.last_run.status) }}">{{ status_label(s.last_run) }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
+      <td class="mono col-wide">{{ s.playbook }}</td>
+      <td class="mono col-wide">{{ s.target or "—" }}</td>
+      <td class="col-wide">{{ s.mode }}</td>
+      <td class="mono col-wide">{{ s.cron }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="help">Times are the server’s ({{ tz }}).</p>
+{% endif %}
+{% endblock %}

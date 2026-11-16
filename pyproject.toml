@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "ansible-runner>=2.4.3",
     "authlib>=1.9.8",
+    "croniter>=7.0.0",
     "cryptography>=50.0.2",
     "fastapi>=0.163.1",
     "httpx>=0.28.1",

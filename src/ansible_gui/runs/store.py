@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-FINISHED = {"successful", "failed", "canceled", "error", "interrupted"}
+FINISHED = {"successful", "failed", "canceled", "error", "interrupted", "skipped"}
 
 SCHEMA = """
 create table if not exists runs (
@@ -35,7 +35,10 @@ create table if not exists runs (
 );
 """
 # Columns added after the first release; created on start if missing.
-MIGRATIONS = {"credentials": "alter table runs add column credentials text not null default '{}'"}
+MIGRATIONS = {
+    "credentials": "alter table runs add column credentials text not null default '{}'",
+    "schedule_id": "alter table runs add column schedule_id integer",
+}
 
 
 def now() -> str:
@@ -64,6 +67,7 @@ class Run:
     host_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     # {"ssh_key": {"id": 1, "name": "lab"}, ..., "env_secret": [{"id": 4, "name": "x", "env": "X"}]}
     credentials: dict = field(default_factory=dict)
+    schedule_id: int | None = None
 
     @property
     def finished(self) -> bool:
@@ -106,6 +110,7 @@ def _row(r: sqlite3.Row) -> Run:
         error=r["error"],
         host_stats=json.loads(r["host_stats"]),
         credentials=json.loads(r["credentials"]),
+        schedule_id=r["schedule_id"],
     )
 
 
@@ -138,13 +143,13 @@ class RunStore:
 
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
-               credentials: dict | None = None) -> Run:
+               credentials: dict | None = None, schedule_id: int | None = None) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at, credentials) values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials, schedule_id) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
-                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {})),
+                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id),
             )
             self._db.commit()
             return self.get(cur.lastrowid)
@@ -163,6 +168,10 @@ class RunStore:
 
     def recent(self, limit: int = 100) -> list[Run]:
         return [_row(r) for r in self._db.execute("select * from runs order by id desc limit ?", (limit,))]
+
+    def for_schedule(self, schedule_id: int, limit: int = 10) -> list[Run]:
+        return [_row(r) for r in self._db.execute(
+            "select * from runs where schedule_id=? order by id desc limit ?", (schedule_id, limit))]
 
     def last_status_by_host(self) -> dict[str, tuple[str, int]]:
         """Each host's result in the most recent finished run that targeted it."""

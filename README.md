@@ -1,7 +1,7 @@
 # ansible-gui
 
 See what Ansible resolves for each host in your inventory, and which file set each value,
-then run playbooks against the hosts you pick and watch them live. Schedules come next.
+then run playbooks against the hosts you pick, watch them live, and schedule them.
 
 ## Run it
 
@@ -45,6 +45,14 @@ Runs go through [ansible-runner](https://github.com/ansible/ansible-runner), one
 project directory as the working directory (so its `ansible.cfg` applies). The launcher asks
 `ansible-playbook --list-hosts` which hosts the playbook and `--limit` pattern match, and the run is
 refused if that list changed between the preview and the click. Dry run (`--check`) is the default.
+
+## Schedules
+
+A schedule is a saved run (playbook, `--limit`, mode, tags, credentials) plus a five-field cron expression
+in the server's time zone. A thread checks every 15 seconds. Each firing re-resolves the hosts, so a schedule
+on a group follows the inventory. A schedule never overlaps itself: if its previous run is still going, the
+new one is recorded as skipped. Runs missed while the server was down are recorded once as missed and not
+caught up. Run one server process; two would both fire every schedule.
 
 ## Sign-in
 

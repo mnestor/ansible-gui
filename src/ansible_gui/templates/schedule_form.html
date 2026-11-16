@@ -1,0 +1,94 @@
+{% extends "runs_base.html" %}
+{% block title %}{{ sched.name if sched else "New schedule" }}{% endblock %}
+{% block main %}
+<a class="crumb" href="/schedules">← Schedules</a>
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Schedule{% if sched %} · {{ "on" if sched.enabled else "paused" }}{% endif %}</p>
+    <h1 class="identity {% if sched %}mono{% endif %}">{{ sched.name if sched else "New schedule" }}</h1>
+  </div>
+  {% if sched %}
+  <div class="run-actions">
+    <form method="post" action="/schedules/{{ sched.id }}/run" hx-boost="false">
+      <button class="btn btn-secondary" type="submit" data-busy-label="Starting…">Run now</button>
+    </form>
+    <form method="post" action="/schedules/{{ sched.id }}/{{ 'pause' if sched.enabled else 'resume' }}" hx-boost="false">
+      <button class="btn btn-quiet" type="submit">{{ "Pause" if sched.enabled else "Resume" }}</button>
+    </form>
+  </div>
+  {% endif %}
+</header>
+
+{% if flash %}<p class="banner banner-ok" role="status">{{ flash }}</p>{% endif %}
+{% if errors %}<p class="field-error" role="alert">Not saved. {{ errors | length }} thing{{ "s" if errors | length != 1 }} to fix below.</p>{% endif %}
+
+{% if not playbooks %}
+  <p class="empty">No playbooks found, so there is nothing to schedule. See <a href="/runs/new">Run a playbook</a> for where ansible-gui looks.</p>
+{% else %}
+<form class="launcher" method="post" action="/schedules{% if sched %}/{{ sched.id }}{% endif %}" hx-boost="false"
+      hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
+  <input type="hidden" name="purpose" value="schedule">
+  {% if sched %}<input type="hidden" name="editing" value="1">{% endif %}
+  <div class="field">
+    <label class="label" for="name">Name</label>
+    <input id="name" class="input input-small mono" name="name" value="{{ form.name }}" required maxlength="64" spellcheck="false"
+           autocapitalize="off" placeholder="nightly-updates" {% if errors.name %}aria-invalid="true" aria-describedby="name-err"{% endif %}>
+    {% if errors.name %}<p class="field-error" id="name-err">{{ errors.name }}</p>{% endif %}
+  </div>
+
+  <div class="field">
+    <label class="label" for="cron">When</label>
+    <input id="cron" class="input input-small mono" name="cron" value="{{ form.cron }}" required spellcheck="false" autocomplete="off"
+           list="cron-presets" aria-describedby="cron-help when{% if errors.cron %} cron-err{% endif %}" {% if errors.cron %}aria-invalid="true"{% endif %}
+           hx-get="/schedules/when" hx-trigger="input changed delay:300ms" hx-target="#when" hx-swap="innerHTML" hx-include="this">
+    <datalist id="cron-presets">
+      <option value="0 3 * * *">Every night at 03:00</option>
+      <option value="0 4 * * 0">Sundays at 04:00</option>
+      <option value="0 6 * * 1-5">Weekdays at 06:00</option>
+      <option value="0 * * * *">Every hour</option>
+      <option value="*/15 * * * *">Every 15 minutes</option>
+    </datalist>
+    <p class="help" id="cron-help">Cron, in the server’s time zone ({{ tz }}): minute hour day-of-month month day-of-week.</p>
+    <div id="when" class="help" aria-live="polite">{% include "_schedule_when.html" %}</div>
+    {% if errors.cron %}<p class="field-error" id="cron-err">{{ errors.cron }}</p>{% endif %}
+  </div>
+
+  {% include "_run_fields.html" %}
+
+  <div id="preview" class="preview" aria-live="polite">
+    {% include "_run_preview.html" %}
+  </div>
+  <p class="help">A run starts only if the previous run of this schedule has finished; otherwise it’s recorded as skipped. Runs missed while the server was down aren’t caught up.</p>
+</form>
+{% endif %}
+
+{% if sched %}
+<section class="section" aria-labelledby="recent-h">
+  <h2 id="recent-h" class="section-title">Recent runs</h2>
+  {% if not recent %}
+    <p class="empty">None yet. {% if sched.enabled and sched.next_run_at %}The first is due {{ sched.next_run_at | when }}.{% endif %}</p>
+  {% else %}
+  <div class="table-region"><table class="history">
+    <thead><tr><th scope="col">Run</th><th scope="col">Status</th><th scope="col" class="col-wide">Started</th><th scope="col" class="num col-wide">Took</th><th scope="col" class="col-wide">Note</th></tr></thead>
+    <tbody>{% for r in recent %}
+      <tr>
+        <th scope="row" class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></th>
+        <td><span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span></td>
+        <td class="tabular col-wide">{{ (r.started_at or r.created_at) | when }}</td>
+        <td class="num tabular col-wide">{{ r.duration | seconds }}</td>
+        <td class="col-wide wrap">{{ r.error or "" }}</td>
+      </tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% endif %}
+</section>
+
+<section class="section danger-zone" aria-labelledby="del-h">
+  <h2 id="del-h" class="section-title">Delete</h2>
+  <p class="help-block">Stops future runs. Past runs stay in the history.</p>
+  <form method="post" action="/schedules/{{ sched.id }}/delete" data-confirm-twice hx-boost="false">
+    <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to delete {{ sched.name }}" data-busy-label="Deleting…">Delete {{ sched.name }}</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

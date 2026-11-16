@@ -24,6 +24,8 @@ from .inventory.model import Layer, Vaulted
 from .inventory.service import InventoryService
 from .runs import playbooks
 from .runs.executor import Executor
+from .runs.schedules import Invalid as ScheduleInvalid
+from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
 from .runs.store import Run, RunStore, host_result
 
 HERE = Path(__file__).parent
@@ -36,6 +38,7 @@ STATUS = {
     "canceled": ("neutral", "Canceled"),
     "error": ("failed", "Couldn’t start"),
     "interrupted": ("changed", "Interrupted"),
+    "skipped": ("neutral", "Skipped"),
 }
 
 
@@ -80,6 +83,10 @@ def when(dt: datetime | None) -> str:
     today = datetime.now().astimezone().date()
     if local.date() == today:
         return f"Today {local:%H:%M}"
+    if (local.date() - today).days == 1:
+        return f"Tomorrow {local:%H:%M}"
+    if (local.date() - today).days == -1:
+        return f"Yesterday {local:%H:%M}"
     return f"{local:%b %d %H:%M}"
 
 
@@ -114,6 +121,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        max_age=12 * 3600, same_site="lax",
                        https_only=bool(settings.public_url and settings.public_url.startswith("https://")))
     app.state.creds = creds
+    schedules = ScheduleStore(settings.data_dir)
+    scheduler = Scheduler(schedules, store, executor, creds, opts)
+    app.state.schedules = schedules
+    app.state.scheduler = scheduler
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.state.executor = executor
     app.state.store = store
@@ -222,19 +233,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
         }
 
-    def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
+    def form_context(form: dict) -> dict:
+        """What the launcher and the schedule form both need: playbooks, live host preview, credentials."""
         books = known_playbooks()
         if form["playbook"] not in books:
             form["playbook"] = books[0] if len(books) == 1 else ""
         pv = playbooks.preview(opts, form["playbook"], form["target"]) if form["playbook"] else playbooks.Preview()
         inv = service.current().inventory
-        return render(
-            request, "run_new.html", status,
-            section="runs", playbooks=books, form=form, preview=pv, form_error=form_error,
+        return dict(
+            playbooks=books, form=form, preview=pv,
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
             env_secrets=creds.by_kind("env_secret"),
             hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [],
         )
+
+    def default_credentials(form: dict, given) -> None:
+        for kind in PER_RUN:
+            if kind not in given:
+                default = creds.default(kind)
+                form[kind] = str(default.id) if default else ""
+
+    def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
+        return render(request, "run_new.html", status, section="runs", form_error=form_error, purpose="run",
+                      **form_context(form))
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs(request: Request):
@@ -245,10 +266,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_form(request.query_params)
         if "diff" not in request.query_params:
             form["diff"] = True
-        for kind in PER_RUN:
-            if kind not in request.query_params:
-                default = creds.default(kind)
-                form[kind] = str(default.id) if default else ""
+        default_credentials(form, request.query_params)
         return launcher(request, form)
 
     @app.get("/runs/preview", response_class=HTMLResponse)
@@ -258,7 +276,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if form["playbook"] not in known_playbooks():
             form["playbook"] = ""
         pv = playbooks.preview(opts, form["playbook"], form["target"]) if form["playbook"] else playbooks.Preview()
-        return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None)
+        return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
+                      purpose=request.query_params.get("purpose", "run"),
+                      editing=request.query_params.get("editing") == "1")
 
     @app.post("/runs")
     async def start_run(request: Request):
@@ -423,6 +443,124 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if cred:
             creds.delete(cred_id)
         return RedirectResponse(f"/credentials?deleted={cred.name if cred else ''}", status_code=303)
+
+
+    # --- schedules -------------------------------------------------------------
+    tz_name = local_now().tzname()
+
+    def when_context(cron: str) -> dict:
+        problem = check_cron(cron) if cron.strip() else None
+        return {"when_error": problem, "when_next": [] if problem or not cron.strip() else next_times(cron, 3)}
+
+    def schedule_page(request: Request, form: dict, sched=None, errors: dict | None = None,
+                      form_error: str | None = None, flash: str | None = None, status: int = 200) -> HTMLResponse:
+        return render(request, "schedule_form.html", status, section="schedules", sched=sched, errors=errors or {},
+                      form_error=form_error, flash=flash, purpose="schedule", editing=bool(sched), tz=tz_name,
+                      recent=store.for_schedule(sched.id) if sched else [], **when_context(form["cron"]),
+                      **form_context(form))
+
+    def schedule_form(sched) -> dict:
+        form = {"name": sched.name, "cron": sched.cron, "playbook": sched.playbook, "target": sched.target,
+                "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
+                "skip_tags": sched.skip_tags, "verbosity": sched.verbosity}
+        form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
+        return form
+
+    @app.get("/schedules", response_class=HTMLResponse)
+    def schedule_list(request: Request):
+        items = schedules.all()
+        for sc in items:
+            recent = store.for_schedule(sc.id, 1)
+            sc.last_run = recent[0] if recent else None
+        return render(request, "schedules.html", section="schedules", schedules=items, tz=tz_name,
+                      deleted=request.query_params.get("deleted"))
+
+    @app.get("/schedules/new", response_class=HTMLResponse)
+    def new_schedule(request: Request):
+        q = request.query_params
+        form = read_form(q)
+        form["diff"] = q.get("diff", "1") == "1"
+        form["name"] = q.get("name", "")
+        form["cron"] = q.get("cron", "0 3 * * *")
+        default_credentials(form, q)
+        return schedule_page(request, form)
+
+    @app.get("/schedules/when", response_class=HTMLResponse)
+    def schedule_when(request: Request, cron: str = ""):
+        return render(request, "_schedule_when.html", **when_context(cron))
+
+    async def save_schedule(request: Request, sid: int | None):
+        data = await request.form()
+        form = read_form(data)
+        form["diff"] = data.get("diff") == "1"
+        form["name"] = data.get("name", "")
+        form["cron"] = data.get("cron", "")
+        sched = schedules.get(sid) if sid else None
+        if sid and not sched:
+            return RedirectResponse("/schedules", status_code=303)
+        if form["playbook"] not in known_playbooks():
+            return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
+        for kind in PER_RUN:
+            if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
+                return schedule_page(request, form, sched, status=400,
+                                     form_error=f"That {KINDS[kind].lower()} no longer exists. Choose another.")
+        pv = playbooks.preview(opts, form["playbook"], form["target"])
+        if pv.error or not pv.hosts:
+            return schedule_page(request, form, sched, status=400,
+                                 form_error="The targets match no hosts, so every run would fail. Change them first.")
+        form["enabled"] = sched.enabled if sched else True
+        try:
+            saved = schedules.save(form, auth.display_name(auth.current_user(request)), sid)
+        except ScheduleInvalid as e:
+            return schedule_page(request, form, sched, errors=e.errors, status=400)
+        return RedirectResponse(f"/schedules/{saved.id}?saved=1", status_code=303)
+
+    @app.post("/schedules")
+    async def create_schedule(request: Request):
+        return await save_schedule(request, None)
+
+    @app.get("/schedules/{sid}", response_class=HTMLResponse)
+    def show_schedule(request: Request, sid: int):
+        sched = schedules.get(sid)
+        if not sched:
+            return RedirectResponse("/schedules", status_code=303)
+        flash = None
+        if request.query_params.get("saved"):
+            flash = (f"Saved. Next run: {when(sched.next_run_at)}." if sched.enabled else "Saved. It’s paused, so nothing runs.")
+        elif request.query_params.get("paused"):
+            flash = "Paused. Nothing runs until you resume it."
+        elif request.query_params.get("resumed"):
+            flash = f"Resumed. Next run: {when(sched.next_run_at)}."
+        return schedule_page(request, schedule_form(sched), sched, flash=flash)
+
+    @app.post("/schedules/{sid}")
+    async def update_schedule(request: Request, sid: int):
+        return await save_schedule(request, sid)
+
+    @app.post("/schedules/{sid}/run")
+    def run_schedule_now(request: Request, sid: int):
+        sched = schedules.get(sid)
+        if not sched:
+            return RedirectResponse("/schedules", status_code=303)
+        run = scheduler.fire(sched, by=auth.display_name(auth.current_user(request)))
+        return RedirectResponse(f"/runs/{run.id}", status_code=303)
+
+    @app.post("/schedules/{sid}/pause")
+    def pause_schedule(request: Request, sid: int):
+        schedules.set_enabled(sid, False, auth.display_name(auth.current_user(request)))
+        return RedirectResponse(f"/schedules/{sid}?paused=1", status_code=303)
+
+    @app.post("/schedules/{sid}/resume")
+    def resume_schedule(request: Request, sid: int):
+        schedules.set_enabled(sid, True, auth.display_name(auth.current_user(request)))
+        return RedirectResponse(f"/schedules/{sid}?resumed=1", status_code=303)
+
+    @app.post("/schedules/{sid}/delete")
+    def delete_schedule(sid: int):
+        sched = schedules.get(sid)
+        if sched:
+            schedules.delete(sid)
+        return RedirectResponse(f"/schedules?deleted={sched.name if sched else ''}", status_code=303)
 
     return app
 
