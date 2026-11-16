@@ -22,7 +22,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_PLAYBOOK_DIR` | `.` | Where playbook-adjacent `group_vars/` and `host_vars/` live |
 | `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}` |
-| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts` |
+| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, git clones. Made 0700 at start, and everything written in it is private to the server's user |
 | `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
 | `ANSIBLE_GUI_SECRET_KEY` (or `_FILE`) | generated `data/secret.key` | Encrypts credentials and signs sessions. Set it so a copy of `data/` alone can't decrypt credentials |
 | `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |

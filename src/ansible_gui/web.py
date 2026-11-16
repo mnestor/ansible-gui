@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -130,6 +132,7 @@ def rerun_hosts(run: Run, mode: str, hosts: list[str]) -> str:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
+    lock_down(settings.data_dir)
     store = RunStore(settings.data_dir)
     keys = Keys.load(settings.secret_key, settings.data_dir)
     creds = CredentialStore(settings.data_dir, keys.fernet)
@@ -764,6 +767,20 @@ def main() -> None:
         proxy_headers=True,
         forwarded_allow_ips=os.environ.get("ANSIBLE_GUI_TRUSTED_PROXIES", "127.0.0.1"),
     )
+
+
+def lock_down(data_dir: Path) -> None:
+    """Only the server's own user can read the data: credentials, run logs, the git clones.
+
+    The directory goes to 0700, which also closes everything already inside it, and the
+    umask makes every new file and directory private, including those git and Ansible write."""
+    os.umask(0o077)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(data_dir, 0o700)
+    for name in ("ansible-gui.db", "ansible-gui.db-journal", "ansible-gui.db-wal", "ansible-gui.db-shm", "secret.key"):
+        f = data_dir / name
+        if f.exists():
+            os.chmod(f, 0o600)
 
 
 def check_bind(settings: Settings, host: str, insecure_ok: bool) -> None:

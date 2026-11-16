@@ -166,3 +166,25 @@ def test_deleted_credential_stops_queued_run(app):
     app.state.executor.submit(run.id)
     done = wait(app, run.id)
     assert done.status == "error" and "deleted" in done.error
+
+
+def test_data_dir_is_private(tmp_path):
+    import os
+    import stat
+
+    from ansible_gui.web import lock_down
+    data = tmp_path / "data"
+    data.mkdir(mode=0o755)
+    (data / "ansible-gui.db").write_text("")
+    os.chmod(data / "ansible-gui.db", 0o644)
+    old = os.umask(0o022)
+    try:
+        lock_down(data)
+        assert stat.S_IMODE(data.stat().st_mode) == 0o700
+        assert stat.S_IMODE((data / "ansible-gui.db").stat().st_mode) == 0o600
+        (data / "runs").mkdir()
+        (data / "new.log").write_text("x")
+        assert stat.S_IMODE((data / "runs").stat().st_mode) == 0o700
+        assert stat.S_IMODE((data / "new.log").stat().st_mode) == 0o600
+    finally:
+        os.umask(old)
