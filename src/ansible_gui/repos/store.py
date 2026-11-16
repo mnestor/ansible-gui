@@ -111,7 +111,9 @@ class RepoStore:
                 errors["role"] = f"{other['name']} is already the inventory repository. There can be one."
         url = form.get("url", "").strip()
         if not URL_RE.match(url):
-            errors["url"] = "Use a clone URL, like git@git.example.com:me/ansible.git or https://git.example.com/me/ansible.git."
+            errors["url"] = "Use a clone URL, like https://git.example.com/me/ansible.git or git@git.example.com:me/ansible.git."
+        elif re.match(r"^https?://[^/]*@", url):
+            errors["url"] = "Leave the user name and token out of the URL: pick a git token below instead, so it’s stored encrypted."
         branch = form.get("branch", "").strip() or "main"
         if not re.match(r"^[\w./-]+$", branch) or ".." in branch or branch.startswith("-"):
             errors["branch"] = "That isn’t a valid branch name."

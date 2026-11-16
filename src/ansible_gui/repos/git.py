@@ -46,12 +46,20 @@ def _git(args: list[str], cwd: Path, env: dict, timeout: int = 180) -> str:
         raise GitError(f"git {args[0]} took longer than {timeout}s. Is the git server reachable from here?") from None
     if proc.returncode != 0:
         lines = [l for l in (proc.stderr or proc.stdout).strip().splitlines() if l.strip()]
-        raise GitError(lines[-1] if lines else f"git {args[0]} failed with code {proc.returncode}.")
+        raise GitError(_plain(lines[-1] if lines else f"git {args[0]} failed with code {proc.returncode}."))
     return proc.stdout.strip()
 
 
-def sync(repo: Repo, ssh_config: Path, private_key: str | None) -> Synced:
-    """Fetch the branch and check out its tip. Raises GitError with a one-line reason."""
+def is_https(url: str) -> bool:
+    return url.startswith(("https://", "http://"))
+
+
+def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
+         token: tuple[str, str] | None = None) -> Synced:
+    """Fetch the branch and check out its tip. Raises GitError with a one-line reason.
+
+    private_key signs in over SSH; token is (user, token) for HTTPS, handed to git
+    through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper."""
     with _lock(repo.id):
         workdir = Path(tempfile.mkdtemp(prefix="agui-git-"))
         try:
@@ -63,7 +71,15 @@ def sync(repo: Repo, ssh_config: Path, private_key: str | None) -> Synced:
                     f.write(private_key)
                 ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
             env = {**os.environ, "GIT_SSH_COMMAND": shlex.join(ssh), "GIT_TERMINAL_PROMPT": "0",
-                   "GIT_ASKPASS": "/bin/false", "LC_ALL": "C"}
+                   "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false", "LC_ALL": "C",
+                   # No credential helpers (osxkeychain, store, a manager): nothing is saved or read from them.
+                   "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""}
+            if token:
+                askpass = workdir / "askpass"
+                fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
+                with os.fdopen(fd, "w") as f:
+                    f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
+                env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
             path = repo.path
             path.mkdir(parents=True, exist_ok=True)
             if not (path / ".git").exists():
@@ -81,6 +97,23 @@ def sync(repo: Repo, ssh_config: Path, private_key: str | None) -> Synced:
             return Synced(commit=commit, subject=subject, changed=commit != before)
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+_PLAIN = [
+    ("could not read Username", "The git server wants a sign-in. Pick a git token for this repository."),
+    ("Authentication failed", "The git server refused the token. Check its user name, and that it hasn’t expired."),
+    ("Permission denied (publickey", "The git server refused the SSH key. Add its public key as a deploy key."),
+    ("Host key verification failed", "The git server’s SSH host key doesn’t match the one pinned in known_hosts."),
+    ("couldn't find remote ref", "That branch doesn’t exist in the repository."),
+    ("Could not resolve host", "The git server’s name doesn’t resolve from the ansible-gui server."),
+]
+
+
+def _plain(line: str) -> str:
+    for needle, says in _PLAIN:
+        if needle in line:
+            return f"{says} (git: {line.removeprefix('fatal: ')})"
+    return line.removeprefix("fatal: ")
 
 
 def _head(path: Path, env: dict) -> str | None:

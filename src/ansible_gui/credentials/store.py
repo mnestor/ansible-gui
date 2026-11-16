@@ -20,6 +20,7 @@ KINDS = {
     "vault_password": "Vault password",
     "become_password": "Become password",
     "env_secret": "Environment secret",
+    "git_token": "Git token",
 }
 # Kinds a run picks one of. Environment secrets go to every run.
 PER_RUN = ("ssh_key", "vault_password", "become_password")
@@ -179,6 +180,20 @@ class CredentialStore:
                 secret["value"] = old["value"]
             else:
                 errors["value"] = "Enter the value."
+            is_default = False
+
+        elif kind == "git_token":
+            user = values.get("username", "").strip()
+            if not re.match(r"^[\w.@+-]{1,128}$", user):
+                errors["username"] = "Enter the user name the git server expects with this token."
+            meta["username"] = user
+            token = values.get("token", "").strip()
+            if token:
+                secret["token"] = token
+            elif old.get("token"):
+                secret["token"] = old["token"]
+            else:
+                errors["token"] = "Paste the token."
             is_default = False
 
         if errors:

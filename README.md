@@ -46,6 +46,10 @@ each with a branch and, for private repositories, a deploy key picked from the s
 ansible-gui keeps its own clones in `data/repos/`, and resets each to the tip of its branch on every pull,
 discarding local changes.
 
+Private repositories sign in with a git token (HTTPS) or an SSH deploy key, both stored encrypted on the
+Credentials page. A token goes to git through `GIT_ASKPASS` only: never into the URL, `.git/config` or a credential
+helper. Give it read-only access to repository contents.
+
 Every run, by hand or scheduled, first pulls the inventory repository and the playbook's repository,
 then asks Ansible again which hosts the targets match. If a pull fails, the run is canceled before anything
 touches a host, and an email goes out even for a run started by hand or a schedule set to never email.

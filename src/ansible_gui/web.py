@@ -474,8 +474,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
         used_by = [sc for sc in schedules.all() if cred and cred.id in sc.credentials.values()] if cred else []
+        used_by_repos = [r for r in repos.all() if cred and r.ssh_key_id == cred.id] if cred else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
-                      cred=cred, values=values or {}, errors=errors or {}, used_by=used_by)
+                      cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
+                      used_by_repos=used_by_repos)
 
     @app.get("/credentials/new", response_class=HTMLResponse)
     def new_credential(request: Request, kind: str = "ssh_key"):
@@ -488,12 +490,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not cred:
             return RedirectResponse("/credentials", status_code=303)
         return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
-                                                           "env": cred.meta.get("env", "")})
+                                                           "env": cred.meta.get("env", ""),
+                                                           "username": cred.meta.get("username", "")})
 
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
-        values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value")}
+        values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token")}
         values["remove_certificate"] = data.get("remove_certificate") == "1"
         is_default = data.get("is_default") == "1"
         try:
@@ -501,7 +504,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                               user=auth.display_name(auth.current_user(request)), cred_id=cred_id)
         except Invalid as e:
             # Secrets are never echoed back into the page; the form asks for them again.
-            keep = {"name": data.get("name", ""), "env": values["env"], "is_default": is_default,
+            keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
                     "certificate": values["certificate"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
@@ -534,13 +537,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q = request.query_params
         return render(request, "repos.html", section="repos", repos=repos.all(),
                       inventory=ws.inventory_repo(), playbook_repos=ws.playbook_repos(),
-                      ssh_keys={c.id: c for c in creds.by_kind("ssh_key")},
+                      ssh_keys={c.id: c for c in creds.all()},
                       saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"))
 
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
         return render(request, "repo_form.html", status, section="repos", repo=repo, values=values or {},
-                      errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"),
+                      errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"), git_tokens=creds.by_kind("git_token"),
                       has_inventory=any(r.role == "inventory" and (not repo or r.id != repo.id) for r in repos.all()),
                       used_by=repo_users(repo) if repo else [])
 
@@ -561,10 +564,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def save_repo(request: Request, rid: int | None):
         data = await request.form()
         form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url")}
-        if form["ssh_key_id"] and not (form["ssh_key_id"].isdigit() and (c := creds.get(int(form["ssh_key_id"])))
-                                       and c.kind == "ssh_key"):
-            return repo_form(request, repos.get(rid) if rid else None, form,
-                             {"ssh_key_id": "That SSH key no longer exists. Choose another."}, status=400)
+        if form["ssh_key_id"]:
+            c = creds.get(int(form["ssh_key_id"])) if form["ssh_key_id"].isdigit() else None
+            want = "git_token" if gitsync.is_https(form["url"].strip()) else "ssh_key"
+            if not c:
+                problem = "That credential no longer exists. Choose another."
+            elif c.kind != want:
+                problem = ("An HTTPS URL signs in with a git token." if want == "git_token"
+                           else "An SSH URL signs in with an SSH key.") + " Pick one of those, or change the URL."
+            else:
+                problem = None
+            if problem:
+                return repo_form(request, repos.get(rid) if rid else None, form, {"ssh_key_id": problem}, status=400)
         try:
             repo = repos.save(form, auth.display_name(auth.current_user(request)), rid)
         except RepoInvalid as e:

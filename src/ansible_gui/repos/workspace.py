@@ -118,17 +118,23 @@ class Workspace:
         """Pull one repo. Returns None, or why it failed."""
         if repo.local:
             return None
-        key = None
+        key = token = None
         if repo.ssh_key_id:
             cred = self.creds.get(repo.ssh_key_id)
-            if not cred or not cred.readable:
-                error = "its deploy key was deleted or can’t be decrypted. Pick another on the Repositories page."
+            want = "git_token" if git.is_https(repo.url) else "ssh_key"
+            if not cred or not cred.readable or cred.kind != want:
+                error = ("its sign-in credential was deleted, can’t be decrypted, or doesn’t suit the URL. "
+                         "Pick another on the Repositories page.")
                 self.repos.record_fetch(repo.id, None, None, error)
                 return error
-            key = self.creds.secret(cred)["private_key"]
+            secret = self.creds.secret(cred)
+            if want == "ssh_key":
+                key = secret["private_key"]
+            else:
+                token = (cred.meta["username"], secret["token"])
         config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config)
         try:
-            result = git.sync(repo, config, key)
+            result = git.sync(repo, config, key, token)
         except git.GitError as e:
             self.repos.record_fetch(repo.id, None, None, str(e))
             return str(e)
