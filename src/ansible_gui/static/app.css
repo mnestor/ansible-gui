@@ -382,7 +382,6 @@ select.input { appearance: auto; }
 .creds { max-width: 960px; }
 .creds td.wrap { white-space: normal; overflow-wrap: anywhere; }
 .creds th .badge { margin-left: var(--s1); }
-.row-fresh { background: color-mix(in oklab, var(--accent) 8%, transparent); }
 .kind-switch { margin-bottom: var(--s6); }
 .kind-switch a { display: inline-flex; align-items: center; padding: var(--s2) var(--s3); min-height: 30px; font-weight: 600;
   color: var(--ink-muted); text-decoration: none; border-radius: calc(var(--radius-control) - 2px); }
@@ -430,3 +429,20 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .counts div { display: flex; flex-direction: column; }
 .counts dt { font-size: var(--fs-xs); color: var(--ink-muted); font-weight: 600; }
 .counts dd { font: 700 var(--fs-lg)/1.2 var(--font-text); }
+
+/* ---------------------------------------------------------------- Review fixes: phones, targets */
+.phone-only { display: none; }
+@media (max-width: 639px) {
+  .phone-only { display: block; font-family: var(--font-text); font-weight: 400; }
+  .topbar { padding-inline: var(--s4); gap: var(--s2) var(--s4); }
+  .topnav { flex-wrap: wrap; gap: var(--s1) var(--s3); }
+}
+@media (pointer: coarse) {
+  .topnav a, .quiet-link, .crumb, .more summary, .badge-link, .issue-meta a, .timeline a {
+    min-height: 44px; display: inline-flex; align-items: center;
+  }
+}
+.segmented-inline label.is-disabled { opacity: .45; cursor: not-allowed; }
+.preview .actions + .preview-hosts { margin-top: var(--s1); }
+/* Long paths and IDs in prose wrap instead of widening the page. */
+.page p .mono, .page dd.mono, .banner .mono { overflow-wrap: anywhere; }

@@ -34,7 +34,7 @@ HERE = Path(__file__).parent
 
 STATUS = {
     "queued": ("neutral", "Queued"),
-    "running": ("accent", "Running"),
+    "running": ("neutral", "Running"),
     "successful": ("ok", "Succeeded"),
     "failed": ("failed", "Failed"),
     "canceled": ("neutral", "Canceled"),
@@ -92,7 +92,17 @@ def when(dt: datetime | None) -> str:
     return f"{local:%b %d %H:%M}"
 
 
+def found_changes(run: Run) -> bool:
+    return run.status == "successful" and run.check_mode and any(st.get("changed") for st in run.host_stats.values())
+
+
+def run_tone(run: Run) -> str:
+    return "changed" if found_changes(run) else STATUS.get(run.status, ("neutral", run.status))[0]
+
+
 def status_label(run: Run) -> str:
+    if found_changes(run):
+        return "Dry run: would change"
     if run.status == "successful" and run.check_mode:
         return "Dry run passed"
     return STATUS.get(run.status, ("neutral", run.status))[1]
@@ -149,6 +159,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         edit_url=lambda layer: edit_url(settings.edit_url, layer),
         host_result=host_result,
         status_tone=lambda s: STATUS.get(s, ("neutral", s))[0],
+        run_tone=run_tone,
         status_label=status_label,
         rerun_url=rerun_url,
         rerun_hosts=rerun_hosts,
@@ -206,6 +217,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "host_issues": ov.host_issues(recent, set(inv.hosts) if inv else None),
             "schedule_issues": ov.schedule_issues(schedules.all(), store),
             "setup_issues": ov.setup_issues(settings, state, creds),
+            "run_issues": ov.run_issues(recent),
+            "email_issue": ov.email_issue(store) if settings.smtp else None,
             "active": active, "live": {r.id: executor.live_stats(r.id) or {} for r in active},
             "positions": {r.id: executor.queue_position(r.id) for r in active},
             "upcoming": upcoming, "recent": recent[:10], "week": ov.week_counts(recent),
@@ -438,8 +451,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
+        used_by = [sc for sc in schedules.all() if cred and cred.id in sc.credentials.values()] if cred else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
-                      cred=cred, values=values or {}, errors=errors or {})
+                      cred=cred, values=values or {}, errors=errors or {}, used_by=used_by)
 
     @app.get("/credentials/new", response_class=HTMLResponse)
     def new_credential(request: Request, kind: str = "ssh_key"):
@@ -517,6 +531,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             sc.last_run = recent[0] if recent else None
         return render(request, "schedules.html", section="schedules", schedules=items, tz=tz_name,
                       deleted=request.query_params.get("deleted"), smtp=settings.smtp,
+                      last_notified=store.last_notified(),
                       mailed=request.query_params.get("mailed"), mail_error=request.session.pop("mail_error", None))
 
     @app.post("/schedules/test-email")

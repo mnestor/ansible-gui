@@ -1,5 +1,5 @@
 <div class="run-status">
-  <span class="badge badge-lg badge-{{ status_tone(run.status) }}">{{ status_label(run) }}</span>
+  <span class="badge badge-lg badge-{{ run_tone(run) }}">{{ status_label(run) }}</span>
   <dl class="run-meta">
     <div><dt>Targets</dt><dd class="mono">{{ run.target or "playbook’s hosts" }}</dd></div>
     {% if run.tags %}<div><dt>Tags</dt><dd class="mono">{{ run.tags }}</dd></div>{% endif %}

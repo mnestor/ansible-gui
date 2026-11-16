@@ -6,7 +6,7 @@ World: inventory files, rack labels, terminal logs. The signature element comes 
 
 ## Typography
 - Families: **Red Hat Text** (UI and prose), **Red Hat Display** (the one identity heading per screen), **Red Hat Mono** (variable names, values, file paths, hostnames: things people copy or compare character by character). Ansible's own house faces, so the tool reads as part of that world rather than a generic dashboard. Loaded by a Google Fonts `<link>` with `preconnect` and `display=swap` in `base.html`; fallbacks `system-ui, sans-serif` and `ui-monospace, monospace` so an offline homelab still renders.
-- Scale (px): 12 / 13 / 15 / 18 / 32. Body and tables are 13 (dense expert tool, deliberately low contrast inside panes); the identity heading (host or group name) is 32 in Display, about 2.5× body, so the subject of the screen is found at once.
+- Scale (px): 12 / 13 / 15 / 18 / 32, plus 28 for the identity heading under 640px so a long host name fits a phone. Body and tables are 13 (dense expert tool, deliberately low contrast inside panes); the identity heading (host or group name) is 32 in Display, about 2.5× body, so the subject of the screen is found at once.
 - Weights: 400 body, 600 labels and identity column, 700 the identity heading only.
 - Figures (counts, durations, times) use the text face with `tabular-nums`, not mono.
 
@@ -57,6 +57,8 @@ Text in the status colour on a tint of 12% status over canvas (`color-mix(in okl
 | skipped / neutral (`--ink-muted`) | 5.4:1 | 5.9:1 |
 | accent (winning source) | 4.8:1 | 6.9:1 |
 
+Accent badges are only for the winning source. "Running", "default" and the active-run count use neutral. A dry run that would change hosts uses the changed tone ("Dry run: would change"), never ok.
+
 ## Motion
 - 120ms ease-out for hover and disclosure; nothing else animates.
 
@@ -73,6 +75,7 @@ Text in the status colour on a tint of 12% status over canvas (`color-mix(in okl
 - Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`).
 - Issue card: `--plane` block with a 3px left bar in the status colour (danger, unreachable, changed), a badge, a one-line count, host chips, and at most two actions (secondary, then quiet). Used only on the Overview's "Needs attention".
 - Side block: `--plane` panel, 6px radius, for the Overview's side column (running, next 24 hours, counts).
+- Lost-contact banner: `banner-warn`, `role="status"`, shown when a live poll fails and hidden on the next success.
 - Invalid field: 2px `--danger` outline, message below in `--danger` 600, linked with `aria-describedby`.
 
 ## Voice

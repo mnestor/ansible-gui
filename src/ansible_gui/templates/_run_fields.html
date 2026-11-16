@@ -36,7 +36,10 @@
 
   {% set picked = [] %}
   {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
-  <details class="more" {% if form.tags or form.skip_tags or form.verbosity %}open{% endif %}>
+  {% set missing = [] %}
+  {% for kind, items in cred_choices.items() %}{% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}{% set _ = missing.append(kinds[kind] | lcfirst) %}{% endif %}{% endfor %}
+  {% if missing %}<p class="banner banner-warn" role="alert">The {{ missing | join(" and ") }} picked here was deleted. Pick another under More options, or None.</p>{% endif %}
+  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or missing %}open{% endif %}>
     <summary>More options <span class="summary-note">· {{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
     <div class="more-body">
       <fieldset class="field">
@@ -47,6 +50,7 @@
             <select class="input input-small" name="{{ kind }}">
               <option value="">{% if kind == "vault_password" and settings.vault_password_file %}Server’s vault password file{% else %}None{% endif %}</option>
               {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
+              {% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}<option value="{{ form[kind] }}" selected>Deleted: pick another</option>{% endif %}
             </select>
           </label>
         {% endfor %}

@@ -178,6 +178,10 @@ class RunStore:
         return [_row(r) for r in self._db.execute(
             "select * from runs where schedule_id=? order by id desc limit ?", (schedule_id, limit))]
 
+    def last_notified(self) -> Run | None:
+        r = self._db.execute("select * from runs where notified is not null order by id desc limit 1").fetchone()
+        return _row(r) if r else None
+
     def last_status_by_host(self) -> dict[str, tuple[str, int]]:
         """Each host's result in the most recent finished run that targeted it."""
         out: dict[str, tuple[str, int]] = {}

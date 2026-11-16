@@ -1,7 +1,7 @@
 {% extends "runs_base.html" %}
 {% block title %}Overview{% endblock %}
 {% block main %}
-{% set issue_count = host_issues | length + schedule_issues | length + setup_issues | length %}
+{% set issue_count = host_issues | length + schedule_issues | length + setup_issues | length + run_issues | length + (1 if email_issue else 0) %}
 <header class="subject subject-row">
   <div>
     <p class="eyebrow">Overview</p>
@@ -10,12 +10,13 @@
   <a class="btn btn-primary" href="/runs/new">Run a playbook</a>
 </header>
 
+<p id="poll-lost" class="banner banner-warn" role="status" hidden>Lost contact with ansible-gui. Retrying; what’s shown may be out of date.</p>
 <div class="home">
   <div class="home-main">
     <section class="section" aria-labelledby="attn-h">
       <h2 id="attn-h" class="section-title">Needs attention</h2>
       {% if not issue_count %}
-        <p class="empty">{% if has_runs %}Every host’s latest run is good and no schedule is failing. Things land here when a host fails or is unreachable, a dry run finds changes, or a schedule can’t start, and leave when a later run succeeds.{% else %}Start with a dry run: it reports what would change without changing anything. Problems from runs and schedules show up here until a later run fixes them.{% endif %}</p>
+        <p class="empty">{% if has_runs %}Every host’s latest run succeeded and no schedule is failing. Things land here when a host fails or is unreachable, a dry run finds changes, a run or schedule can’t start, or an email doesn’t go out, and leave when a later run succeeds.{% else %}Start with a dry run: it reports what would change without changing anything. Problems from runs and schedules show up here until a later run fixes them.{% endif %}</p>
       {% else %}
       <ul class="issues">
         {% for i in setup_issues %}
@@ -25,11 +26,28 @@
             <div class="issue-actions"><a class="btn btn-secondary" href="{{ i.href }}">{{ i.action }}</a></div>
           </li>
         {% endfor %}
+        {% if email_issue %}
+          <li class="issue issue-failed">
+            <div class="issue-head"><span class="badge badge-failed">email</span><strong>The last notification email didn’t go out</strong>
+              <span class="issue-meta">for <a href="/runs/{{ email_issue.id }}">run #{{ email_issue.id }}</a> · {{ (email_issue.finished_at or email_issue.created_at) | when }}</span></div>
+            <p class="issue-detail">{{ email_issue.notified }}. Until email works, problems only show up here.</p>
+            <div class="issue-actions"><a class="btn btn-secondary" href="/schedules#email">Check email settings</a></div>
+          </li>
+        {% endif %}
+        {% for r in run_issues %}
+          <li class="issue issue-failed">
+            <div class="issue-head"><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) | lower }}</span>
+              <strong><span class="mono">{{ r.playbook }}</span> didn’t reach any host</strong>
+              <span class="issue-meta"><a href="/runs/{{ r.id }}">run #{{ r.id }}</a> · {{ (r.started_at or r.created_at) | when }} · {{ r.trigger }}</span></div>
+            <p class="issue-detail">{{ r.error or "It failed before any host reported a result, for example a vault, syntax or missing-role error." }}</p>
+            <div class="issue-actions"><a class="btn btn-secondary" href="/runs/{{ r.id }}">Read the output</a></div>
+          </li>
+        {% endfor %}
         {% for g in host_issues %}
           {% set n = g.hosts | length %}
           <li class="issue issue-{{ g.kind }}">
             <div class="issue-head">
-              <span class="badge badge-{{ 'changed' if g.kind == 'drift' else g.kind }}">{{ g.kind }}</span>
+              <span class="badge badge-{{ 'changed' if g.kind == 'drift' else g.kind }}">{{ "would change" if g.kind == "drift" else g.kind }}</span>
               <strong>{% if g.kind == "drift" %}{{ n }} host{{ "s" if n != 1 }} would change{% else %}{{ n }} host{{ "s" if n != 1 }} {{ g.kind }}{% endif %}</strong>
               <span class="issue-meta">in <a href="/runs/{{ g.run.id }}">run #{{ g.run.id }}</a> · <span class="mono">{{ g.run.playbook }}</span> · {{ (g.run.started_at or g.run.created_at) | when }}{% if g.run.schedule_id %} · {{ g.run.trigger }}{% endif %}</span>
             </div>
@@ -48,7 +66,7 @@
         {% for i in schedule_issues %}
           <li class="issue issue-{{ 'failed' if i.kind == 'error' else 'changed' }}">
             <div class="issue-head">
-              <span class="badge badge-{{ status_tone(i.run.status) }}">{{ status_label(i.run) | lower }}</span>
+              <span class="badge badge-{{ run_tone(i.run) }}">{{ status_label(i.run) | lower }}</span>
               <strong>Schedule <span class="mono">{{ i.schedule.name }}</span></strong>
               <span class="issue-meta"><a href="/runs/{{ i.run.id }}">run #{{ i.run.id }}</a> · {{ (i.run.finished_at or i.run.created_at) | when }}</span>
             </div>
@@ -77,8 +95,8 @@
           <tr>
             <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
             <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a></th>
-            <td><span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span></td>
-            <td class="mono col-wide">{{ r.target or "—" }}</td>
+            <td><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) }}</span></td>
+            <td class="mono col-wide">{{ r.target or "playbook’s hosts" }}</td>
             <td class="col-wide">{{ r.trigger }}</td>
             <td class="tabular col-wide">{{ (r.started_at or r.created_at) | when }}</td>
           </tr>{% endfor %}
@@ -115,9 +133,9 @@
       <h2 id="week-h" class="section-title">Last 7 days</h2>
       <dl class="counts">
         <div><dt>Runs</dt><dd class="tabular">{{ week.runs }}</dd></div>
-        <div><dt>Good</dt><dd class="tabular">{{ week.ok }}</dd></div>
+        <div><dt>Succeeded</dt><dd class="tabular">{{ week.ok }}</dd></div>
         <div><dt>Failed</dt><dd class="tabular {% if week.failed %}num-failed{% endif %}">{{ week.failed }}</dd></div>
-        <div><dt>Drift</dt><dd class="tabular {% if week.drift %}num-changed{% endif %}">{{ week.drift }}</dd></div>
+        <div><dt>Would change</dt><dd class="tabular {% if week.drift %}num-changed{% endif %}">{{ week.drift }}</dd></div>
       </dl>
     </section>
   </aside>

@@ -132,7 +132,6 @@
         const input = document.getElementById(btn.dataset.reveal);
         const show = input.type === "password";
         input.type = show ? "text" : "password";
-        btn.textContent = show ? "Hide" : "Show";
         btn.setAttribute("aria-pressed", String(show));
       });
     });
@@ -152,4 +151,15 @@
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
   });
   document.addEventListener("htmx:afterSettle", () => setup(document));
+
+  // A live poll that fails (server restarting, network gone) says so instead of freezing silently.
+  function pollTrouble(e, lost) {
+    const id = e.detail.elt && e.detail.elt.id;
+    if (id !== "poller" && id !== "home-active") return;
+    const banner = document.getElementById("poll-lost");
+    if (banner) banner.hidden = !lost;
+  }
+  document.addEventListener("htmx:sendError", (e) => pollTrouble(e, true));
+  document.addEventListener("htmx:responseError", (e) => pollTrouble(e, true));
+  document.addEventListener("htmx:afterRequest", (e) => { if (e.detail.successful) pollTrouble(e, false); });
 })();

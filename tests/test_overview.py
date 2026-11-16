@@ -63,3 +63,19 @@ def test_home_shows_failure_until_a_later_run_fixes_it(tmp_path):
     go("site.yml")
     page = c.get("/").text
     assert "All clear" in page and "Last 7 days" in page
+
+
+def test_failure_with_no_host_results_is_not_all_clear():
+    from ansible_gui.notify import classify
+    r = run(5, {"a": {"ok": 0, "changed": 0, "failed": 0, "unreachable": 0, "skipped": 0}}, status="failed")
+    assert classify(r) == ("failed", "Failed before any host reported a result")
+    assert ov.host_issues([r], None) == []
+    assert ov.run_issues([r]) == [r]
+    later_ok = run(6, {"a": {"ok": 1}}, status="successful")
+    assert ov.run_issues([later_ok, r]) == []  # a later run of the same playbook worked
+
+
+def test_dry_run_with_changes_is_labelled_would_change():
+    from ansible_gui.web import run_tone, status_label
+    r = run(7, {"a": {"ok": 2, "changed": 1}}, check=True, status="successful")
+    assert status_label(r) == "Dry run: would change" and run_tone(r) == "changed"

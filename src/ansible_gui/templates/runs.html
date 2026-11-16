@@ -10,8 +10,7 @@
 </header>
 
 {% if not runs %}
-  <p class="empty">Nothing has run yet. Start with a dry run: it reports what would change without changing anything.
-    <a class="btn btn-secondary" href="/runs/new">Run a playbook</a></p>
+  <p class="empty">Nothing has run yet. Start with a dry run: it reports what would change without changing anything.</p>
 {% else %}
 <div class="table-region">
 <table class="history">
@@ -24,9 +23,9 @@
   {% for r in runs %}
     <tr>
       <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
-      <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a></th>
-      <td><span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span></td>
-      <td class="mono">{{ r.target or "—" }}</td>
+      <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a><span class="phone-only help">{{ r.mode }}</span></th>
+      <td><span class="badge badge-{{ run_tone(r) }}">{{ status_label(r) }}</span></td>
+      <td class="mono">{{ r.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ r.mode }}</td>
       <td class="tabular col-wide">{% if r.started_at %}<time datetime="{{ r.started_at | stamp }}">{{ r.started_at | when }}</time>{% else %}—{% endif %}</td>
       <td class="num tabular col-wide">{{ r.duration | seconds }}</td>

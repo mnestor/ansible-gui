@@ -75,9 +75,35 @@ def schedule_issues(schedules, store) -> list[ScheduleIssue]:
             continue
         kind, summary = classify(last)
         # Host failures and drift already show per host; here only what hosts can't show.
-        if kind in PROBLEMS and kind not in ("failed", "drift"):
+        if kind in PROBLEMS and (kind not in ("failed", "drift") or no_host_failed(last)):
             out.append(ScheduleIssue(schedule=s, run=last, kind=kind, summary=summary))
     return out
+
+
+def no_host_failed(run: Run) -> bool:
+    return run.status == "failed" and not any(host_result(st) in ("failed", "unreachable")
+                                              for st in run.host_stats.values())
+
+
+def run_issues(runs: list[Run]) -> list[Run]:
+    """Hand-started runs that failed before any host reported, unless a later run of the same playbook worked."""
+    out, seen = [], set()
+    for run in runs:  # newest first
+        if run.schedule_id or not run.finished or run.status in ("skipped", "canceled"):
+            continue
+        key = run.playbook
+        if key in seen:
+            continue
+        seen.add(key)
+        if no_host_failed(run) or run.status in ("error", "interrupted"):
+            out.append(run)
+    return out
+
+
+def email_issue(store) -> Run | None:
+    """The latest emailed run, if its email failed."""
+    last = store.last_notified()
+    return last if last and last.notified and last.notified.startswith("Email failed") else None
 
 
 def setup_issues(settings, state, creds) -> list[SetupIssue]:

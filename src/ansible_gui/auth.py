@@ -66,7 +66,12 @@ class Gate(BaseHTTPMiddleware):
         if current_user(request):
             return await call_next(request)
         here = path + (f"?{request.url.query}" if request.url.query else "")
-        login = "/auth/login?" + urlencode({"next": here if request.method == "GET" else "/"})
+        if request.headers.get("hx-request") or request.method != "GET":
+            # Return to the page the person was on, not to a fragment URL or a form POST target.
+            page = request.headers.get("hx-current-url") or request.headers.get("referer") or "/"
+            u = urlsplit(page)
+            here = safe_next(u.path + (f"?{u.query}" if u.query else ""))
+        login = "/auth/login?" + urlencode({"next": here})
         if request.headers.get("hx-request"):
             # htmx swaps would put the login page inside the current one; reload instead.
             return Response(status_code=204, headers={"HX-Redirect": login})
@@ -92,10 +97,18 @@ def install(app: FastAPI, settings: Settings, templates) -> None:
             return f"{settings.public_url}/auth/callback"
         return str(request.url_for("auth_callback"))
 
-    def problem(request: Request, title: str, detail: str, status: int) -> HTMLResponse:
+    def problem(request: Request, title: str, detail: str, status: int, provider_logout: str | None = None) -> HTMLResponse:
         return templates.TemplateResponse(request, "auth_problem.html",
                                           {"title": title, "detail": detail, "section": None, "user": None,
-                                           "active_runs": 0, "settings": settings}, status_code=status)
+                                           "active_runs": 0, "settings": settings, "status": status,
+                                           "provider_logout": provider_logout}, status_code=status)
+
+    async def provider_logout_url() -> str | None:
+        try:
+            meta = await oauth.oidc.load_server_metadata()
+        except Exception:
+            return None
+        return meta.get("end_session_endpoint")
 
     @app.get("/auth/login")
     async def auth_login(request: Request, next: str = "/"):
@@ -125,7 +138,9 @@ def install(app: FastAPI, settings: Settings, templates) -> None:
             log.warning("sign-in refused for %s: groups %s, need one of %s", who, groups, sorted(allowed))
             return problem(request, "You’re signed in, but not allowed here",
                            f"{who} isn’t in any of the groups allowed to use ansible-gui "
-                           f"({', '.join(sorted(allowed))}). Ask whoever runs your sign-in provider to add you.", 403)
+                           f"({', '.join(sorted(allowed))}). Ask whoever runs your sign-in provider to add you, "
+                           "or sign out there and sign in as someone who is.", 403,
+                           provider_logout=await provider_logout_url())
         target = safe_next(request.session.get("next"))
         request.session.clear()  # new session on sign-in
         request.session["user"] = {"sub": info.get("sub"), "username": info.get("preferred_username"),

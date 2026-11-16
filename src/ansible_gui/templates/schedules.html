@@ -11,24 +11,23 @@
 {% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }}. Its past runs stay in the history.</p>{% endif %}
 
 {% if not schedules %}
-  <p class="empty">Nothing is scheduled. A schedule runs a playbook on a cron timetable, as a dry run or for real, with the credentials you pick.
-    <a class="btn btn-secondary" href="/schedules/new">New schedule</a></p>
+  <p class="empty">Nothing is scheduled. A schedule runs a playbook on a cron timetable, as a dry run or for real, with the credentials you pick.</p>
 {% else %}
 <div class="table-region">
 <table class="history">
   <thead><tr>
-    <th scope="col">Name</th><th scope="col">Next run</th><th scope="col">Last run</th>
+    <th scope="col">Name</th><th scope="col" class="col-wide">Next run</th><th scope="col">Last run</th>
     <th scope="col" class="col-wide">Playbook</th><th scope="col" class="col-wide">Targets</th>
     <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">When</th>
   </tr></thead>
   <tbody>
   {% for s in schedules %}
     <tr>
-      <th scope="row" class="mono"><a href="/schedules/{{ s.id }}">{{ s.name }}</a></th>
-      <td class="tabular">{% if not s.enabled %}<span class="badge badge-neutral">paused</span>{% elif s.next_run_at %}<time datetime="{{ s.next_run_at | stamp }}">{{ s.next_run_at | when }}</time>{% else %}—{% endif %}</td>
-      <td>{% if s.last_run %}<a class="badge-link" href="/runs/{{ s.last_run.id }}"><span class="badge badge-{{ status_tone(s.last_run.status) }}">{{ status_label(s.last_run) }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
+      <th scope="row" class="mono"><a href="/schedules/{{ s.id }}">{{ s.name }}</a><span class="phone-only help">{{ s.mode }} · {% if not s.enabled %}paused{% elif s.next_run_at %}next {{ s.next_run_at | when }}{% endif %}</span></th>
+      <td class="tabular col-wide">{% if not s.enabled %}<span class="badge badge-neutral">paused</span>{% elif s.next_run_at %}<time datetime="{{ s.next_run_at | stamp }}">{{ s.next_run_at | when }}</time>{% else %}—{% endif %}</td>
+      <td>{% if s.last_run %}<a class="badge-link" href="/runs/{{ s.last_run.id }}"><span class="badge badge-{{ run_tone(s.last_run) }}">{{ status_label(s.last_run) }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
       <td class="mono col-wide">{{ s.playbook }}</td>
-      <td class="mono col-wide">{{ s.target or "—" }}</td>
+      <td class="mono col-wide">{{ s.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ s.mode }}</td>
       <td class="mono col-wide">{{ s.cron }}</td>
     </tr>
@@ -45,6 +44,9 @@
   {% if mail_error %}<p class="field-error" role="alert">The test email didn’t go out: {{ mail_error }}. Check the <span class="mono">ANSIBLE_GUI_SMTP_*</span> settings and that the mail server is reachable from here, then try again.</p>{% endif %}
   {% if smtp %}
     <p class="help-block">Scheduled runs that need attention are mailed to <strong>{{ smtp.to | join(", ") }}</strong> from <span class="mono">{{ smtp.sender }}</span>, through <span class="mono">{{ smtp.host }}:{{ smtp.port }}</span> ({{ smtp.tls }}{% if smtp.username %}, signed in as {{ smtp.username }}{% endif %}). Runs started by hand never send email. Each schedule picks what it mails.</p>
+    {% if last_notified %}
+      <p class="{{ 'field-error' if last_notified.notified.startswith('Email failed') else 'help-block' }}">Last email, for <a href="/runs/{{ last_notified.id }}">run #{{ last_notified.id }}</a> ({{ (last_notified.finished_at or last_notified.created_at) | when }}): {{ last_notified.notified }}.</p>
+    {% endif %}
     <form method="post" action="/schedules/test-email" hx-boost="false">
       <button class="btn btn-secondary" type="submit" data-busy-label="Sending…">Send a test email</button>
     </form>

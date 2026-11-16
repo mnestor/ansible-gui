@@ -5,6 +5,13 @@
   <p class="eyebrow">Sign-in</p>
   <h1 class="identity">{{ title }}</h1>
   <p class="subject-meta">{{ detail }}</p>
-  <div class="subject-actions"><a class="btn btn-secondary" href="/auth/login" hx-boost="false">Sign in</a></div>
+  <div class="subject-actions">
+    {% if status == 403 %}
+      {% if provider_logout %}<a class="btn btn-primary" href="{{ provider_logout }}">Sign out at the sign-in provider</a>{% endif %}
+      <a class="btn btn-quiet" href="/auth/login" hx-boost="false">Try again</a>
+    {% else %}
+      <a class="btn btn-primary" href="/auth/login" hx-boost="false">Sign in{{ " again" if status != 200 else "" }}</a>
+    {% endif %}
+  </div>
 </header>
 {% endblock %}

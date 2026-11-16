@@ -37,6 +37,8 @@ def classify(run: Run) -> tuple[str, str]:
         return "interrupted", "Interrupted: the server stopped during the run."
     if run.status == "canceled":
         return "canceled", "Canceled."
+    if run.status == "failed" and not bad:
+        return "failed", "Failed before any host reported a result"
     if bad or run.status == "failed":
         unreachable = [h for h in bad if results[h] == "unreachable"]
         parts = []
@@ -55,7 +57,7 @@ def classify(run: Run) -> tuple[str, str]:
 
 PROBLEMS = {"failed", "error", "skipped", "interrupted", "drift"}
 SUBJECT = {"failed": "FAILED", "error": "DIDN’T START", "skipped": "SKIPPED", "interrupted": "INTERRUPTED",
-           "drift": "DRIFT", "ok": "OK", "canceled": "CANCELED"}
+           "drift": "WOULD CHANGE", "ok": "OK", "canceled": "CANCELED"}
 
 
 class Notifier:
