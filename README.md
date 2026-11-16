@@ -39,6 +39,17 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 
 Needs `ansible-core` on PATH. Ansible is only ever called as a subprocess, never imported (it is GPLv3).
 
+## Container
+
+```sh
+docker build -t ansible-gui .
+```
+
+The image holds ansible-gui, ansible-core 2.21.4, git and OpenSSH, runs as uid 10001 under tini, and listens
+on 8080 with data in `/data`. It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables (or
+`ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). `GET /healthz` backs the
+healthcheck. `deploy/` has a compose file and an env template for docker01.
+
 ## Git repositories
 
 Set up on the Repositories page: one inventory repository and any number of playbook repositories,

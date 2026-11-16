@@ -1,0 +1,32 @@
+# ansible-gui on docker01, in the stack conventions of the homelab wiki
+# (/homelab/docker01-stacks): ~/ansible-gui/, env in app.env (mode 600), its own
+# edge network, no host ports, Traefik on the LAN entrypoints only.
+#
+# Before the first `docker compose up -d`:
+#   1. Add the ansible-gui_edge network to ~/traefik/docker-compose.yml (next free 172.28.N.0/24).
+#   2. Create a Pocket ID OIDC client: callback https://ansible.nanestor.us/auth/callback,
+#      PKCE on, restricted to the admins group.
+#   3. Fill in app.env from app.env.example, and put the master key in secret.key (mode 600).
+services:
+  app:
+    image: ansible-gui:latest
+    build: ..
+    container_name: ansible-gui-app
+    restart: unless-stopped
+    env_file: app.env
+    volumes:
+      - ./data:/data
+      - ./secret.key:/run/secrets/ansible-gui-key:ro
+    networks:
+      - edge
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=ansible-gui_edge
+      - traefik.http.routers.ansible.rule=Host(`ansible.nanestor.us`)
+      - traefik.http.routers.ansible.entrypoints=web443,web443v6
+      - traefik.http.services.ansible.loadbalancer.server.port=8080
+
+networks:
+  edge:
+    name: ansible-gui_edge
+    external: true
