@@ -1,0 +1,13 @@
+<div id="home-active" {% if active %}hx-get="/home/active?ids={{ active | map(attribute='id') | join(',') }}" hx-trigger="every 3s" hx-swap="outerHTML"{% endif %}>
+  {% if not active %}
+    <p class="empty">Nothing is running.</p>
+  {% else %}
+    <ul class="timeline">{% for r in active %}
+      <li>
+        <span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span>
+        <a class="mono" href="/runs/{{ r.id }}">#{{ r.id }} {{ r.playbook }}</a>
+        <span class="help">{% if r.status == "queued" %}waiting, {{ positions[r.id] }} in line{% else %}{{ r.duration | seconds }} · {{ r.expected_hosts | length }} host{{ "s" if r.expected_hosts | length != 1 }}{% endif %} · {{ r.trigger }}</span>
+      </li>
+    {% endfor %}</ul>
+  {% endif %}
+</div>

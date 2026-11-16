@@ -1,0 +1,125 @@
+{% extends "runs_base.html" %}
+{% block title %}Overview{% endblock %}
+{% block main %}
+{% set issue_count = host_issues | length + schedule_issues | length + setup_issues | length %}
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Overview</p>
+    <h1 class="identity">{% if issue_count %}{{ issue_count }} thing{{ "s" if issue_count != 1 }} to resolve{% elif has_runs %}All clear{% else %}Nothing has run yet{% endif %}</h1>
+  </div>
+  <a class="btn btn-primary" href="/runs/new">Run a playbook</a>
+</header>
+
+<div class="home">
+  <div class="home-main">
+    <section class="section" aria-labelledby="attn-h">
+      <h2 id="attn-h" class="section-title">Needs attention</h2>
+      {% if not issue_count %}
+        <p class="empty">{% if has_runs %}Every host’s latest run is good and no schedule is failing. Things land here when a host fails or is unreachable, a dry run finds changes, or a schedule can’t start, and leave when a later run succeeds.{% else %}Start with a dry run: it reports what would change without changing anything. Problems from runs and schedules show up here until a later run fixes them.{% endif %}</p>
+      {% else %}
+      <ul class="issues">
+        {% for i in setup_issues %}
+          <li class="issue issue-failed">
+            <div class="issue-head"><span class="badge badge-failed">setup</span><strong>{{ i.title }}</strong></div>
+            <p class="issue-detail">{{ i.detail }}</p>
+            <div class="issue-actions"><a class="btn btn-secondary" href="{{ i.href }}">{{ i.action }}</a></div>
+          </li>
+        {% endfor %}
+        {% for g in host_issues %}
+          {% set n = g.hosts | length %}
+          <li class="issue issue-{{ g.kind }}">
+            <div class="issue-head">
+              <span class="badge badge-{{ 'changed' if g.kind == 'drift' else g.kind }}">{{ g.kind }}</span>
+              <strong>{% if g.kind == "drift" %}{{ n }} host{{ "s" if n != 1 }} would change{% else %}{{ n }} host{{ "s" if n != 1 }} {{ g.kind }}{% endif %}</strong>
+              <span class="issue-meta">in <a href="/runs/{{ g.run.id }}">run #{{ g.run.id }}</a> · <span class="mono">{{ g.run.playbook }}</span> · {{ (g.run.started_at or g.run.created_at) | when }}{% if g.run.schedule_id %} · {{ g.run.trigger }}{% endif %}</span>
+            </div>
+            <ul class="chips issue-hosts">{% for h in g.hosts[:12] %}<li><a class="chip mono" href="/inventory/hosts/{{ h }}">{{ h }}</a></li>{% endfor %}{% if n > 12 %}<li class="help">and {{ n - 12 }} more</li>{% endif %}</ul>
+            <div class="issue-actions">
+              {% if g.kind == "drift" %}
+                <a class="btn btn-secondary" href="{{ rerun_hosts(g.run, 'apply', g.hosts) }}">Apply on {{ "it" if n == 1 else "them" }}…</a>
+                <a class="btn btn-quiet" href="/runs/{{ g.run.id }}">See the diff</a>
+              {% else %}
+                <a class="btn btn-secondary" href="/runs/{{ g.run.id }}">See what failed</a>
+                <a class="btn btn-quiet" href="{{ rerun_hosts(g.run, 'check' if g.run.check_mode else 'apply', g.hosts) }}">Run again on {{ "it" if n == 1 else "them" }}…</a>
+              {% endif %}
+            </div>
+          </li>
+        {% endfor %}
+        {% for i in schedule_issues %}
+          <li class="issue issue-{{ 'failed' if i.kind == 'error' else 'changed' }}">
+            <div class="issue-head">
+              <span class="badge badge-{{ status_tone(i.run.status) }}">{{ status_label(i.run) | lower }}</span>
+              <strong>Schedule <span class="mono">{{ i.schedule.name }}</span></strong>
+              <span class="issue-meta"><a href="/runs/{{ i.run.id }}">run #{{ i.run.id }}</a> · {{ (i.run.finished_at or i.run.created_at) | when }}</span>
+            </div>
+            <p class="issue-detail">{{ i.summary }}</p>
+            <div class="issue-actions">
+              <a class="btn btn-secondary" href="/schedules/{{ i.schedule.id }}">Open the schedule</a>
+            </div>
+          </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </section>
+
+    <section class="section" aria-labelledby="recent-h">
+      <div class="section-head">
+        <h2 id="recent-h" class="section-title">Recent runs</h2>
+        {% if recent %}<a class="quiet-link" href="/runs">All runs</a>{% endif %}
+      </div>
+      {% if not recent %}
+        <p class="empty">None yet.</p>
+      {% else %}
+      <div class="table-region"><table class="history">
+        <thead><tr><th scope="col">Run</th><th scope="col">Playbook</th><th scope="col">Status</th>
+          <th scope="col" class="col-wide">Targets</th><th scope="col" class="col-wide">By</th><th scope="col" class="col-wide">Started</th></tr></thead>
+        <tbody>{% for r in recent %}
+          <tr>
+            <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
+            <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a></th>
+            <td><span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span></td>
+            <td class="mono col-wide">{{ r.target or "—" }}</td>
+            <td class="col-wide">{{ r.trigger }}</td>
+            <td class="tabular col-wide">{{ (r.started_at or r.created_at) | when }}</td>
+          </tr>{% endfor %}
+        </tbody>
+      </table></div>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside class="home-side" aria-label="Activity">
+    <section class="side-block" aria-labelledby="active-h">
+      <h2 id="active-h" class="section-title">Running now</h2>
+      {% include "_home_active.html" %}
+    </section>
+
+    <section class="side-block" aria-labelledby="next-h">
+      <div class="section-head">
+        <h2 id="next-h" class="section-title">Next 24 hours</h2>
+        <a class="quiet-link" href="/schedules">Schedules</a>
+      </div>
+      {% if not upcoming %}
+        <p class="empty">{% if has_schedules %}No schedule runs in the next 24 hours.{% else %}Nothing is scheduled. <a href="/schedules/new">New schedule</a>{% endif %}</p>
+      {% else %}
+        <ul class="timeline">{% for sc in upcoming %}
+          <li><time class="tabular" datetime="{{ sc.next_run_at | stamp }}">{{ sc.next_run_at | when }}</time>
+            <a class="mono" href="/schedules/{{ sc.id }}">{{ sc.name }}</a>
+            <span class="help">{{ sc.mode | lower }} · <span class="mono">{{ sc.playbook }}</span></span></li>
+        {% endfor %}</ul>
+        <p class="help">Server time ({{ tz }}).</p>
+      {% endif %}
+    </section>
+
+    <section class="side-block" aria-labelledby="week-h">
+      <h2 id="week-h" class="section-title">Last 7 days</h2>
+      <dl class="counts">
+        <div><dt>Runs</dt><dd class="tabular">{{ week.runs }}</dd></div>
+        <div><dt>Good</dt><dd class="tabular">{{ week.ok }}</dd></div>
+        <div><dt>Failed</dt><dd class="tabular {% if week.failed %}num-failed{% endif %}">{{ week.failed }}</dd></div>
+        <div><dt>Drift</dt><dd class="tabular {% if week.drift %}num-changed{% endif %}">{{ week.drift }}</dd></div>
+      </dl>
+    </section>
+  </aside>
+</div>
+{% endblock %}

@@ -402,3 +402,31 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .page .section-head, .page .help-block { max-width: 960px; }
 .table-region + .help { margin-top: var(--s2); }
 #email { margin-top: var(--s10); }
+
+/* ---------------------------------------------------------------- Overview */
+.home { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s10); max-width: 1200px; }
+@media (min-width: 1024px) { .home { grid-template-columns: minmax(0, 1fr) 320px; } }
+.home-main, .home-side { min-width: 0; }
+.home-side { display: flex; flex-direction: column; gap: var(--s6); }
+.side-block { background: var(--plane); border-radius: var(--radius-control); padding: var(--s4); }
+.side-block .empty { font-size: var(--fs-sm); }
+.issues { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.issue { padding: var(--s3) var(--s4); background: var(--plane); border-radius: var(--radius-control);
+  border-left: 3px solid var(--ink-muted); display: flex; flex-direction: column; gap: var(--s2); }
+.issue-failed { border-left-color: var(--danger); }
+.issue-unreachable { border-left-color: var(--unreachable); }
+.issue-drift, .issue-changed { border-left-color: var(--changed); }
+.issue-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); }
+.issue-meta { color: var(--ink-muted); font-size: var(--fs-xs); }
+.issue-detail { color: var(--ink-muted); max-width: 72ch; }
+.issue-actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.issue-hosts { flex-wrap: wrap; }
+.issue-hosts a.chip { text-decoration: none; color: var(--ink); background: var(--well); }
+.timeline { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.timeline li { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); }
+.timeline time { white-space: nowrap; font-weight: 600; min-width: 11ch; }
+.timeline .help { flex-basis: 100%; }
+.counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
+.counts div { display: flex; flex-direction: column; }
+.counts dt { font-size: var(--fs-xs); color: var(--ink-muted); font-weight: 600; }
+.counts dd { font: 700 var(--fs-lg)/1.2 var(--font-text); }

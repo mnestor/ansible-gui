@@ -13,8 +13,9 @@
 </head>
 <body hx-boost="true" class="{% block bodyclass %}{% endblock %}">
   <header class="topbar">
-    <a class="brand" href="/inventory">ansible-gui</a>
+    <a class="brand" href="/">ansible-gui</a>
     <nav class="topnav" aria-label="Sections">
+      <a href="/" {% if section == "home" %}aria-current="page"{% endif %}>Overview</a>
       <a href="/inventory" {% if section == "inventory" %}aria-current="page"{% endif %}>Inventory</a>
       <a href="/runs" {% if section == "runs" %}aria-current="page"{% endif %}>Runs{% if active_runs %} <span class="badge badge-accent tabular">{{ active_runs }}</span>{% endif %}</a>
       <a href="/schedules" {% if section == "schedules" %}aria-current="page"{% endif %}>Schedules</a>

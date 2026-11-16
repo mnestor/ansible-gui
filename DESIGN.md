@@ -71,6 +71,8 @@ Text in the status colour on a tint of 12% status over canvas (`color-mix(in okl
 - Page banner: `banner-ok` (ok tint, ink text) for a completed save, `banner-warn` (changed text on changed tint, 5.4:1 / 6.4:1) for a standing risk. 6px radius inside a page.
 - Kind switch: segmented links (`aria-current`) choosing what a form creates, same look as the segmented radio.
 - Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`).
+- Issue card: `--plane` block with a 3px left bar in the status colour (danger, unreachable, changed), a badge, a one-line count, host chips, and at most two actions (secondary, then quiet). Used only on the Overview's "Needs attention".
+- Side block: `--plane` panel, 6px radius, for the Overview's side column (running, next 24 hours, counts).
 - Invalid field: 2px `--danger` outline, message below in `--danger` 600, linked with `aria-describedby`.
 
 ## Voice

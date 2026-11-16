@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import yaml
 from fastapi import FastAPI, Form, Request
@@ -20,6 +20,7 @@ from .credentials import ssh as sshtools
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
 from .keys import Keys
+from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
 from .inventory.model import Layer, Vaulted
 from .inventory.service import InventoryService
@@ -106,6 +107,13 @@ def rerun_url(run: Run, mode: str) -> str:
     return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
 
 
+def rerun_hosts(run: Run, mode: str, hosts: list[str]) -> str:
+    """The launcher, filled in from `run` but limited to `hosts` (all of which that run targeted)."""
+    url = urlsplit(rerun_url(run, mode))
+    q = [(k, ",".join(hosts) if k == "target" else v) for k, v in parse_qsl(url.query, keep_blank_values=True)]
+    return f"{url.path}?{urlencode(q)}"
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     opts = settings.cli_options()
@@ -143,6 +151,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_tone=lambda s: STATUS.get(s, ("neutral", s))[0],
         status_label=status_label,
         rerun_url=rerun_url,
+        rerun_hosts=rerun_hosts,
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
@@ -185,9 +194,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             **ctx,
         )
 
-    @app.get("/")
-    def root() -> RedirectResponse:
-        return RedirectResponse("/inventory", status_code=303)
+    def overview_context() -> dict:
+        state = service.current()
+        inv = state.inventory
+        recent = store.recent(500)
+        active = sorted((r for r in recent if not r.finished), key=lambda r: r.id)
+        soon = datetime.now(timezone.utc) + timedelta(hours=24)
+        upcoming = sorted((sc for sc in schedules.all() if sc.enabled and sc.next_run_at and sc.next_run_at <= soon),
+                          key=lambda sc: sc.next_run_at)
+        return {
+            "host_issues": ov.host_issues(recent, set(inv.hosts) if inv else None),
+            "schedule_issues": ov.schedule_issues(schedules.all(), store),
+            "setup_issues": ov.setup_issues(settings, state, creds),
+            "active": active, "live": {r.id: executor.live_stats(r.id) or {} for r in active},
+            "positions": {r.id: executor.queue_position(r.id) for r in active},
+            "upcoming": upcoming, "recent": recent[:10], "week": ov.week_counts(recent),
+            "has_schedules": bool(schedules.all()), "has_runs": bool(recent), "tz": local_now().tzname(),
+        }
+
+    @app.get("/", response_class=HTMLResponse)
+    def home(request: Request):
+        return render(request, "home.html", section="home", **overview_context())
+
+    @app.get("/home/active", response_class=HTMLResponse)
+    def home_active(request: Request, ids: str = ""):
+        ctx = overview_context()
+        resp = render(request, "_home_active.html", **ctx)
+        # When a run finishes, the issues and recent lists change too: reload the page once.
+        if ids != ",".join(str(r.id) for r in ctx["active"]):
+            resp.headers["HX-Refresh"] = "true"
+        return resp
 
     @app.get("/inventory", response_class=HTMLResponse)
     def overview(request: Request):
