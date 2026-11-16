@@ -66,7 +66,8 @@ def _write_secret(path: Path, text: str) -> Path:
 
 class Executor:
     def __init__(self, store: RunStore, opts: CliOptions, creds: CredentialStore | None = None,
-                 data_dir: Path | None = None, ssh_config: Path | None = None):
+                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None):
+        self.on_finish = on_finish or (lambda run_id: None)
         self.store = store
         self.opts = opts
         self.creds = creds
@@ -112,6 +113,9 @@ class Executor:
             finally:
                 self._live.pop(run_id, None)
                 self._cancel.discard(run_id)
+                run = self.store.get(run_id)
+                if run and run.finished:
+                    self.on_finish(run_id)
 
     def _execute(self, run_id: int) -> None:
         import ansible_runner  # imported lazily: slow, and only the worker needs it

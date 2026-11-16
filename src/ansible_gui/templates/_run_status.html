@@ -10,6 +10,7 @@
     <div><dt>By</dt><dd>{% if run.schedule_id %}<a href="/schedules/{{ run.schedule_id }}">{{ run.trigger }}</a>{% else %}{{ run.trigger }}{% endif %}</dd></div>
     {% set c = run.credentials %}
     {% if c %}<div><dt>Signed in with</dt><dd class="mono">{% for k in ("ssh_key", "vault_password", "become_password") %}{% if c[k] %}{{ c[k].name }} {% endif %}{% endfor %}{% for e in c.env_secret or [] %}${{ e.env }} {% endfor %}{% if not (c.ssh_key or c.vault_password or c.become_password or c.env_secret) %}nothing stored{% endif %}</dd></div>{% endif %}
+    {% if run.notified %}<div><dt>Email</dt><dd {% if run.notified.startswith("Email failed") %}class="num-failed"{% endif %}>{{ run.notified }}</dd></div>{% endif %}
   </dl>
   {% if run.error %}<p class="field-error">{{ run.error }}</p>{% endif %}
   {% if run.status == "queued" and queue_position %}<p class="help">Waiting behind {{ queue_position - 1 }} other run{{ "s" if queue_position != 2 }}. Runs go one at a time.</p>{% endif %}

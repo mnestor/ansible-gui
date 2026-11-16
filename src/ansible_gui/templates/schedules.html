@@ -38,4 +38,18 @@
 </div>
 <p class="help">Times are the server’s ({{ tz }}).</p>
 {% endif %}
+
+<section class="section" id="email" aria-labelledby="email-h">
+  <h2 id="email-h" class="section-title">Email</h2>
+  {% if mailed %}<p class="banner banner-ok" role="status">Test email sent to {{ smtp.to | join(", ") }}. If it doesn’t arrive, check spam, then the server log.</p>{% endif %}
+  {% if mail_error %}<p class="field-error" role="alert">The test email didn’t go out: {{ mail_error }}. Check the <span class="mono">ANSIBLE_GUI_SMTP_*</span> settings and that the mail server is reachable from here, then try again.</p>{% endif %}
+  {% if smtp %}
+    <p class="help-block">Scheduled runs that need attention are mailed to <strong>{{ smtp.to | join(", ") }}</strong> from <span class="mono">{{ smtp.sender }}</span>, through <span class="mono">{{ smtp.host }}:{{ smtp.port }}</span> ({{ smtp.tls }}{% if smtp.username %}, signed in as {{ smtp.username }}{% endif %}). Runs started by hand never send email. Each schedule picks what it mails.</p>
+    <form method="post" action="/schedules/test-email" hx-boost="false">
+      <button class="btn btn-secondary" type="submit" data-busy-label="Sending…">Send a test email</button>
+    </form>
+  {% else %}
+    <p class="help-block">Not set up, so a failed 03:00 run tells nobody. Set <span class="mono">ANSIBLE_GUI_SMTP_HOST</span>, <span class="mono">ANSIBLE_GUI_SMTP_FROM</span> and <span class="mono">ANSIBLE_GUI_NOTIFY_TO</span> (and <span class="mono">_PORT</span>, <span class="mono">_TLS</span>, <span class="mono">_USERNAME</span>, <span class="mono">_PASSWORD</span> as your server needs), then restart.</p>
+  {% endif %}
+</section>
 {% endblock %}

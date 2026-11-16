@@ -25,6 +25,10 @@ uv run ansible-gui            # http://127.0.0.1:8080
 | `ANSIBLE_GUI_OIDC_CLIENT_ID`, `ANSIBLE_GUI_OIDC_CLIENT_SECRET` (or `_FILE`) | | The OIDC client. Redirect URI: `<public url>/auth/callback` |
 | `ANSIBLE_GUI_OIDC_GROUPS` | required with OIDC | Comma-separated groups allowed in (`groups` claim), or `*` for anyone the provider signs in |
 | `ANSIBLE_GUI_PUBLIC_URL` | | e.g. `https://ansible.example.com`; used for the redirect URI, the same-origin check and secure cookies |
+| `ANSIBLE_GUI_SMTP_HOST` | none | Mail server for notifications. Turns email on |
+| `ANSIBLE_GUI_SMTP_PORT`, `ANSIBLE_GUI_SMTP_TLS` | `587`, `starttls` | `TLS` is `starttls`, `ssl` (port 465) or `none` (port 25) |
+| `ANSIBLE_GUI_SMTP_USERNAME`, `ANSIBLE_GUI_SMTP_PASSWORD` (or `_FILE`) | | SMTP login, if the server wants one |
+| `ANSIBLE_GUI_SMTP_FROM`, `ANSIBLE_GUI_NOTIFY_TO` | required with SMTP | Sender, and comma-separated recipients |
 | `ANSIBLE_GUI_TRUSTED_PROXIES` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are believed |
 | `ANSIBLE_GUI_INSECURE_NO_AUTH` | | `1` allows listening beyond loopback without sign-in (only if a proxy in front does it) |
 | `ANSIBLE_GUI_HOST` / `ANSIBLE_GUI_PORT` | `127.0.0.1` / `8080` | Listen address |
@@ -53,6 +57,14 @@ in the server's time zone. A thread checks every 15 seconds. Each firing re-reso
 on a group follows the inventory. A schedule never overlaps itself: if its previous run is still going, the
 new one is recorded as skipped. Runs missed while the server was down are recorded once as missed and not
 caught up. Run one server process; two would both fire every schedule.
+
+## Email
+
+Scheduled runs mail `ANSIBLE_GUI_NOTIFY_TO` according to each schedule's setting: "Problems and recoveries"
+(default: failed or unreachable hosts, couldn't start, skipped, missed, interrupted, dry runs that found changes,
+and the first good run after a problem), "Every run", or "Never". Runs started by hand never mail. The email lists
+each host's result and the failing tasks' lines, not the whole log. Whether it was sent is shown on the run page;
+the Schedules page has a test button.
 
 ## Sign-in
 

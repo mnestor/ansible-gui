@@ -55,6 +55,16 @@
 
   {% include "_run_fields.html" %}
 
+  <fieldset class="field">
+    <legend class="label">Email</legend>
+    <div class="segmented segmented-inline">
+      {% for value, label in notify_modes.items() %}
+        <label><input type="radio" name="notify" value="{{ value }}" {% if form.notify == value %}checked{% endif %}> {{ label }}</label>
+      {% endfor %}
+    </div>
+    <p class="help">{% if smtp %}To {{ smtp.to | join(", ") }}. Problems: failed or unreachable hosts, runs that couldn’t start, were skipped or missed, and dry runs that found changes; plus the first good run after one.{% else %}Email isn’t set up, so nothing is sent. Set <span class="mono">ANSIBLE_GUI_SMTP_HOST</span>, <span class="mono">ANSIBLE_GUI_SMTP_FROM</span> and <span class="mono">ANSIBLE_GUI_NOTIFY_TO</span>.{% endif %}</p>
+  </fieldset>
+
   <div id="preview" class="preview" aria-live="polite">
     {% include "_run_preview.html" %}
   </div>

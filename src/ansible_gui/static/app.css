@@ -401,3 +401,4 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); }
 .page .section-head, .page .help-block { max-width: 960px; }
 .table-region + .help { margin-top: var(--s2); }
+#email { margin-top: var(--s10); }

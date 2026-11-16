@@ -38,6 +38,7 @@ create table if not exists schedules (
   verbosity integer not null default 0,
   credentials text not null default '{}',
   next_run_at text,
+  notify text not null default 'problems',
   created_at text not null,
   updated_at text not null,
   updated_by text not null default ''
@@ -92,6 +93,7 @@ class Schedule:
     next_run_at: datetime | None
     updated_at: datetime
     updated_by: str
+    notify: str = "problems"
     last_run: object | None = field(default=None)
 
     @property
@@ -105,13 +107,16 @@ class ScheduleStore:
         self._db = sqlite3.connect(data_dir / "ansible-gui.db", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        if "notify" not in {r["name"] for r in self._db.execute("pragma table_info(schedules)")}:
+            self._db.execute("alter table schedules add column notify text not null default 'problems'")
 
     def _row(self, r) -> Schedule:
         return Schedule(id=r["id"], name=r["name"], cron=r["cron"], enabled=bool(r["enabled"]), playbook=r["playbook"],
                         target=r["target"], tags=r["tags"], skip_tags=r["skip_tags"], check_mode=bool(r["check_mode"]),
                         diff=bool(r["diff"]), verbosity=r["verbosity"], credentials=json.loads(r["credentials"]),
                         next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
-                        updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"])
+                        updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
+                        notify=r["notify"])
 
     def all(self) -> list[Schedule]:
         return [self._row(r) for r in self._db.execute("select * from schedules order by lower(name)")]
@@ -137,17 +142,19 @@ class ScheduleStore:
         enabled = bool(form.get("enabled", True))
         nxt = next_times(cron, 1)[0].astimezone(timezone.utc).isoformat(timespec="seconds") if enabled else None
         creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
+        notify = form.get("notify") if form.get("notify") in ("problems", "always", "never") else "problems"
         values = (name, cron, int(enabled), form["playbook"], form["target"], form["tags"], form["skip_tags"],
-                  int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, now(), user)
+                  int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, notify,
+                  now(), user)
         with self._lock:
             if sid:
                 self._db.execute("update schedules set name=?, cron=?, enabled=?, playbook=?, target=?, tags=?, skip_tags=?,"
-                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, updated_at=?, updated_by=?"
+                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, updated_at=?, updated_by=?"
                                  " where id=?", (*values, sid))
             else:
                 cur = self._db.execute("insert into schedules (name, cron, enabled, playbook, target, tags, skip_tags,"
-                                       " check_mode, diff, verbosity, credentials, next_run_at, updated_at, updated_by,"
-                                       " created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
+                                       " check_mode, diff, verbosity, credentials, next_run_at, notify, updated_at, updated_by,"
+                                       " created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
                 sid = cur.lastrowid
             self._db.commit()
         return self.get(sid)
@@ -176,7 +183,8 @@ class ScheduleStore:
 
 class Scheduler:
     def __init__(self, schedules: ScheduleStore, runs: RunStore, executor, creds: CredentialStore,
-                 opts: CliOptions, tick: float = 15.0):
+                 opts: CliOptions, tick: float = 15.0, on_finish=None):
+        self.on_finish = on_finish or (lambda run_id: None)
         self.schedules = schedules
         self.runs = runs
         self.executor = executor
@@ -221,6 +229,7 @@ class Scheduler:
                                check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity, expected_hosts=[],
                                trigger=trigger or f"schedule {s.name}", schedule_id=s.id)
         self.runs.update(run.id, status=status, finished_at=now(), error=error)
+        self.on_finish(run.id)
         return self.runs.get(run.id)
 
     def fire(self, s: Schedule, by: str | None = None):

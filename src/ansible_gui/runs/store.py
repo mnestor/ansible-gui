@@ -38,6 +38,7 @@ create table if not exists runs (
 MIGRATIONS = {
     "credentials": "alter table runs add column credentials text not null default '{}'",
     "schedule_id": "alter table runs add column schedule_id integer",
+    "notified": "alter table runs add column notified text",
 }
 
 
@@ -68,6 +69,7 @@ class Run:
     # {"ssh_key": {"id": 1, "name": "lab"}, ..., "env_secret": [{"id": 4, "name": "x", "env": "X"}]}
     credentials: dict = field(default_factory=dict)
     schedule_id: int | None = None
+    notified: str | None = None  # "Emailed …" or "Email failed: …"
 
     @property
     def finished(self) -> bool:
@@ -111,6 +113,7 @@ def _row(r: sqlite3.Row) -> Run:
         host_stats=json.loads(r["host_stats"]),
         credentials=json.loads(r["credentials"]),
         schedule_id=r["schedule_id"],
+        notified=r["notified"],
     )
 
 
@@ -127,6 +130,8 @@ class RunStore:
             if col not in have:
                 self._db.execute(sql)
         # A restart kills whatever was running; say so instead of showing it as running forever.
+        self.interrupted_at_start = [r["id"] for r in self._db.execute(
+            "select id from runs where status in ('queued','running')")]
         self._db.execute(
             "update runs set status='interrupted', finished_at=?, error=? where status in ('queued','running')",
             (now(), "The server restarted before this run finished."),

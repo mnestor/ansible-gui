@@ -20,6 +20,7 @@ from .credentials import ssh as sshtools
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
 from .keys import Keys
+from .notify import NOTIFY_MODES, Notifier
 from .inventory.model import Layer, Vaulted
 from .inventory.service import InventoryService
 from .runs import playbooks
@@ -122,7 +123,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        https_only=bool(settings.public_url and settings.public_url.startswith("https://")))
     app.state.creds = creds
     schedules = ScheduleStore(settings.data_dir)
-    scheduler = Scheduler(schedules, store, executor, creds, opts)
+    notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
+    executor.on_finish = notifier.run_finished
+    scheduler = Scheduler(schedules, store, executor, creds, opts, on_finish=notifier.run_finished)
+    for run_id in store.interrupted_at_start:
+        notifier.run_finished(run_id)
+    app.state.notifier = notifier
     app.state.schedules = schedules
     app.state.scheduler = scheduler
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
@@ -455,6 +461,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def schedule_page(request: Request, form: dict, sched=None, errors: dict | None = None,
                       form_error: str | None = None, flash: str | None = None, status: int = 200) -> HTMLResponse:
         return render(request, "schedule_form.html", status, section="schedules", sched=sched, errors=errors or {},
+                      notify_modes=NOTIFY_MODES, smtp=settings.smtp,
                       form_error=form_error, flash=flash, purpose="schedule", editing=bool(sched), tz=tz_name,
                       recent=store.for_schedule(sched.id) if sched else [], **when_context(form["cron"]),
                       **form_context(form))
@@ -462,7 +469,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def schedule_form(sched) -> dict:
         form = {"name": sched.name, "cron": sched.cron, "playbook": sched.playbook, "target": sched.target,
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
-                "skip_tags": sched.skip_tags, "verbosity": sched.verbosity}
+                "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
         return form
 
@@ -473,7 +480,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             recent = store.for_schedule(sc.id, 1)
             sc.last_run = recent[0] if recent else None
         return render(request, "schedules.html", section="schedules", schedules=items, tz=tz_name,
-                      deleted=request.query_params.get("deleted"))
+                      deleted=request.query_params.get("deleted"), smtp=settings.smtp,
+                      mailed=request.query_params.get("mailed"), mail_error=request.session.pop("mail_error", None))
+
+    @app.post("/schedules/test-email")
+    def test_email(request: Request):
+        error = notifier.send_test(auth.display_name(auth.current_user(request)))
+        if error:
+            request.session["mail_error"] = error
+            return RedirectResponse("/schedules#email", status_code=303)
+        return RedirectResponse("/schedules?mailed=1#email", status_code=303)
 
     @app.get("/schedules/new", response_class=HTMLResponse)
     def new_schedule(request: Request):
@@ -482,6 +498,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["diff"] = q.get("diff", "1") == "1"
         form["name"] = q.get("name", "")
         form["cron"] = q.get("cron", "0 3 * * *")
+        form["notify"] = "problems"
         default_credentials(form, q)
         return schedule_page(request, form)
 
@@ -495,6 +512,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["diff"] = data.get("diff") == "1"
         form["name"] = data.get("name", "")
         form["cron"] = data.get("cron", "")
+        form["notify"] = data.get("notify", "problems")
         sched = schedules.get(sid) if sid else None
         if sid and not sched:
             return RedirectResponse("/schedules", status_code=303)

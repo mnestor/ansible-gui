@@ -25,6 +25,7 @@ class Settings:
     oidc_client_secret: str | None = None
     oidc_groups: list[str] = field(default_factory=list)  # ["*"] allows anyone the provider lets in
     secret_key: str | None = None  # master key for sessions and stored credentials
+    smtp: "SmtpSettings | None" = None
 
     @property
     def auth_enabled(self) -> bool:
@@ -64,6 +65,7 @@ class Settings:
             oidc_client_secret=_env_or_file("ANSIBLE_GUI_OIDC_CLIENT_SECRET"),
             oidc_groups=groups,
             secret_key=_env_or_file("ANSIBLE_GUI_SECRET_KEY"),
+            smtp=SmtpSettings.from_env(),
         )
 
     def cli_options(self) -> CliOptions:
@@ -84,3 +86,33 @@ def _env_or_file(name: str) -> str | None:
     if path:
         return Path(path).expanduser().read_text().strip() or None
     return None
+
+
+@dataclass
+class SmtpSettings:
+    host: str
+    to: list[str]
+    sender: str
+    port: int = 587
+    tls: str = "starttls"  # starttls | ssl | none
+    username: str | None = None
+    password: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "SmtpSettings | None":
+        host = os.environ.get("ANSIBLE_GUI_SMTP_HOST")
+        if not host:
+            return None
+        to = [a.strip() for a in os.environ.get("ANSIBLE_GUI_NOTIFY_TO", "").split(",") if a.strip()]
+        sender = os.environ.get("ANSIBLE_GUI_SMTP_FROM", "")
+        tls = os.environ.get("ANSIBLE_GUI_SMTP_TLS", "starttls").lower()
+        if not to or not sender:
+            raise SystemExit("ANSIBLE_GUI_SMTP_HOST is set, so ANSIBLE_GUI_SMTP_FROM and ANSIBLE_GUI_NOTIFY_TO "
+                             "(comma-separated addresses) are needed too.")
+        if tls not in ("starttls", "ssl", "none"):
+            raise SystemExit("ANSIBLE_GUI_SMTP_TLS must be starttls, ssl or none.")
+        default_port = {"starttls": 587, "ssl": 465, "none": 25}[tls]
+        return cls(host=host, to=to, sender=sender, tls=tls,
+                   port=int(os.environ.get("ANSIBLE_GUI_SMTP_PORT") or default_port),
+                   username=os.environ.get("ANSIBLE_GUI_SMTP_USERNAME") or None,
+                   password=_env_or_file("ANSIBLE_GUI_SMTP_PASSWORD"))
