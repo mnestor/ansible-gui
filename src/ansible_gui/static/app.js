@@ -1,6 +1,14 @@
 // Small client behaviours: sidebar search and tabs, variable filter, busy buttons.
 // Re-run after every htmx swap, since hx-boost replaces the body.
 (function () {
+  // setup() runs after every htmx swap (including the 1s run poll), so each
+  // element is bound once and remembered.
+  function once(el, key) {
+    if (!el || el.dataset["bound" + key]) return false;
+    el.dataset["bound" + key] = "1";
+    return true;
+  }
+
   function setup(root) {
     const find = root.querySelector("[data-find]");
     const lists = root.querySelectorAll("[data-list]");
@@ -28,13 +36,14 @@
     }
 
     toggles.forEach((btn) => {
+      if (!once(btn, "Toggle")) return;
       btn.addEventListener("click", () => {
         toggles.forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
         lists.forEach((l) => (l.hidden = l.dataset.list !== btn.dataset.show));
         filterSidebar();
       });
     });
-    if (find) {
+    if (once(find, "Find")) {
       find.addEventListener("input", filterSidebar);
       find.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
@@ -42,7 +51,8 @@
         if (first) first.click();
       });
     }
-    root.querySelector("[data-clear]")?.addEventListener("click", () => {
+    const clear = root.querySelector("[data-clear]");
+    if (once(clear, "Clear")) clear.addEventListener("click", () => {
       find.value = "";
       filterSidebar();
       find.focus();
@@ -63,14 +73,16 @@
         varempty.querySelector("[data-varterm]").textContent = varfilter.value.trim();
       }
     }
-    varfilter?.addEventListener("input", filterVars);
-    root.querySelector("[data-varclear]")?.addEventListener("click", () => {
+    if (once(varfilter, "Filter")) varfilter.addEventListener("input", filterVars);
+    const varclear = root.querySelector("[data-varclear]");
+    if (once(varclear, "Clear")) varclear.addEventListener("click", () => {
       varfilter.value = "";
       filterVars();
       varfilter.focus();
     });
 
     root.querySelectorAll("form").forEach((form) => {
+      if (!once(form, "Busy")) return;
       form.addEventListener("submit", () => {
         const btn = form.querySelector("[data-busy-label]");
         if (!btn) return;
@@ -78,6 +90,40 @@
         btn.textContent = btn.dataset.busyLabel;
       });
     });
+
+    // Cancel needs a second click within 4s: interrupting a play can leave hosts half-done.
+    root.querySelectorAll("form[data-confirm-twice]").forEach((form) => {
+      if (!once(form, "Confirm")) return;
+      const btn = form.querySelector("button");
+      form.addEventListener("submit", (e) => {
+        if (btn.dataset.armed) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        btn.dataset.armed = "1";
+        btn.dataset.original = btn.textContent;
+        btn.textContent = btn.dataset.confirmLabel;
+        setTimeout(() => {
+          delete btn.dataset.armed;
+          if (btn.dataset.original) btn.textContent = btn.dataset.original;
+        }, 4000);
+      }, true);
+    });
+
+    // Live log: append new lines; stay pinned to the bottom unless the reader scrolled up.
+    const logEl = root.querySelector("#log");
+    root.querySelectorAll("template[data-log-append]").forEach((t) => {
+      if (logEl) {
+        const pinned = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
+        logEl.append(t.content.textContent);
+        if (pinned) logEl.scrollTop = logEl.scrollHeight;
+      }
+      t.remove();
+    });
+
+    // Tag suggestions come back with each preview.
+    const tagOptions = root.querySelector("#tag-options");
+    const tagList = root.querySelector("#tag-suggestions");
+    if (tagOptions && tagList) tagList.replaceChildren(tagOptions.content.cloneNode(true));
 
     // "/" focuses the host search, like most dev tools.
     document.onkeydown = (e) => {
@@ -88,6 +134,10 @@
     };
   }
 
-  document.addEventListener("DOMContentLoaded", () => setup(document));
+  document.addEventListener("DOMContentLoaded", () => {
+    setup(document);
+    const logEl = document.querySelector("#log[data-follow]");
+    if (logEl) logEl.scrollTop = logEl.scrollHeight;
+  });
   document.addEventListener("htmx:afterSettle", () => setup(document));
 })();

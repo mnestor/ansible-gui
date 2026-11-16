@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "inventory_base.html" %}
 {% block title %}{{ host.name }}{% endblock %}
 {% block main %}
 <a class="backlink" href="/inventory">← All hosts</a>
@@ -15,6 +15,11 @@
     {% for g in host.groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
     {% if not host.groups %}<li class="quiet">In no group besides all</li>{% endif %}
   </ul>
+  <div class="subject-actions">
+    <a class="btn btn-secondary" href="/runs/new?target={{ host.name | urlencode }}">Run a playbook on {{ host.name }}</a>
+    {% set last = last_results.get(host.name) %}
+    {% if last %}<a class="subject-last" href="/runs/{{ last[1] }}">Last run #{{ last[1] }}: <span class="badge badge-{{ last[0] }}">{{ last[0] }}</span></a>{% endif %}
+  </div>
 </header>
 
 {% if host.mismatches %}

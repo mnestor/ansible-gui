@@ -1,0 +1,39 @@
+{% extends "runs_base.html" %}
+{% block title %}Runs{% endblock %}
+{% block main %}
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Runs</p>
+    <h1 class="identity">Run history</h1>
+  </div>
+  <a class="btn btn-primary" href="/runs/new">Run a playbook</a>
+</header>
+
+{% if not runs %}
+  <p class="empty">Nothing has run yet. Start with a dry run: it reports what would change without changing anything.
+    <a class="btn btn-secondary" href="/runs/new">Run a playbook</a></p>
+{% else %}
+<div class="table-region">
+<table class="history">
+  <thead><tr>
+    <th scope="col">Run</th><th scope="col">Playbook</th><th scope="col">Status</th>
+    <th scope="col">Targets</th><th scope="col" class="col-wide">Mode</th>
+    <th scope="col" class="col-wide">Started</th><th scope="col" class="num col-wide">Took</th>
+  </tr></thead>
+  <tbody>
+  {% for r in runs %}
+    <tr>
+      <td class="tabular"><a href="/runs/{{ r.id }}">#{{ r.id }}</a></td>
+      <th scope="row" class="mono"><a href="/runs/{{ r.id }}">{{ r.playbook }}</a></th>
+      <td><span class="badge badge-{{ status_tone(r.status) }}">{{ status_label(r) }}</span></td>
+      <td class="mono">{{ r.target or "—" }}</td>
+      <td class="col-wide">{{ r.mode }}</td>
+      <td class="tabular col-wide">{% if r.started_at %}<time datetime="{{ r.started_at | stamp }}">{{ r.started_at | when }}</time>{% else %}—{% endif %}</td>
+      <td class="num tabular col-wide">{{ r.duration | seconds }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

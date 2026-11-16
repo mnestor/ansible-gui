@@ -85,6 +85,7 @@ ul, ol { padding: 0; list-style: none; }
 
 /* Buttons */
 .btn {
+  display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
   font: 600 var(--fs-sm)/1 var(--font-text);
   padding: var(--s2) var(--s3);
   min-height: 32px;
@@ -284,3 +285,88 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .panel-error { display: flex; flex-direction: column; gap: var(--s4); align-items: flex-start; }
 .panel-error .identity { color: var(--danger); }
 .panel-error .well { width: 100%; }
+
+/* ---------------------------------------------------------------- Runs */
+.page { padding: var(--s6) var(--s4) var(--s10); max-width: 1200px; min-width: 0; }
+@media (min-width: 640px) { .page { padding: var(--s6) var(--s10) var(--s10); } }
+.crumb { display: inline-block; color: var(--ink-muted); text-decoration: none; font-weight: 600; margin-bottom: var(--s4); }
+.subject-row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: var(--s4); }
+.subject-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); margin-top: var(--s2); }
+.subject-last { color: var(--ink-muted); text-decoration: none; display: inline-flex; gap: var(--s2); align-items: center; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--s2); margin-bottom: var(--s2); }
+.quiet-link { color: var(--ink-muted); font-weight: 600; }
+
+.badge-accent { color: var(--accent); background: color-mix(in oklab, var(--accent) 12%, var(--canvas)); }
+.badge-failed { color: var(--danger); background: color-mix(in oklab, var(--danger) 12%, var(--canvas)); }
+.badge-unreachable { color: var(--unreachable); background: color-mix(in oklab, var(--unreachable) 12%, var(--canvas)); }
+.badge-pending { color: var(--ink-muted); background: color-mix(in oklab, var(--ink-muted) 12%, var(--canvas)); }
+.badge-lg { font-size: var(--fs-md); padding: var(--s1) var(--s3); }
+.topnav .badge { margin-left: var(--s1); }
+
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; align-self: center; background: var(--ink-muted); }
+.dot-ok { background: var(--ok); }
+.dot-changed { background: var(--changed); }
+.dot-failed { background: var(--danger); }
+.dot-unreachable { background: var(--unreachable); }
+
+/* Launcher form: labels above, one column, max 4 fields before "More options" */
+.launcher { display: flex; flex-direction: column; gap: var(--s6); max-width: 720px; }
+.field { display: flex; flex-direction: column; gap: var(--s2); border: 0; padding: 0; margin: 0; min-width: 0; }
+.label { font-weight: 600; padding: 0; }
+.optional { font-weight: 400; color: var(--ink-muted); }
+.help { color: var(--ink-muted); font-size: var(--fs-xs); }
+.input-medium { max-width: 440px; }
+.choices { display: flex; flex-direction: column; gap: var(--s1); }
+.choice, .check { display: flex; align-items: center; gap: var(--s2); min-height: 28px; cursor: pointer; }
+@media (pointer: coarse) { .choice, .check { min-height: 44px; } }
+.choice input, .check input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.segmented-inline { display: inline-flex; flex-wrap: wrap; align-self: flex-start; }
+.segmented-inline label {
+  display: inline-flex; align-items: center; padding: var(--s2) var(--s3); min-height: 30px;
+  font-weight: 600; color: var(--ink-muted); border-radius: calc(var(--radius-control) - 2px); cursor: pointer;
+}
+.segmented-inline input { position: absolute; opacity: 0; pointer-events: none; }
+.segmented-inline label:has(input:checked) { background: var(--well); color: var(--ink); }
+.segmented-inline label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (pointer: coarse) { .segmented-inline label { min-height: 44px; } }
+.more summary { cursor: pointer; font-weight: 600; color: var(--ink-muted); }
+.more-body { display: flex; flex-direction: column; gap: var(--s6); margin-top: var(--s4); }
+select.input { appearance: auto; }
+
+.preview { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s4); background: var(--plane); border-radius: var(--radius-control); }
+.preview-note { color: var(--ink); }
+.preview-hosts { display: flex; flex-direction: column; gap: var(--s2); }
+.preview .chip { background: var(--well); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); }
+.btn-run { min-height: 40px; padding-inline: var(--s4); font-size: var(--fs-md); }
+.field-error { color: var(--danger); font-weight: 600; }
+.htmx-request .preview, .preview.htmx-request { opacity: .6; }
+
+.btn-danger-quiet { background: transparent; color: var(--danger); padding-inline: var(--s2); }
+.btn-danger-quiet:hover { background: color-mix(in oklab, var(--danger) 10%, transparent); }
+.btn-danger-quiet[data-armed] { background: color-mix(in oklab, var(--danger) 12%, var(--canvas)); }
+
+/* Run page */
+.run-status { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s2); }
+.run-status > .badge { align-self: flex-start; }
+.run-meta { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s6); }
+.run-meta div { display: flex; flex-direction: column; min-width: 0; }
+.run-meta dt { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); }
+.run-meta dd { overflow-wrap: anywhere; }
+.run-actions { display: flex; flex-wrap: wrap; gap: var(--s3); align-items: center; }
+
+.results, .history { width: 100%; border-collapse: collapse; }
+.results { max-width: 760px; }
+.results th, .results td, .history th, .history td { text-align: left; padding: var(--s2); border-bottom: 1px solid var(--rule); white-space: nowrap; }
+.results thead th, .history thead th { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); position: sticky; top: 0; background: var(--canvas); }
+.results tbody th, .history tbody th { font-weight: 600; }
+.results a, .history a { text-decoration: none; }
+.results a:hover, .history a:hover { text-decoration: underline; }
+.history tbody tr:hover { background: color-mix(in oklab, var(--ink) 3%, transparent); }
+.num { text-align: right !important; }
+.num-changed { color: var(--changed); font-weight: 600; }
+.num-failed { color: var(--danger); font-weight: 600; }
+@media (max-width: 639px) { .col-wide { display: none; } }
+
+.log { max-height: 70vh; overflow: auto; white-space: pre; font-size: var(--fs-xs); line-height: 1.5; }
+@media (max-width: 639px) { .log { white-space: pre-wrap; } }

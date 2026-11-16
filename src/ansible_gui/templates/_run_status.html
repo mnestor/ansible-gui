@@ -1,0 +1,14 @@
+<div class="run-status">
+  <span class="badge badge-lg badge-{{ status_tone(run.status) }}">{{ status_label(run) }}</span>
+  <dl class="run-meta">
+    <div><dt>Targets</dt><dd class="mono">{{ run.target or "playbook’s hosts" }}</dd></div>
+    {% if run.tags %}<div><dt>Tags</dt><dd class="mono">{{ run.tags }}</dd></div>{% endif %}
+    {% if run.skip_tags %}<div><dt>Skip tags</dt><dd class="mono">{{ run.skip_tags }}</dd></div>{% endif %}
+    <div><dt>Started</dt><dd class="tabular">{% if run.started_at %}<time datetime="{{ run.started_at | stamp }}">{{ run.started_at | clock }}</time>{% else %}not yet{% endif %}</dd></div>
+    <div><dt>Took</dt><dd class="tabular">{{ run.duration | seconds }}</dd></div>
+    {% if run.commit_sha %}<div><dt>Commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
+    <div><dt>By</dt><dd>{{ run.trigger }}</dd></div>
+  </dl>
+  {% if run.error %}<p class="field-error">{{ run.error }}</p>{% endif %}
+  {% if run.status == "queued" and queue_position %}<p class="help">Waiting behind {{ queue_position - 1 }} other run{{ "s" if queue_position != 2 }}. Runs go one at a time.</p>{% endif %}
+</div>

@@ -1,0 +1,12 @@
+- name: Lab check
+  hosts: lab
+  gather_facts: false
+  tasks:
+    - name: Say hello
+      ansible.builtin.debug:
+        msg: "hello from {{ inventory_hostname }}"
+      tags: [hello]
+    - name: Report a change
+      ansible.builtin.command: "true"
+      changed_when: true
+      tags: [change]

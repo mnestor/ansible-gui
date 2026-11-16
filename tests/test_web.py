@@ -1,4 +1,5 @@
 import shutil
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ needs_ansible = pytest.mark.skipif(shutil.which("ansible-inventory") is None, re
 
 
 def client(**kw) -> TestClient:
-    settings = Settings(project_dir=FIXTURE, inventory=["inventory/hosts.ini"], **kw)
+    settings = Settings(project_dir=FIXTURE, inventory=["inventory/hosts.ini"], data_dir=Path(tempfile.mkdtemp()), **kw)
     return TestClient(create_app(settings))
 
 
@@ -60,7 +61,7 @@ def test_load_error_page_shows_command_and_retry():
 
 @needs_ansible
 def test_empty_inventory_explains_itself():
-    settings = Settings(project_dir=FIXTURE, inventory=["does-not-exist.ini"])
+    settings = Settings(project_dir=FIXTURE, inventory=["does-not-exist.ini"], data_dir=Path(tempfile.mkdtemp()))
     r = TestClient(create_app(settings)).get("/inventory")
     assert "This inventory has no hosts" in r.text
 

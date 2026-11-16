@@ -1,0 +1,7 @@
+- name: Slow
+  hosts: lab
+  gather_facts: false
+  tasks:
+    - name: Wait
+      ansible.builtin.pause:
+        seconds: 20

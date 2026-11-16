@@ -1,0 +1,26 @@
+{% if not stats %}
+  <p class="empty">{% if run.finished %}No host results were recorded. The output below says why.{% else %}Waiting for the first task…{% endif %}</p>
+{% else %}
+<div class="table-region">
+<table class="results">
+  <thead><tr>
+    <th scope="col">Host</th><th scope="col">Result</th>
+    <th scope="col" class="num">ok</th><th scope="col" class="num">changed</th>
+    <th scope="col" class="num col-wide">failed</th><th scope="col" class="num col-wide">skipped</th>
+  </tr></thead>
+  <tbody>
+  {% for host, s in stats | dictsort %}
+    {% set result = host_result(s) %}
+    <tr>
+      <th scope="row" class="mono"><a href="/inventory/hosts/{{ host }}">{{ host }}</a></th>
+      <td><span class="badge badge-{{ result }}">{% if result != "pending" %}{{ result }}{% elif run.finished %}not run{% else %}waiting{% endif %}</span></td>
+      <td class="num tabular">{{ s.ok }}</td>
+      <td class="num tabular {% if s.changed %}num-changed{% endif %}">{{ s.changed }}</td>
+      <td class="num tabular col-wide {% if s.failed %}num-failed{% endif %}">{{ s.failed }}</td>
+      <td class="num tabular col-wide">{{ s.skipped }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}

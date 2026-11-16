@@ -1,0 +1,33 @@
+{# The matched hosts and the Run button, re-rendered on every change to the form. #}
+{% set apply = form.mode == "apply" %}
+{% if form_error %}
+  <p class="field-error" role="alert">{{ form_error }}</p>
+{% endif %}
+{% if not form.playbook %}
+  <p class="preview-note">Choose a playbook to see which hosts it would run on.</p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Choose a playbook first.</span></div>
+{% elif preview.error %}
+  <p class="field-error" role="alert">Ansible couldn’t work out the targets: <span class="mono">{{ preview.error }}</span></p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Fix the target pattern or the playbook, then try again.</span></div>
+{% elif not preview.hosts %}
+  <p class="preview-note"><strong>No hosts match.</strong>
+    {% if form.target %}<span class="mono">{{ form.target }}</span> doesn’t overlap the hosts in <span class="mono">{{ form.playbook }}</span>.{% else %}The playbook’s plays target no hosts in this inventory.{% endif %}</p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Change the targets to run.</span></div>
+{% else %}
+  <div class="preview-hosts">
+    <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>
+      {% if preview.plays > 1 %}across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}:</p>
+    <ul class="chips">{% for h in preview.hosts %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}</ul>
+  </div>
+  {% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}
+  <div class="actions">
+    <button class="btn btn-primary btn-run {% if apply %}btn-apply{% endif %}" type="submit" data-busy-label="Starting…">
+      {% if apply %}Apply to {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% else %}Dry run on {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% endif %}
+    </button>
+    <span class="help">{% if apply %}Changes these hosts.{% else %}Reports what would change; changes nothing.{% endif %}</span>
+  </div>
+{% endif %}
+<template id="tag-options">{% for t in preview.tags %}<option value="{{ t }}">{% endfor %}</template>

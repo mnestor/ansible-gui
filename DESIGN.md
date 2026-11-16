@@ -63,7 +63,11 @@ Text in the status colour on a tint of 12% status over canvas (`color-mix(in okl
 ## Components
 - Button: primary (accent fill, accent-fg text, one per screen), secondary (transparent, 1px `--ink-muted` outline), quiet (text only). Destructive is danger text on danger tint, never next to primary.
 - Source chip: mono file path; the winning layer in `--accent`, overridden layers in `--ink-muted` struck through.
-- Badge: status text on status tint, 12px, 600.
+- Badge: status text on status tint, 12px, 600. `badge-lg` (15px) only for the run status on a run page.
+- Danger-quiet button: danger text, no fill; destructive controls on a screen (Cancel run). Needs a second click within 4s to confirm.
+- Segmented radio (`segmented-inline`): 2–5 mutually exclusive options (Dry run / Apply, verbosity), selected option on `--well`.
+- Preview panel: `--plane` block that holds the live result of a form (matched hosts) and the form's one primary button, whose label states the count and mode ("Dry run on 3 hosts").
+- Status dot: 8px, the host's last run result in the sidebar.
 
 ## Voice
 - Plain and specific, sentence case, verbs on buttons ("Reload inventory", "Open in git"). Errors say what failed, the command, and what to do next.

@@ -1,0 +1,10 @@
+{% extends "runs_base.html" %}
+{% block title %}Run not found{% endblock %}
+{% block main %}
+<a class="crumb" href="/runs">← All runs</a>
+<header class="subject">
+  <p class="eyebrow">Run #{{ run_id }}</p>
+  <h1 class="identity">No such run</h1>
+  <p class="subject-meta">There is no run #{{ run_id }}. It may be from a different data directory. See the run history for the runs this server knows about.</p>
+</header>
+{% endblock %}

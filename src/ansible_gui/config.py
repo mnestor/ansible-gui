@@ -17,6 +17,7 @@ class Settings:
     vault_password_file: Path | None = None
     edit_url: str | None = None  # e.g. https://git.example.com/me/ansible/src/branch/main/{path}#L{line}
     inventory_binary: str = "ansible-inventory"
+    data_dir: Path = Path("data")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -34,6 +35,7 @@ class Settings:
             playbook_dir=os.environ.get("ANSIBLE_GUI_PLAYBOOK_DIR", "."),
             vault_password_file=Path(vault).expanduser() if vault else None,
             edit_url=os.environ.get("ANSIBLE_GUI_EDIT_URL") or None,
+            data_dir=Path(os.environ.get("ANSIBLE_GUI_DATA_DIR", "data")).expanduser().resolve(),
         )
 
     def cli_options(self) -> CliOptions:

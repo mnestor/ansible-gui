@@ -1,0 +1,7 @@
+{# Poll response: new log lines and fresh status, swapped out of band. #}
+<div id="run-status" hx-swap-oob="true">{% include "_run_status.html" %}</div>
+<div id="run-hosts" hx-swap-oob="true">{% include "_run_hosts.html" %}</div>
+{% if chunk %}<template data-log-append>{{ chunk }}</template>{% endif %}
+{% if not run.finished %}
+  <div hx-get="/runs/{{ run.id }}/live?offset={{ log_offset }}" hx-trigger="every 1s" hx-swap="outerHTML" id="poller"></div>
+{% endif %}

@@ -1,4 +1,4 @@
-{% extends "base.html" %}
+{% extends "inventory_base.html" %}
 {% block title %}{{ group.name }}{% endblock %}
 {% block main %}
 <a class="backlink" href="/inventory">← All groups</a>
@@ -16,6 +16,9 @@
   {% if group.children %}
     <p class="subject-meta">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
   {% endif %}
+  <div class="subject-actions">
+    <a class="btn btn-secondary" href="/runs/new?target={{ group.name | urlencode }}">Run a playbook on {{ group.name }}</a>
+  </div>
 </header>
 
 <section class="section" aria-labelledby="hosts-h">
