@@ -52,7 +52,7 @@ healthcheck. `deploy/` has a compose file and an env template for docker01.
 
 ## Git repositories
 
-Set up on the Repositories page: one inventory repository and any number of playbook repositories,
+Set up on the Repositories page: any number of inventory and playbook repositories,
 each with a branch and, for private repositories, a deploy key picked from the stored SSH keys.
 ansible-gui keeps its own clones in `data/repos/`, and resets each to the tip of its branch on every pull,
 discarding local changes.
@@ -61,7 +61,7 @@ Private repositories sign in with a git token (HTTPS) or an SSH deploy key, both
 Credentials page. A token goes to git through `GIT_ASKPASS` only: never into the URL, `.git/config` or a credential
 helper. Give it read-only access to repository contents.
 
-Every run, by hand or scheduled, first pulls the inventory repository and the playbook's repository,
+Every run, by hand or scheduled, first pulls its inventory repository and the playbook's repository,
 then asks Ansible again which hosts the targets match. If a pull fails, the run is canceled before anything
 touches a host, and an email goes out even for a run started by hand or a schedule set to never email.
 If the hosts changed since the preview, a run started by hand is canceled too; a schedule follows the inventory.
@@ -77,8 +77,18 @@ is the one named on the repository, or else the first of `collections/requiremen
 in the Run from directory, then at the top level. A failed install cancels the run like a failed pull. Roles
 listed in the file are not installed.
 
-The inventory repository can name several inventory files (`lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml`);
-Ansible merges them. Playbook-adjacent `group_vars/` and the playbook repository's own variables aren't shown on the inventory page, which reads the inventory repository only.
+An inventory repository can name several inventory files (`lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml`);
+Ansible merges them into one inventory.
+
+Several inventory repositories stay separate inventories. The Hosts and Groups lists show all of them,
+but values are never merged across them: a host or group page has one section per inventory it's in,
+each exactly what a run against that inventory gets. Host names in more than one inventory are flagged
+(groups like `all` aren't). Each run and schedule picks its inventory, records it, and pulls only that
+one; last-run results are kept per inventory. Runs from before this keep working while there is a single
+inventory.
+
+Playbook-adjacent `group_vars/` and the playbook repository's own variables aren't shown on the
+inventory page, which reads the inventory repositories only.
 
 ## How sources are worked out
 

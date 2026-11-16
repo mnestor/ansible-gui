@@ -1,28 +1,25 @@
 {% extends "inventory_base.html" %}
-{% block title %}{{ group.name }}{% endblock %}
+{% block title %}{{ name }}{% endblock %}
 {% block main %}
 <a class="backlink" href="/inventory/groups">← All groups</a>
 <header class="subject">
-  <p class="eyebrow">Group</p>
-  <h1 class="identity mono">{{ group.name }}</h1>
-  <p class="subject-meta tabular">
-    {{ group.all_hosts | length }} host{{ "s" if group.all_hosts | length != 1 }}
-    {% if group.all_hosts | length != group.hosts | length %}({{ group.hosts | length }} direct){% endif %}
-    · depth {{ group.depth }}{% if group.priority != 1 %} · priority {{ group.priority }}{% endif %}
-  </p>
-  {% if group.parents %}
-    <p class="subject-meta">Inside {% for p in group.parents %}<a class="chip mono" href="/inventory/groups/{{ p }}">{{ p }}</a>{% endfor %}</p>
-  {% endif %}
-  {% if group.children %}
-    <p class="subject-meta">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
-  {% endif %}
-  <div class="subject-actions">
-    <a class="btn btn-secondary" href="/runs/new?target={{ group.name | urlencode }}">Run a playbook on {{ group.name }}</a>
-  </div>
+  <p class="eyebrow">Group{% if found | length == 1 and multi_inv %} · from {{ found[0][0].name }}{% endif %}</p>
+  <h1 class="identity mono">{{ name }}</h1>
+  {% if found | length == 1 %}{% set inv_repo, group = found[0] %}{% include "_group_head.html" %}{% endif %}
 </header>
 
-<section class="section" aria-labelledby="hosts-h">
-  <h2 id="hosts-h" class="section-title">Hosts</h2>
+{% if found | length > 1 %}
+  <p class="help-block">{{ name }} is a group in {{ found | length }} inventories: {{ found | map(attribute=0) | map(attribute="name") | join(", ") }}. Each section is that inventory’s group.</p>
+{% endif %}
+
+{% for inv_repo, group in found %}
+<section class="section inv-section" aria-labelledby="ginv-{{ loop.index }}">
+  {% if found | length > 1 %}
+    <h2 id="ginv-{{ loop.index }}" class="section-title">From {{ inv_repo.name }}</h2>
+    {% include "_group_head.html" %}
+  {% endif %}
+
+  <h3 {% if found | length == 1 %}id="ginv-{{ loop.index }}"{% endif %} class="section-title section-sub">Hosts</h3>
   {% if group.all_hosts %}
     <ul class="chips">
       {% for h in group.all_hosts %}
@@ -32,13 +29,12 @@
   {% else %}
     <p class="empty">No hosts in this group yet. Add them under <span class="mono">{{ group.name }}</span> in the inventory, then reload.</p>
   {% endif %}
-</section>
 
-<section class="section" aria-labelledby="vars-h">
-  <h2 id="vars-h" class="section-title">Variables set on this group</h2>
+  <h3 class="section-title section-sub">Variables set on this group</h3>
   <p class="scope-note">What this group itself sets. A host may still override them; open a host to see what it actually gets.</p>
-  {% with vars = group.vars, empty_text = "This group sets no variables of its own." %}
+  {% with vars = group.vars, show_filter = loop.first, empty_text = "This group sets no variables of its own." %}
     {% include "_vars.html" %}
   {% endwith %}
 </section>
+{% endfor %}
 {% endblock %}

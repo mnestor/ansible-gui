@@ -6,17 +6,26 @@
   <p class="subject-meta">Pick a host to see each variable it gets, the file that set it, and what that file overrode.</p>
 </header>
 
-{% if not inv.hosts %}
-  <section class="section">
-    <p class="empty">This inventory has no hosts. Check that <span class="mono">ANSIBLE_GUI_INVENTORY</span> points at your inventory (now <span class="mono">{{ settings.inventory | join(", ") }}</span> in <span class="mono">{{ settings.project_dir }}</span>), then reload.</p>
-  </section>
-{% else %}
-<section class="section">
+{% if duplicates %}
+<section class="section" aria-labelledby="dup-h">
+  <h2 id="dup-h" class="section-title">In more than one inventory</h2>
+  <p class="help-block">These host names are in several inventories, so what a run gets depends on the inventory you pick. Remove each from all but one, unless that’s deliberate.</p>
+  <ul class="chips">
+    {% for name, found_in in duplicates %}<li><a class="chip mono" href="/inventory/hosts/{{ name }}">{{ name }}</a> <span class="help">{{ found_in | map(attribute=0) | map(attribute="name") | join(", ") }}</span></li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% for inv_repo, inv in loaded %}
+<section class="section" aria-labelledby="sum-{{ loop.index }}">
+  {% if multi_inv %}<h2 id="sum-{{ loop.index }}" class="section-title">{{ inv_repo.name }}</h2>{% endif %}
+  {% if not inv.hosts %}
+    <p class="empty">This inventory has no hosts. Check its inventory files (<span class="mono">{{ inv_repo.sources | join(", ") }}</span>), then reload.</p>
+  {% else %}
   <dl class="facts">
     <dt>Hosts</dt><dd class="tabular">{{ inv.hosts | length }}</dd>
     <dt>Groups</dt><dd class="tabular">{{ inv.groups | length }}</dd>
     <dt>Inventory</dt><dd class="mono">{{ inv.sources | join(", ") }}</dd>
-    <dt>Playbook directory</dt><dd class="mono">{{ inv.playbook_dir }}</dd>
     <dt>Source check</dt>
     <dd>
       {% if inv.mismatch_count %}
@@ -28,13 +37,11 @@
       {% endif %}
     </dd>
   </dl>
+  {% endif %}
+  {% if inv.warnings %}
+    <h3 class="section-title section-sub">Warnings</h3>
+    <ul class="warnings">{% for w in inv.warnings %}<li class="mono">{{ w }}</li>{% endfor %}</ul>
+  {% endif %}
 </section>
-{% endif %}
-
-{% if inv.warnings %}
-<section class="section" aria-labelledby="warn-h">
-  <h2 id="warn-h" class="section-title">Warnings</h2>
-  <ul class="warnings">{% for w in inv.warnings %}<li class="mono">{{ w }}</li>{% endfor %}</ul>
-</section>
-{% endif %}
+{% endfor %}
 {% endblock %}

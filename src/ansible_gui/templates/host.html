@@ -1,47 +1,45 @@
 {% extends "inventory_base.html" %}
-{% block title %}{{ host.name }}{% endblock %}
+{% block title %}{{ name }}{% endblock %}
 {% block main %}
 <a class="backlink" href="/inventory/hosts">← All hosts</a>
 <header class="subject">
-  <p class="eyebrow">Host</p>
-  <h1 class="identity mono">{{ host.name }}</h1>
-  {% set addr = host.var("ansible_host") %}
-  {% set user = host.var("ansible_user") %}
-  <p class="subject-meta">
-    {% if addr and not addr.vaulted %}connects to <span class="mono">{{ addr.value }}</span>{% else %}connects to <span class="mono">{{ host.name }}</span>{% endif %}
-    {% if user and not user.vaulted %} as <span class="mono">{{ user.value }}</span>{% endif %}
-  </p>
-  <ul class="chips" aria-label="Groups">
-    {% for g in host.groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
-    {% if not host.groups %}<li class="quiet">In no group besides all</li>{% endif %}
-  </ul>
-  <div class="subject-actions">
-    <a class="btn btn-secondary" href="/runs/new?target={{ host.name | urlencode }}">Run a playbook on {{ host.name }}</a>
-    {% set last = last_results.get(host.name) %}
-    {% if last %}<a class="subject-last" href="/runs/{{ last[1] }}">Last run #{{ last[1] }}: <span class="badge badge-{{ last[0] }}">{{ last[0] }}</span></a>{% endif %}
-  </div>
+  <p class="eyebrow">Host{% if found | length == 1 and multi_inv %} · from {{ found[0][0].name }}{% endif %}</p>
+  <h1 class="identity mono">{{ name }}</h1>
+  {% if found | length == 1 %}{% set inv_repo, host = found[0] %}{% include "_host_head.html" %}{% endif %}
 </header>
 
-{% if host.mismatches %}
+{% if found | length > 1 %}
   <div class="banner banner-changed" role="status">
-    <p><strong>{{ host.mismatches | length }} variable{{ "s" if host.mismatches | length != 1 }} disagree with Ansible.</strong>
-      The values shown are what Ansible resolves; the file shown for them may be wrong. Marked below.</p>
+    <p><strong>{{ name }} is in {{ found | length }} inventories:</strong> {{ found | map(attribute=0) | map(attribute="name") | join(", ") }}.
+      Each section below is what a run against that inventory gets. Remove it from all but one, or pick the inventory when you run.</p>
   </div>
 {% endif %}
 
-<section class="section" aria-labelledby="vars-h">
-  <h2 id="vars-h" class="section-title">Variables</h2>
+{% for inv_repo, host in found %}
+<section class="section inv-section" aria-labelledby="inv-{{ loop.index }}">
+  {% if found | length > 1 %}
+    <h2 id="inv-{{ loop.index }}" class="section-title">From {{ inv_repo.name }}</h2>
+    {% include "_host_head.html" %}
+  {% endif %}
+
+  {% if host.mismatches %}
+    <div class="banner banner-changed" role="status">
+      <p><strong>{{ host.mismatches | length }} variable{{ "s" if host.mismatches | length != 1 }} disagree with Ansible.</strong>
+        The values shown are what Ansible resolves; the file shown for them may be wrong. Marked below.</p>
+    </div>
+  {% endif %}
+
+  <h3 {% if found | length == 1 %}id="inv-{{ loop.index }}"{% endif %} class="section-title section-sub">Variables</h3>
   <p class="scope-note">Inventory variables only, in Ansible’s precedence order. Role defaults, <span class="mono">vars_files</span>, <span class="mono">set_fact</span> and gathered facts are not shown.</p>
-  {% with vars = host.vars, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
+  {% with vars = host.vars, show_filter = loop.first, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
     {% include "_vars.html" %}
   {% endwith %}
-</section>
 
-<section class="section" aria-labelledby="prec-h">
-  <h2 id="prec-h" class="section-title">Group precedence</h2>
+  <h3 class="section-title section-sub">Group precedence</h3>
   <p class="scope-note">Later groups win when two set the same variable.</p>
   <ol class="precedence">
     {% for g in host.all_groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
   </ol>
 </section>
+{% endfor %}
 {% endblock %}

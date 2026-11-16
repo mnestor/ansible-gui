@@ -44,18 +44,18 @@
 {% endif %}
 {% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }} and its clone.</p>{% endif %}
 
-<p class="help-block">Every run pulls the inventory repository and its playbook’s repository first. If a pull fails, the run is canceled, nothing touches a host, and an email goes out. ansible-gui owns these clones: local changes in them are thrown away on each pull.</p>
+<p class="help-block">Every run pulls its inventory repository and its playbook’s repository first. If a pull fails, the run is canceled, nothing touches a host, and an email goes out. ansible-gui owns these clones: local changes in them are thrown away on each pull.</p>
 
 <section class="section" aria-labelledby="inv-h">
   <div class="section-head">
-    <h2 id="inv-h" class="section-title">Inventory</h2>
-    {% if not inventory or inventory.local %}<a class="quiet-link" href="/repos/new?role=inventory">Add inventory repository</a>{% endif %}
+    <h2 id="inv-h" class="section-title">Inventories</h2>
+    <a class="quiet-link" href="/repos/new?role=inventory">Add inventory repository</a>
   </div>
-  {% if not inventory %}
+  {% if not inventories %}
     <p class="empty">None yet. The inventory page and every run need one: add the repository that holds your hosts and <span class="mono">group_vars</span>.</p>
   {% else %}
-    {{ repo_rows([inventory]) }}
-    <p class="help-block">Read from <span class="mono">{{ inventory.sources | join(", ") }}</span>. Its <span class="mono">group_vars</span> and <span class="mono">host_vars</span> apply to every run. A playbook repository can add its own next to its playbooks; those apply only to its playbooks and aren’t shown on the inventory page.</p>
+    {{ repo_rows(inventories) }}
+    <p class="help-block">{% if inventories | length > 1 %}The inventory page lists the hosts of all of them; each run and schedule uses the one picked for it. {% endif %}An inventory’s <span class="mono">group_vars</span> and <span class="mono">host_vars</span> apply to runs against it. A playbook repository can add its own next to its playbooks; those apply only to its playbooks and aren’t shown on the inventory page.</p>
   {% endif %}
 </section>
 

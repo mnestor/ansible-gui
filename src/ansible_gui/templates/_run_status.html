@@ -7,6 +7,7 @@
     <div><dt>Started</dt><dd class="tabular">{% if run.started_at %}<time datetime="{{ run.started_at | stamp }}">{{ run.started_at | clock }}</time>{% else %}not yet{% endif %}</dd></div>
     <div><dt>Took</dt><dd class="tabular">{{ run.duration | seconds }}</dd></div>
     {% if run.commit_sha %}<div><dt>Playbook commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
+    {% if run.inventory_id is not none %}<div><dt>Inventory</dt><dd>{{ inv_label(run.inventory_id) }}</dd></div>{% endif %}
     {% if run.inventory_commit %}<div><dt>Inventory commit</dt><dd class="mono">{{ run.inventory_commit }}</dd></div>{% endif %}
     <div><dt>By</dt><dd>{% if run.schedule_id %}<a href="/schedules/{{ run.schedule_id }}">{{ run.trigger }}</a>{% else %}{{ run.trigger }}{% endif %}</dd></div>
     {% set c = run.credentials %}

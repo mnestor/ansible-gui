@@ -1,14 +1,24 @@
 <section class="panel-error" role="alert">
-  <h1 class="identity">Couldn’t load the inventory</h1>
-  <p>{{ state.error }} Fix the inventory or the settings below, then try again.</p>
-  <pre class="well">$ {{ state.error.command_line }}
-{{ state.error.stderr or "(no output)" }}</pre>
+  {% if not inv_repo %}
+  <h1 class="identity">No inventory yet</h1>
+  <p>No inventory is set up. Add an inventory repository, or set <span class="mono">ANSIBLE_GUI_PROJECT_DIR</span> and <span class="mono">ANSIBLE_GUI_INVENTORY</span>.</p>
+  <p><a class="btn btn-primary" href="/repos/new?role=inventory">Add inventory repository</a></p>
+  {% else %}
+  <h1 class="identity">Couldn’t load {{ "the inventory" if not multi_inv else "any inventory" }}</h1>
+  <p>{{ state.error }} Fix the inventory or its settings, then try again.</p>
+  {% if state.error.command %}<pre class="well">$ {{ state.error.command_line }}
+{{ state.error.stderr or "(no output)" }}</pre>{% endif %}
   <dl class="facts">
+    {% if inv_repo.local %}
     <dt>Project directory</dt><dd class="mono">{{ settings.project_dir }}</dd>
-    <dt>Inventory</dt><dd class="mono">{{ settings.inventory | join(", ") }}</dd>
     <dt>Playbook directory</dt><dd class="mono">{{ settings.playbook_dir }}</dd>
+    {% else %}
+    <dt>Repository</dt><dd><a class="mono" href="/repos/{{ inv_repo.id }}">{{ inv_repo.name }}</a>{% if inv_repo.last_error %} · last pull failed: {{ inv_repo.last_error }}{% endif %}</dd>
+    {% endif %}
+    <dt>Inventory</dt><dd class="mono">{{ inv_repo.sources | join(", ") }}</dd>
   </dl>
   <form method="post" action="/inventory/reload">
     <button class="btn btn-primary" type="submit" data-busy-label="Trying…">Try again</button>
   </form>
+  {% endif %}
 </section>

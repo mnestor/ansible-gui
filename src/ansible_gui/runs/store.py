@@ -41,6 +41,7 @@ MIGRATIONS = {
     "notified": "alter table runs add column notified text",
     "repo_id": "alter table runs add column repo_id integer not null default 0",
     "inventory_commit": "alter table runs add column inventory_commit text",
+    "inventory_id": "alter table runs add column inventory_id integer",
 }
 
 
@@ -74,6 +75,7 @@ class Run:
     notified: str | None = None  # "Emailed …" or "Email failed: …"
     repo_id: int = 0  # the playbook repository; 0 is ANSIBLE_GUI_PROJECT_DIR
     inventory_commit: str | None = None
+    inventory_id: int | None = None  # the inventory repository; None for runs from before there could be several
 
     @property
     def finished(self) -> bool:
@@ -120,6 +122,7 @@ def _row(r: sqlite3.Row) -> Run:
         notified=r["notified"],
         repo_id=r["repo_id"],
         inventory_commit=r["inventory_commit"],
+        inventory_id=r["inventory_id"],
     )
 
 
@@ -154,14 +157,16 @@ class RunStore:
 
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
-               credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0) -> Run:
+               credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0,
+               inventory_id: int | None = None) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id)"
-                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
-                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id),
+                 json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
+                 inventory_id),
             )
             self._db.commit()
             return self.get(cur.lastrowid)
@@ -190,16 +195,17 @@ class RunStore:
         r = self._db.execute("select * from runs where notified is not null order by id desc limit 1").fetchone()
         return _row(r) if r else None
 
-    def last_status_by_host(self) -> dict[str, tuple[str, int]]:
-        """Each host's result in the most recent finished run that targeted it."""
-        out: dict[str, tuple[str, int]] = {}
+    def last_status_by_host(self) -> dict[tuple[int | None, str], tuple[str, int]]:
+        """Each host's result in the most recent finished run that targeted it, keyed by
+        (inventory id, host): the same name in two inventories can be two machines."""
+        out: dict[tuple[int | None, str], tuple[str, int]] = {}
         for run in self.recent(200):
             if not run.finished:
                 continue
             for host, stats in run.host_stats.items():
                 result = host_result(stats)
                 if result != "pending":  # the host never ran (canceled, failed to start)
-                    out.setdefault(host, (result, run.id))
+                    out.setdefault((run.inventory_id, host), (result, run.id))
         return out
 
 

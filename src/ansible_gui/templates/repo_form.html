@@ -13,10 +13,9 @@
   <fieldset class="field">
     <legend class="label">Holds</legend>
     <div class="segmented segmented-inline">
-      <label><input type="radio" name="role" value="inventory" {% if values.role == "inventory" %}checked{% endif %} {% if has_inventory %}disabled{% endif %}> Inventory</label>
+      <label><input type="radio" name="role" value="inventory" {% if values.role == "inventory" %}checked{% endif %}> Inventory</label>
       <label><input type="radio" name="role" value="playbooks" {% if values.role != "inventory" %}checked{% endif %}> Playbooks</label>
     </div>
-    {% if has_inventory %}<p class="help">There is already an inventory repository, and there can be one.</p>{% endif %}
     {% if errors.role %}<p class="field-error">{{ errors.role }}</p>{% endif %}
   </fieldset>
 

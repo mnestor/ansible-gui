@@ -3,10 +3,11 @@
 
 
 {% block body %}
-  {% if state.stale %}
+  {% for inv_repo, state in entries if state.error %}
+    {% if state.stale %}
     <div class="banner banner-danger" role="alert">
-      <p><strong>Reload failed at {{ state.error_at | clock }}.</strong>
-        Showing the inventory loaded at {{ inv.loaded_at | clock }}; it may be out of date.
+      <p><strong>{% if multi_inv %}{{ inv_repo.name }}: r{% else %}R{% endif %}eload failed at {{ state.error_at | clock }}.</strong>
+        Showing the inventory loaded at {{ state.inventory.loaded_at | clock }}; it may be out of date.
         {{ state.error }}</p>
       <details>
         <summary>Command and output</summary>
@@ -14,25 +15,39 @@
 {{ state.error.stderr or "(no output)" }}</pre>
       </details>
     </div>
-  {% elif reloaded and reloaded != "failed" %}
+    {% elif loaded %}
+    <div class="banner banner-danger" role="alert">
+      <p><strong>{{ inv_repo.name }} didn’t load,</strong> so its hosts aren’t listed. {{ state.error }}</p>
+      <details>
+        <summary>Command and output</summary>
+        <pre class="well">$ {{ state.error.command_line }}
+{{ state.error.stderr or "(no output)" }}</pre>
+      </details>
+    </div>
+    {% endif %}
+  {% endfor %}
+  {% if reloaded and reloaded != "failed" %}
     <div class="banner banner-ok" role="status"><p>Inventory reloaded at {{ reloaded }}.</p></div>
   {% endif %}
 
-  {% if inv %}
+  {% if loaded %}
   <div class="status-strip">
     <span class="status-strip-text">
-      <span class="mono">{{ inv.sources | join(", ") }}</span>
-      · <span class="tabular">{{ inv.hosts | length }}</span> hosts
-      · loaded <time class="tabular" datetime="{{ inv.loaded_at | stamp }}">{{ inv.loaded_at | clock }}</time>
+      {% for inv_repo, data in loaded %}
+        <span class="strip-line">{% if multi_inv %}<strong>{{ inv_repo.name }}</strong>: {% endif %}<span class="mono">{{ data.sources | join(", ") }}</span>
+        · <span class="tabular">{{ data.hosts | length }}</span> hosts
+        · loaded <time class="tabular" datetime="{{ data.loaded_at | stamp }}">{{ data.loaded_at | clock }}</time></span>
+      {% endfor %}
     </span>
     <form method="post" action="/inventory/reload" class="reload-form">
-      <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload inventory</button>
+      <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload {{ "inventories" if multi_inv else "inventory" }}</button>
     </form>
   </div>
   {% endif %}
 
-  {% if not inv %}
+  {% if not loaded %}
     <main class="error-page" id="main" tabindex="-1">
+      {% set inv_repo, state = (entries | first) if entries else (None, None) %}
       {% include "_load_error.html" %}
     </main>
   {% else %}
@@ -44,26 +59,32 @@
 
       {% if listing == "groups" %}
       <ul class="navlist navtree" data-list="groups">
-        {% for level, g in inv.tree() %}
-          <li data-name="{{ g.name }}" style="--level: {{ level }}">
-            <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
-              <span class="navlist-name mono">{{ g.name }}</span>
-              <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
-            </a>
-          </li>
+        {% for inv_repo, data in loaded %}
+          {% if multi_inv %}<li class="navlist-heading" data-name="" aria-hidden="true">{{ inv_repo.name }}</li>{% endif %}
+          {% for level, g in data.tree() %}
+            <li data-name="{{ g.name }} {{ inv_repo.name }}" style="--level: {{ level }}">
+              <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
+                <span class="navlist-name mono">{{ g.name }}</span>
+                <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
+              </a>
+            </li>
+          {% endfor %}
         {% endfor %}
       </ul>
       {% else %}
       <ul class="navlist" data-list="hosts">
-        {% for h in inv.hosts.values() %}
+        {% for name, found_in in merged_hosts %}
+          {% set inv_repo, h = found_in[0] %}
           {% set addr = h.var("ansible_host") %}
-          {% set last = last_results.get(h.name) %}
-          <li data-name="{{ h.name }} {{ addr.value if addr and not addr.vaulted else '' }}">
-            <a href="/inventory/hosts/{{ h.name }}" {% if selected == ('host', h.name) %}aria-current="page"{% endif %}>
+          {% set last = last_result(inv_repo, name) if found_in | length == 1 else None %}
+          <li data-name="{{ name }} {{ addr.value if addr and not addr.vaulted else '' }} {% for i, _ in found_in %}{{ i.name }} {% endfor %}">
+            <a href="/inventory/hosts/{{ name }}" {% if selected == ('host', name) %}aria-current="page"{% endif %}>
               {% if last %}<span class="dot dot-{{ last[0] }}" title="Last run #{{ last[1] }}: {{ last[0] }}"></span>{% endif %}
-              <span class="navlist-name mono">{{ h.name }}</span>
-              {% if addr and not addr.vaulted and addr.value != h.name %}<span class="navlist-meta mono">{{ addr.value }}</span>{% endif %}
-              {% if h.mismatches %}<span class="badge badge-changed" title="Source differs from Ansible for {{ h.mismatches | length }} variable(s)">{{ h.mismatches | length }} ≠</span>{% endif %}
+              <span class="navlist-name mono">{{ name }}</span>
+              {% if found_in | length > 1 %}<span class="badge badge-changed" title="In {{ found_in | map(attribute=0) | map(attribute='name') | join(' and ') }}">in {{ found_in | length }}</span>
+              {% elif multi_inv %}<span class="navlist-meta">{{ inv_repo.name }}</span>
+              {% elif addr and not addr.vaulted and addr.value != name %}<span class="navlist-meta mono">{{ addr.value }}</span>{% endif %}
+              {% if h.mismatches and found_in | length == 1 %}<span class="badge badge-changed" title="Source differs from Ansible for {{ h.mismatches | length }} variable(s)">{{ h.mismatches | length }} ≠</span>{% endif %}
             </a>
           </li>
         {% endfor %}

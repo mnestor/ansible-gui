@@ -84,12 +84,78 @@ def test_nothing_set_up_says_so(c):
     assert "None yet" in c.get("/repos").text
 
 
-def test_only_one_inventory_repo_and_paths_stay_inside(c, remotes):
-    assert add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
-    r = add(c, name="hosts2", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml")
-    assert r.status_code == 400 and "already the inventory repository" in r.text
+def test_paths_stay_inside(c, remotes):
     r = add(c, name="bad", role="playbooks", url=f"file://{remotes['pb']}", paths="../etc")
     assert r.status_code == 400 and "inside the repository" in r.text
+
+
+SECOND_INV = """all:
+  children:
+    lab:
+      hosts:
+        box1:
+          ansible_connection: local
+          ansible_python_interpreter: "{{ ansible_playbook_python }}"
+          marker: from-second
+    vault_only:
+      hosts:
+        box9:
+          ansible_connection: local
+"""
+
+
+def test_several_inventories_list_merged_and_run_against_the_one_picked(app, c, remotes, tmp_path):
+    second, _ = make_remote(tmp_path, "inv2", {"hosts.yml": SECOND_INV})
+    play, _ = make_remote(tmp_path, "mark", {"mark.yml": "- hosts: lab\n  gather_facts: false\n  tasks:\n"
+                                                         "    - ansible.builtin.debug:\n"
+                                                         "        msg: \"marker={{ marker | default('none') }}\"\n"})
+    assert add(c, name="first", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
+    assert add(c, name="second", role="inventory", url=f"file://{second}", paths="hosts.yml").status_code == 303
+    assert add(c, name="mark", role="playbooks", url=f"file://{play}").status_code == 303
+    first, second_repo = sorted((r for r in app.state.repos.all() if r.role == "inventory"), key=lambda r: r.id)
+    pb = next(r for r in app.state.repos.all() if r.name == "mark")
+
+    hosts = c.get("/inventory").text
+    # one merged list: box1 once (flagged as in 2), box2 from first, box9 from second
+    assert hosts.count('href="/inventory/hosts/box1"') >= 1 and "in 2" in hosts
+    assert "box2" in hosts and "box9" in hosts and "In more than one inventory" in hosts
+    page = c.get("/inventory/hosts/box1").text
+    assert "is in 2 inventories" in page and "From first" in page and "From second" in page
+    assert "from-second" in page
+    assert f"inventory={first.id}" in page and f"inventory={second_repo.id}" in page
+    # a group in both is shown per inventory, without a warning
+    group = c.get("/inventory/groups/lab").text
+    assert "From first" in group and "From second" in group and "is in 2 inventories" not in group
+
+    # with two inventories, a run must say which
+    r = c.post("/runs", data={"playbook": f"{pb.id}:mark.yml", "target": "box1", "mode": "check",
+                              "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
+    assert r.status_code == 400 and "Choose the inventory" in r.text
+    launcher = c.get(f"/runs/new?inventory={second_repo.id}").text
+    assert 'name="inventory" value="%d" checked' % second_repo.id in launcher
+
+    for inv, want in ((second_repo, "marker=from-second"), (first, "marker=none")):
+        r = c.post("/runs", data={"playbook": f"{pb.id}:mark.yml", "target": "box1", "mode": "check", "verbosity": "0",
+                                  "inventory": str(inv.id), "expected": ["box1"]}, follow_redirects=False)
+        assert r.status_code == 303, r.text[-400:]
+        run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+        log = app.state.store.log_path(run.id).read_text()
+        assert run.status == "successful" and run.inventory_id == inv.id and want in log, log[-800:]
+        assert f"inventory={inv.id}" in c.get(f"/runs/{run.id}").text  # Run again keeps the inventory
+    # results are per inventory: the host page shows each inventory's own last run
+    results = app.state.store.last_status_by_host()
+    assert (first.id, "box1") in results and (second_repo.id, "box1") in results
+
+    # schedules need an inventory too, and keep it
+    data = {"name": "n", "cron": "0 3 * * *", "playbook": f"{pb.id}:mark.yml", "target": "box1", "mode": "check",
+            "diff": "1", "verbosity": "0", "notify": "never"}
+    r = c.post("/schedules", data=data, follow_redirects=False)
+    assert r.status_code == 400 and "Choose the inventory" in r.text
+    assert c.post("/schedules", data={**data, "inventory": str(second_repo.id)}, follow_redirects=False).status_code == 303
+    sched = app.state.schedules.all()[-1]
+    assert sched.inventory_id == second_repo.id
+    run = wait(app, app.state.scheduler.fire(sched).id)
+    assert run.inventory_id == second_repo.id and "marker=from-second" in app.state.store.log_path(run.id).read_text()
 
 
 def test_save_clones_and_launcher_lists_playbooks_by_repo(app, c, remotes):

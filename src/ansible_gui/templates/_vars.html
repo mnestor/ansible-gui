@@ -1,8 +1,11 @@
-{# Variables table. Expects `vars` (list of ResolvedVar) and `empty_text`. #}
+{# Variables table. Expects `vars` (list of ResolvedVar) and `empty_text`; optional `inv_repo` (for git links)
+   and `show_filter` (false on later tables of a page: the first filter covers them all). #}
 {% set overriding = vars | selectattr("overridden") | list %}
 <div class="vars-toolbar">
+  {% if show_filter is not defined or show_filter %}
   <label class="visually-hidden" for="varfilter">Filter variables</label>
   <input id="varfilter" class="input input-small" type="search" placeholder="Filter variables" autocomplete="off" enterkeyhint="search" data-varfilter {% if not vars %}disabled{% endif %}>
+  {% endif %}
   <p class="vars-count tabular">
     {{ vars | length }} variable{{ "s" if vars | length != 1 }}{% if overriding %} · {{ overriding | length }} override{{ "s" if overriding | length == 1 }} another source{% endif %}
   </p>
@@ -37,7 +40,7 @@
         {% if v.mismatch %}<p class="mismatch-note">{{ v.mismatch }}</p>{% endif %}
       </td>
       <td class="var-source" data-label="Set in">
-        {% set url = edit_url(v.source) %}
+        {% set url = edit_url(v.source, inv_repo) %}
         {% if v.overridden %}
           <details class="stack">
             <summary>
@@ -52,7 +55,7 @@
               </li>
               {% for s in v.overridden | reverse %}
                 {% set below = present(s.value) %}
-                {% set surl = edit_url(s.layer) %}
+                {% set surl = edit_url(s.layer, inv_repo) %}
                 <li class="stack-item">
                   {% if surl %}<a class="mono" href="{{ surl }}" target="_blank" rel="noopener">{{ s.layer | where }}</a>{% else %}<span class="mono">{{ s.layer | where }}</span>{% endif %}
                   <span class="stack-why">{{ s.layer.label }}{% if s.layer.scope == "playbook" %}, playbook dir{% endif %}</span>

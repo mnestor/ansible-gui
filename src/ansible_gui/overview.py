@@ -106,18 +106,22 @@ def email_issue(store) -> Run | None:
     return last if last and last.notified and last.notified.startswith("Email failed") else None
 
 
-def setup_issues(settings, state, creds, repos=()) -> list[SetupIssue]:
+def setup_issues(settings, entries, creds, repos=()) -> list[SetupIssue]:
+    """entries: [(inventory repo, LoadState)]."""
     out = []
     for r in repos:
         if r.last_error:
             out.append(SetupIssue(f"Can’t pull {r.name} from git",
                                   f"{r.last_error} Runs that need it are canceled until a pull works.",
                                   "/repos", "Open repositories"))
-    if state.error:
-        out.append(SetupIssue(
-            "Inventory didn’t load" if not state.inventory else "Inventory reload failed",
-            "Runs and previews use the inventory as Ansible reads it now; the error is on the inventory page.",
-            "/inventory", "See the error"))
+    named = len(entries) > 1
+    for inv, state in entries:
+        if state.error:
+            what = f"Inventory {inv.name}" if named else "Inventory"
+            out.append(SetupIssue(
+                f"{what} didn’t load" if not state.inventory else f"{what} reload failed",
+                "Runs and previews use the inventory as Ansible reads it now; the error is on the inventory page.",
+                "/inventory", "See the error"))
     if settings.ssh_config and not settings.ssh_config.is_file():
         out.append(SetupIssue("SSH config is missing", f"{settings.ssh_config} doesn’t exist, so every run fails to connect.",
                               "/credentials", "Open credentials"))

@@ -114,10 +114,6 @@ class RepoStore:
             clash = self._db.execute("select id from repos where lower(name)=lower(?)", (name,)).fetchone()
             if clash and clash["id"] != rid:
                 errors["name"] = f"There is already a repository called {name}."
-        if role == "inventory":
-            other = self._db.execute("select id, name from repos where role='inventory'").fetchone()
-            if other and other["id"] != rid:
-                errors["role"] = f"{other['name']} is already the inventory repository. There can be one."
         url = form.get("url", "").strip()
         if not URL_RE.match(url):
             errors["url"] = "Use a clone URL, like https://git.example.com/me/ansible.git or git@git.example.com:me/ansible.git."

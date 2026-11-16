@@ -24,6 +24,21 @@
     {% endif %}
   </fieldset>
 
+  {% if inventories | length > 1 %}
+  <fieldset class="field">
+    <legend class="label">Inventory</legend>
+    <div class="choices">
+      {% for i in inventories %}
+        <label class="choice"><input type="radio" name="inventory" value="{{ i.id }}" {% if form.inventory == i.id | string %}checked{% endif %} required>
+          <span>{{ i.name }} <span class="mono help">{{ i.sources | join(", ") }}</span></span></label>
+      {% endfor %}
+    </div>
+    <p class="help">A host in more than one inventory gets that inventory’s variables. The preview below uses the one picked.</p>
+  </fieldset>
+  {% else %}
+  <input type="hidden" name="inventory" value="{{ form.inventory }}">
+  {% endif %}
+
   <div class="field">
     <label class="label" for="target">Targets</label>
     <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions">

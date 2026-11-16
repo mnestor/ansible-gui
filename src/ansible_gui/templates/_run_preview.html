@@ -9,6 +9,10 @@
   <p class="preview-note">Choose a playbook to see which hosts it would run on.</p>
   <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
     <span class="help">Choose a playbook first.</span></div>
+{% elif not form.inventory %}
+  <p class="preview-note">Choose an inventory to see which hosts it would run on.</p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
+    <span class="help">Choose an inventory first.</span></div>
 {% elif preview.error %}
   <p class="field-error" role="alert">Ansible couldn’t work out the targets: <span class="mono">{{ preview.error }}</span></p>
   <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>

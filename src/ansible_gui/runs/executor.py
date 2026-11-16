@@ -136,13 +136,17 @@ class Executor:
         repo = self.workspace.playbook_repo(run.repo_id)
         if repo is None:
             return stop("Didn’t start: the playbook’s repository was removed.")
-        failed = self.workspace.sync_for_run(repo, lambda line: log_file.write(line + "\n"))
+        inv_repo = self.workspace.inventory_repo(run.inventory_id)
+        if inv_repo is None:
+            return stop("Didn’t start: its inventory repository was removed, or there are several and the run "
+                        "doesn’t say which. Pick one and run again.")
+        failed = self.workspace.sync_for_run(repo, inv_repo, lambda line: log_file.write(line + "\n"))
         if failed:
             return stop(failed)
         repo = self.workspace.playbook_repo(run.repo_id)
-        inv_repo = self.workspace.inventory_repo()
+        inv_repo = self.workspace.inventory_repo(inv_repo.id)
         project = repo.run_dir
-        opts = self.workspace.run_opts(repo)
+        opts = self.workspace.run_opts(repo, inv_repo)
         playbook = str((repo.path / run.playbook).resolve())
         if not (repo.path / run.playbook).is_file():
             return stop(f"Didn’t start: {run.playbook} isn’t in {repo.name} any more.")
@@ -159,7 +163,7 @@ class Executor:
         live: dict[str, dict[str, int]] = {h: dict.fromkeys(_COUNTERS, 0) for h in pv.hosts}
         self._live[run_id] = live
         final: dict[str, dict[str, int]] = {}
-        self.store.update(run_id, expected_hosts=pv.hosts,
+        self.store.update(run_id, expected_hosts=pv.hosts, inventory_id=inv_repo.id,
                           commit_sha=(repo.last_commit or "")[:12] if not repo.local else git_commit(repo.path),
                           inventory_commit=None if not inv_repo else
                           ((inv_repo.last_commit or "")[:12] if not inv_repo.local else None))
@@ -300,7 +304,7 @@ class Executor:
 
     def _args(self, run, cmdline: list[str]) -> list[str]:
         args = []
-        for s in self.workspace.inventory_sources():
+        for s in self.workspace.inventory_sources(self.workspace.inventory_repo(run.inventory_id)):
             args += ["-i", s]
         if run.target:
             args += ["--limit", run.target]

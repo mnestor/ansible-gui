@@ -1,0 +1,15 @@
+{# Counts, nesting and run action for one group in one inventory. Expects inv_repo, group. #}
+<p class="subject-meta tabular">
+  {{ group.all_hosts | length }} host{{ "s" if group.all_hosts | length != 1 }}
+  {% if group.all_hosts | length != group.hosts | length %}({{ group.hosts | length }} direct){% endif %}
+  · depth {{ group.depth }}{% if group.priority != 1 %} · priority {{ group.priority }}{% endif %}
+</p>
+{% if group.parents %}
+  <p class="subject-meta">Inside {% for p in group.parents %}<a class="chip mono" href="/inventory/groups/{{ p }}">{{ p }}</a>{% endfor %}</p>
+{% endif %}
+{% if group.children %}
+  <p class="subject-meta">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
+{% endif %}
+<div class="subject-actions">
+  <a class="btn btn-secondary" href="/runs/new?{{ {'target': group.name, 'inventory': inv_repo.id} | urlencode }}">Run a playbook on {{ group.name }}{% if multi_inv %} with {{ inv_repo.name }}{% endif %}</a>
+</div>

@@ -46,7 +46,7 @@ class Workspace:
         self.settings = settings
         self.repos = repos
         self.creds = creds
-        self.on_inventory_changed = lambda: None
+        self.on_inventory_changed = lambda inv_id: None
 
     # --- which repos --------------------------------------------------------------
     def _local(self, role: str) -> Repo | None:
@@ -60,8 +60,15 @@ class Workspace:
     def git_repos(self) -> list[Repo]:
         return self.repos.all()
 
-    def inventory_repo(self) -> Repo | None:
-        return next((r for r in self.repos.all() if r.role == "inventory"), None) or self._local("inventory")
+    def inventory_repos(self) -> list[Repo]:
+        return [r for r in self.repos.all() if r.role == "inventory"] or [x for x in [self._local("inventory")] if x]
+
+    def inventory_repo(self, inv_id: int | None = None) -> Repo | None:
+        """By id; with None (a run from before there could be several), the only inventory if there is one."""
+        invs = self.inventory_repos()
+        if inv_id is None:
+            return invs[0] if len(invs) == 1 else None
+        return next((r for r in invs if r.id == inv_id), None)
 
     def playbook_repos(self) -> list[Repo]:
         return [r for r in self.repos.all() if r.role == "playbooks"] or [x for x in [self._local("playbooks")] if x]
@@ -70,22 +77,21 @@ class Workspace:
         return next((r for r in self.playbook_repos() if r.id == rid), None)
 
     # --- ansible options ------------------------------------------------------------
-    def inventory_sources(self) -> list[str]:
-        inv = self.inventory_repo()
+    @staticmethod
+    def inventory_sources(inv: Repo | None) -> list[str]:
         return [str((inv.path / s).resolve()) for s in inv.sources] if inv else []
 
-    def inventory_opts(self) -> CliOptions | None:
-        inv = self.inventory_repo()
-        if not inv or not inv.path.is_dir():
+    def inventory_opts(self, inv: Repo) -> CliOptions | None:
+        if not inv.path.is_dir():
             return None
         playbook_dir = self.settings.playbook_dir if inv.local else "."
         return CliOptions(project_dir=inv.path, sources=inv.sources, playbook_dir=playbook_dir,
                           vault_password_file=self.settings.vault_password_file, binary=self.settings.inventory_binary)
 
-    def run_opts(self, repo: Repo) -> CliOptions:
+    def run_opts(self, repo: Repo, inv: Repo | None) -> CliOptions:
         """Ansible starts in the repo's run directory, so its ansible.cfg applies; playbooks are passed
         as absolute paths and the inventory as absolute sources."""
-        return CliOptions(project_dir=repo.run_dir, sources=self.inventory_sources(), playbook_dir=repo.playbook_dir,
+        return CliOptions(project_dir=repo.run_dir, sources=self.inventory_sources(inv), playbook_dir=repo.playbook_dir,
                           vault_password_file=self.settings.vault_password_file, env=self.ansible_env(repo))
 
     # --- collections ----------------------------------------------------------------
@@ -206,12 +212,12 @@ class Workspace:
                 self.repos.record_fetch(repo.id, None, None, error[0].upper() + error[1:] + ".")
                 return error
         if repo.role == "inventory" and result.changed:
-            self.on_inventory_changed()
+            self.on_inventory_changed(repo.id)
         return None
 
-    def sync_for_run(self, repo: Repo, log_line) -> str | None:
-        """Pull the inventory repo and the run's playbook repo. None, or a message saying what failed."""
-        targets = [r for r in (self.inventory_repo(), repo) if r and not r.local]
+    def sync_for_run(self, repo: Repo, inv: Repo | None, log_line) -> str | None:
+        """Pull the run's inventory repo and playbook repo. None, or a message saying what failed."""
+        targets = [r for r in (inv, repo) if r and not r.local]
         for r in dict((x.id, x) for x in targets).values():
             log_line(f"[ansible-gui] Pulling {r.name} ({r.branch}) from {r.url}")
             error = self.sync(r)

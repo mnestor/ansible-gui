@@ -1,0 +1,16 @@
+{# The connection line, groups and run action for one host in one inventory. Expects inv_repo, host. #}
+{% set addr = host.var("ansible_host") %}
+{% set user = host.var("ansible_user") %}
+<p class="subject-meta">
+  {% if addr and not addr.vaulted %}connects to <span class="mono">{{ addr.value }}</span>{% else %}connects to <span class="mono">{{ host.name }}</span>{% endif %}
+  {% if user and not user.vaulted %} as <span class="mono">{{ user.value }}</span>{% endif %}
+</p>
+<ul class="chips" aria-label="Groups">
+  {% for g in host.groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}
+  {% if not host.groups %}<li class="quiet">In no group besides all</li>{% endif %}
+</ul>
+<div class="subject-actions">
+  <a class="btn btn-secondary" href="/runs/new?{{ {'target': host.name, 'inventory': inv_repo.id} | urlencode }}">Run a playbook on {{ host.name }}{% if multi_inv %} with {{ inv_repo.name }}{% endif %}</a>
+  {% set last = last_result(inv_repo, host.name) %}
+  {% if last %}<a class="subject-last" href="/runs/{{ last[1] }}">Last run #{{ last[1] }}: <span class="badge badge-{{ last[0] }}">{{ last[0] }}</span></a>{% endif %}
+</div>

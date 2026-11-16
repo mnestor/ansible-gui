@@ -25,7 +25,7 @@ from .keys import Keys
 from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
 from .inventory.model import Layer, Vaulted
-from .inventory.service import InventoryService
+from .inventory.service import Inventories
 from .repos import git as gitsync
 from .repos.store import Invalid as RepoInvalid
 from .repos.store import RepoStore
@@ -116,6 +116,7 @@ def status_label(run: Run) -> str:
 
 def rerun_url(run: Run, mode: str) -> str:
     q = {"playbook": f"{run.repo_id}:{run.playbook}", "target": run.target, "mode": mode,
+         "inventory": "" if run.inventory_id is None else str(run.inventory_id),
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
          "verbosity": str(run.verbosity)}
     for kind in PER_RUN:
@@ -138,8 +139,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     creds = CredentialStore(settings.data_dir, keys.fernet)
     repos = RepoStore(settings.data_dir)
     ws = Workspace(settings, repos, creds)
-    service = InventoryService(ws.inventory_opts)
-    ws.on_inventory_changed = service.reload
+    invs = Inventories(ws)
+    ws.on_inventory_changed = invs.reload
     executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config)
 
     app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None)
@@ -167,8 +168,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env = templates.env
     env.globals.update(
         present=present,
-        edit_url=lambda layer: edit_url((ws.inventory_repo().edit_url if ws.inventory_repo() else None)
-                                        or settings.edit_url, layer),
+        edit_url=lambda layer, inv=None: edit_url((inv.edit_url if inv else None) or settings.edit_url, layer),
+        inv_label=lambda inv_id: (ws.inventory_repo(inv_id).name if ws.inventory_repo(inv_id) else "removed inventory"),
         host_result=host_result,
         status_tone=lambda s: STATUS.get(s, ("neutral", s))[0],
         run_tone=run_tone,
@@ -206,31 +207,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return PlainTextResponse("ok")
 
     # --- inventory -------------------------------------------------------------
+    def last_result(results: dict, inv, host: str):
+        hit = results.get((inv.id, host))
+        if hit is None and len(ws.inventory_repos()) == 1:
+            hit = results.get((None, host))  # runs from before there could be several inventories
+        return hit
+
     def inventory_page(request: Request, template: str, status: int = 200, listing: str = "hosts",
                        **ctx: Any) -> HTMLResponse:
-        state = service.current()
+        entries = invs.entries()
+        results = store.last_status_by_host()
         return render(
             request, template, status,
             section=listing, listing=listing,
-            state=state,
-            inv=state.inventory,
+            entries=entries,
+            loaded=[(i, st.inventory) for i, st in entries if st.inventory],
+            multi_inv=len(entries) > 1,
+            merged_hosts=invs.hosts(), merged_groups=invs.groups(), duplicates=invs.duplicate_hosts(),
             reloaded=request.query_params.get("reloaded"),
-            last_results=store.last_status_by_host(),
+            last_result=lambda inv, host: last_result(results, inv, host),
             **ctx,
         )
 
     def overview_context() -> dict:
-        state = service.current()
-        inv = state.inventory
+        entries = invs.entries()
+        known = {name for name, _ in invs.hosts()} if any(st.inventory for _, st in entries) else None
         recent = store.recent(500)
         active = sorted((r for r in recent if not r.finished), key=lambda r: r.id)
         soon = datetime.now(timezone.utc) + timedelta(hours=24)
         upcoming = sorted((sc for sc in schedules.all() if sc.enabled and sc.next_run_at and sc.next_run_at <= soon),
                           key=lambda sc: sc.next_run_at)
         return {
-            "host_issues": ov.host_issues(recent, set(inv.hosts) if inv else None),
+            "host_issues": ov.host_issues(recent, known),
             "schedule_issues": ov.schedule_issues(schedules.all(), store),
-            "setup_issues": ov.setup_issues(settings, state, creds, repos.all()),
+            "setup_issues": ov.setup_issues(settings, entries, creds, repos.all()),
             "run_issues": ov.run_issues(recent),
             "email_issue": ov.email_issue(store) if settings.smtp else None,
             "active": active, "live": {r.id: executor.live_stats(r.id) or {} for r in active},
@@ -263,39 +273,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/inventory/hosts/{name}", response_class=HTMLResponse)
     def host(request: Request, name: str):
-        inv = service.current().inventory
-        h = inv.hosts.get(name) if inv else None
-        if inv and not h:
+        found = invs.find_host(name)
+        if not found and invs.loaded():
             return inventory_page(request, "missing.html", status=404, kind="host", name=name, selected=None)
-        return inventory_page(request, "host.html", host=h, selected=("host", name))
+        return inventory_page(request, "host.html", name=name, found=found, selected=("host", name))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
     def group(request: Request, name: str):
-        inv = service.current().inventory
-        g = inv.groups.get(name) if inv else None
-        if inv and not g:
+        found = invs.find_group(name)
+        if not found and invs.loaded():
             return inventory_page(request, "missing.html", status=404, listing="groups", kind="group", name=name,
                                   selected=None)
-        return inventory_page(request, "group.html", listing="groups", group=g, selected=("group", name))
+        return inventory_page(request, "group.html", listing="groups", name=name, found=found,
+                              selected=("group", name))
 
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:
-        state = service.reload()
+        failed = any(st.error for _, st in invs.reload())
         # Only ever return to a page of this app, whatever the Referer says.
         back = urlsplit(request.headers.get("referer", "")).path
         if not back.startswith("/inventory"):
             back = "/inventory"
-        flag = "failed" if state.error else datetime.now().strftime("%H:%M:%S")
+        flag = "failed" if failed else datetime.now().strftime("%H:%M:%S")
         return RedirectResponse(f"{back}?reloaded={flag}", status_code=303)
 
     # --- runs ------------------------------------------------------------------
     def known_playbooks() -> list[str]:
         return [p.key for p in ws.discover()]
 
-    def preview_for(key: str, target: str) -> playbooks.Preview:
+    def chosen_inventory(form: dict):
+        """The form's inventory: the one asked for, or the only one there is."""
+        inv = ws.inventory_repo(int(form["inventory"])) if form.get("inventory", "").lstrip("-").isdigit() else None
+        if inv is None and len(ws.inventory_repos()) == 1:
+            inv = ws.inventory_repos()[0]
+        form["inventory"] = str(inv.id) if inv else ""
+        return inv
+
+    def preview_for(key: str, target: str, inv) -> playbooks.Preview:
         pb = ws.find(key) if key else None
-        return (playbooks.preview(ws.run_opts(pb.repo), str((pb.repo.path / pb.path).resolve()), target)
-                if pb else playbooks.Preview())
+        if not pb:
+            return playbooks.Preview()
+        if inv is None:
+            return playbooks.Preview(error="Choose the inventory to run against.")
+        return playbooks.preview(ws.run_opts(pb.repo, inv), str((pb.repo.path / pb.path).resolve()), target)
 
     def read_form(src) -> dict:
         try:
@@ -310,6 +330,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "tags": (src.get("tags") or "").strip(),
             "skip_tags": (src.get("skip_tags") or "").strip(),
             "verbosity": verbosity,
+            "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
         }
 
@@ -320,11 +341,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in keys:
             form["playbook"] = keys[0] if len(keys) == 1 else ""
-        pv = preview_for(form["playbook"], form["target"])
-        inv = service.current().inventory
+        inv_repo = chosen_inventory(form)
+        pv = preview_for(form["playbook"], form["target"], inv_repo)
+        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
         return dict(
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
-            playbook_repos=ws.playbook_repos(), inventory_repo=ws.inventory_repo(),
+            playbook_repos=ws.playbook_repos(), inventory_repo=inv_repo, inventories=ws.inventory_repos(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
             env_secrets=creds.by_kind("env_secret"),
             hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [],
@@ -359,7 +381,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             form["playbook"] = ""
-        pv = preview_for(form["playbook"], form["target"])
+        pv = preview_for(form["playbook"], form["target"], chosen_inventory(form))
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
@@ -372,7 +394,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return launcher(request, form, "Choose one of the playbooks listed.", status=400)
-        pv = preview_for(form["playbook"], form["target"])
+        inv_repo = chosen_inventory(form)
+        if inv_repo is None:
+            return launcher(request, form, "Choose the inventory to run against.", status=400)
+        pv = preview_for(form["playbook"], form["target"], inv_repo)
         if pv.error or not pv.hosts:
             return launcher(request, form, "Nothing to run: the targets match no hosts.", status=400)
         expected = sorted(data.getlist("expected"))
@@ -397,6 +422,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
+            inventory_id=inv_repo.id,
         )
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
@@ -468,11 +494,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 panel["edit"] = edit_url(settings.edit_url, Layer(kind="unknown", path=str(rel)))
             except ValueError:
                 pass
-        inv = service.current().inventory
-        panel["overridden_on"] = sorted(
-            h.name for h in (inv.hosts.values() if inv else [])
+        panel["overridden_on"] = sorted({
+            h.name for _, data in invs.loaded() for h in data.hosts.values()
             if any(v.name in ("ansible_ssh_common_args", "ansible_ssh_args") for v in h.vars)
-        )
+        })
         return panel
 
     @app.get("/credentials", response_class=HTMLResponse)
@@ -547,7 +572,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def repos_page(request: Request):
         q = request.query_params
         return render(request, "repos.html", section="repos", repos=repos.all(),
-                      inventory=ws.inventory_repo(), playbook_repos=ws.playbook_repos(),
+                      inventories=ws.inventory_repos(), playbook_repos=ws.playbook_repos(),
                       ssh_keys={c.id: c for c in creds.all()},
                       saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"))
 
@@ -555,7 +580,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   status: int = 200) -> HTMLResponse:
         return render(request, "repo_form.html", status, section="repos", repo=repo, values=values or {},
                       errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"), git_tokens=creds.by_kind("git_token"),
-                      has_inventory=any(r.role == "inventory" and (not repo or r.id != repo.id) for r in repos.all()),
                       used_by=repo_users(repo) if repo else [])
 
     @app.get("/repos/new", response_class=HTMLResponse)
@@ -594,7 +618,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return repo_form(request, repos.get(rid) if rid else None, form, e.errors, status=400)
         ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
         if repo.role == "inventory":
-            service.reload()
+            invs.reload(repo.id)
         return RedirectResponse(f"/repos?saved={repo.id}", status_code=303)
 
     @app.post("/repos")
@@ -611,7 +635,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if repo:
             ws.sync(repo)
             if repo.role == "inventory":
-                service.reload()
+                invs.reload(repo.id)
         return RedirectResponse(f"/repos?pulled={rid}", status_code=303)
 
     @app.post("/repos/{rid}/delete")
@@ -621,7 +645,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repos.delete(rid)
             gitsync.remove_clone(repo)
             if repo.role == "inventory":
-                service.reload()
+                invs.reload(repo.id)
         return RedirectResponse(f"/repos?deleted={repo.name if repo else ''}", status_code=303)
 
     # --- schedules -------------------------------------------------------------
@@ -643,7 +667,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = {"name": sched.name, "cron": sched.cron, "playbook": f"{sched.repo_id}:{sched.playbook}",
                 "target": sched.target,
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
-                "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify}
+                "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify,
+                "inventory": "" if sched.inventory_id is None else str(sched.inventory_id)}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
         return form
 
@@ -698,10 +723,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
                 return schedule_page(request, form, sched, status=400,
                                      form_error=f"That {KINDS[kind].lower()} no longer exists. Choose another.")
-        pv = preview_for(form["playbook"], form["target"])
+        inv_repo = chosen_inventory(form)
+        if inv_repo is None:
+            return schedule_page(request, form, sched, status=400, form_error="Choose the inventory to run against.")
+        pv = preview_for(form["playbook"], form["target"], inv_repo)
         if pv.error or not pv.hosts:
             return schedule_page(request, form, sched, status=400,
                                  form_error="The targets match no hosts, so every run would fail. Change them first.")
+        form["inventory_id"] = inv_repo.id
         form["enabled"] = sched.enabled if sched else True
         chosen_pb = ws.find(form["playbook"])
         form["playbook_path"], form["repo_id"] = chosen_pb.path, chosen_pb.repo.id
