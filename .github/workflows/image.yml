@@ -29,7 +29,27 @@ jobs:
         with:
           python-version: "3.12"
       - name: Tests (with the same ansible-core as the image)
-        run: uv run --frozen --with "ansible-core==2.21.4" pytest -q
+        run: uv run --frozen --with "ansible-core==2.21.4" pytest -q --cov --cov-report=
+      - name: Coverage summary
+        if: success() || failure()
+        run: |
+          {
+            echo "## Test coverage: $(uv run --frozen coverage report --format=total)% of lines and branches"
+            echo
+            echo "Files below 100%, least covered first. **Missing** lists uncovered lines; \`a->b\` is a branch never taken."
+            echo
+            uv run --frozen coverage report --format=markdown --sort=cover --skip-covered
+            echo
+            echo "Line-by-line report: the **coverage-html** artifact on this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+          uv run --frozen coverage html -q
+      - name: Upload coverage report
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: htmlcov/
+          retention-days: 14
 
   image:
     needs: test
