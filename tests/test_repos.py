@@ -1,5 +1,6 @@
 """Git repositories: clone on save, pull before each run, cancel and email when a pull fails."""
 
+import os
 import shutil
 import subprocess
 import time
@@ -195,6 +196,7 @@ def test_failed_pull_cancels_the_run_and_emails(app, c, remotes):
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert run.status == "error" and "couldn’t update lab from git" in run.error and "Nothing ran" in run.error
     assert run.host_stats == {}
+    app.state.executor.wait_idle()
     app.state.notifier.wait_idle()
     assert FakeSMTP.sent and "lab" in FakeSMTP.sent[-1].get_content()  # emailed though started by hand
     assert "Last pull failed" in c.get("/repos").text
@@ -364,3 +366,56 @@ def test_broken_collections_file_cancels_the_run(app, c, remotes, tmp_path):
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert run.status == "error" and "collections failed" in run.error and "Nothing ran" in run.error
     assert run.host_stats == {}
+
+
+FAKE_SSH = '''#!{python}
+"""Stands in for ssh: records how git called it and the key it was given, then serves the repo locally."""
+import json, os, stat, sys
+args = sys.argv[1:]
+key = args[args.index("-i") + 1] if "-i" in args else None
+info = {{"args": args}}
+if key:
+    info["key_mode"] = stat.S_IMODE(os.stat(key).st_mode)
+    info["key_first_line"] = open(key).readline().strip()
+with open({log!r}, "a") as f:
+    f.write(json.dumps(info) + "\\n")
+command = args[-1].replace("git-upload-pack", "git upload-pack", 1)
+os.execvp("sh", ["sh", "-c", command])
+'''
+
+
+def test_ssh_deploy_key_is_used_and_kept_private(app, c, remotes, tmp_path, monkeypatch):
+    import json
+    import sys
+    log = tmp_path / "ssh-calls.jsonl"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "ssh"
+    fake.write_text(FAKE_SSH.format(python=sys.executable, log=str(log)))
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    key = tmp_path / "deploy"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "deploy@lab", "-f", str(key)], check=True)
+    assert c.post("/credentials", data={"kind": "ssh_key", "name": "deploy", "private_key": key.read_text()},
+                  follow_redirects=False).status_code == 303
+    cred = app.state.creds.by_kind("ssh_key")[0]
+
+    url = f"ssh://git@git.lab.test{remotes['inv']}"
+    r = add(c, name="hosts", role="inventory", url=url, paths="inventory/hosts.yml", ssh_key_id=str(cred.id))
+    assert r.status_code == 303, r.text[-400:]
+    repo = app.state.repos.all()[0]
+    assert not repo.last_error, repo.last_error
+    assert "box1" in c.get("/inventory").text
+
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls, "git never called ssh"
+    for call in calls:
+        a = call["args"]
+        assert "BatchMode=yes" in a and "IdentitiesOnly=yes" in a and "IdentityAgent=none" in a
+        assert call["key_mode"] == 0o600
+        assert call["key_first_line"] == "-----BEGIN OPENSSH PRIVATE KEY-----"
+        assert "git@git.lab.test" in a
+    # the key only exists for the length of the pull
+    key_path = calls[0]["args"][calls[0]["args"].index("-i") + 1]
+    assert not os.path.exists(key_path)

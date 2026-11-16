@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -96,6 +97,16 @@ class Executor:
     def live_stats(self, run_id: int) -> dict[str, dict[str, int]] | None:
         return self._live.get(run_id)
 
+    def wait_idle(self, timeout: float = 120) -> bool:
+        """Block until every submitted run has finished and its on_finish (the email) has been handed
+        off. A run is marked finished before on_finish runs, so waiting for the status isn't enough."""
+        end = time.monotonic() + timeout
+        while self._queue.unfinished_tasks:
+            if time.monotonic() > end:
+                return False
+            time.sleep(0.05)
+        return True
+
     def queue_position(self, run_id: int) -> int:
         with self._queue.mutex:
             items = list(self._queue.queue)
@@ -113,9 +124,12 @@ class Executor:
             finally:
                 self._live.pop(run_id, None)
                 self._cancel.discard(run_id)
-                run = self.store.get(run_id)
-                if run and run.finished:
-                    self.on_finish(run_id)
+                try:
+                    run = self.store.get(run_id)
+                    if run and run.finished:
+                        self.on_finish(run_id)
+                finally:
+                    self._queue.task_done()
 
     def _execute(self, run_id: int) -> None:
         import ansible_runner  # imported lazily: slow, and only the worker needs it

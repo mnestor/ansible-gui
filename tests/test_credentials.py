@@ -188,3 +188,25 @@ def test_data_dir_is_private(tmp_path):
         assert stat.S_IMODE((data / "new.log").stat().st_mode) == 0o600
     finally:
         os.umask(old)
+
+
+def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
+    """If ANSIBLE_GUI_SECRET_KEY changes (or its file goes missing), stored secrets can't be read:
+    the page says so and a run using one stops before Ansible starts, with a reason."""
+    settings = dict(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
+                    ssh_config=FIXTURE / "ssh" / "config")
+    first = TestClient(create_app(Settings(**settings, secret_key="a" * 40)))
+    assert first.post("/credentials", data={"kind": "ssh_key", "name": "lab", "private_key": keypair[0],
+                                            "is_default": "1"}, follow_redirects=False).status_code == 303
+
+    app = create_app(Settings(**settings, secret_key="b" * 40))
+    c = TestClient(app)
+    assert "can’t decrypt" in c.get("/credentials").text
+    cred = app.state.creds.by_kind("ssh_key")[0]
+    r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "check", "expected": ["box1"],
+                              "ssh_key": str(cred.id)}, follow_redirects=False)
+    assert r.status_code == 303, r.text[-300:]
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.status == "error"
+    assert "can’t be decrypted" in run.error and "secret key changed" in run.error
+    assert run.host_stats == {}

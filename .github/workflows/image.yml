@@ -2,7 +2,8 @@
 #   push to main      -> :main and :sha-<short>
 #   tag v1.2.3        -> :1.2.3, :1.2, :latest
 #   tag v0.1.0-dev    -> :0.1.0-dev only (a pre-release never moves :latest)
-#   pull request      -> tests and a build, nothing pushed
+#   pull request      -> tests, a build and the smoke test, nothing pushed
+# Nothing is pushed unless the tests and deploy/smoke-test.sh pass.
 name: image
 
 on:
@@ -57,7 +58,19 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
-      - uses: docker/build-push-action@v6
+      - name: Build for the smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ansible-gui:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (refuses to run open, starts, unprivileged, tools present)
+        run: deploy/smoke-test.sh ansible-gui:test
+      - name: Push
+        uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64

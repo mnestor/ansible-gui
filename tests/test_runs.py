@@ -78,17 +78,41 @@ def test_refuses_unknown_playbook(c):
 
 
 def test_cancel_running(app, c):
+    """Cancel while ansible-playbook is mid-task (not merely queued or pulling): the process is stopped,
+    the run says so, and it doesn't wait out the 20 s pause."""
     r = c.post("/runs", data={"playbook": "slow.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
                follow_redirects=False)
     run_id = int(r.headers["location"].rsplit("/", 1)[1])
-    store = app.state.store
-    for _ in range(50):
-        if store.get(run_id).status == "running":
-            break
+    log = app.state.store.log_path(run_id)
+    end = time.time() + 30
+    while "TASK [Wait]" not in (log.read_text() if log.exists() else ""):
+        assert time.time() < end, "the pause task never started"
         time.sleep(0.2)
+    started = time.time()
     c.post(f"/runs/{run_id}/cancel")
     run = wait(app, run_id, timeout=30)
     assert run.status == "canceled"
+    assert time.time() - started < 15
+    assert "Run canceled from the web UI" in log.read_text()
+
+
+def test_executor_wait_idle_covers_on_finish(app, c):
+    """A run is marked finished before its on_finish (the email) runs; wait_idle waits for both."""
+    calls = []
+    real = app.state.executor.on_finish
+
+    def slow_finish(run_id):
+        time.sleep(1)
+        calls.append(run_id)
+        real(run_id)
+
+    app.state.executor.on_finish = slow_finish
+    r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "check", "expected": ["box1"]},
+               follow_redirects=False)
+    run_id = int(r.headers["location"].rsplit("/", 1)[1])
+    wait(app, run_id)
+    assert app.state.executor.wait_idle(timeout=30)
+    assert calls == [run_id]
 
 
 def test_live_endpoint_streams_from_offset(app, c):
@@ -109,3 +133,21 @@ def test_history_and_inventory_last_result(app, c):
     wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert re.search(r"Succeeded", c.get("/runs").text)
     assert "Last run #" in c.get("/inventory/hosts/box1").text
+
+
+def test_vault_password_file_from_settings(tmp_path):
+    """ANSIBLE_GUI_VAULT_PASSWORD_FILE reaches the run, with no vault credential stored."""
+    pw = tmp_path / "vault-pass"
+    pw.write_text("fixture-password\n")
+    pw.chmod(0o600)
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              vault_password_file=pw))
+    c = TestClient(app)
+    r = c.post("/runs", data={"playbook": "vault.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
+               follow_redirects=False)
+    assert r.status_code == 303, r.text[-300:]
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful", log[-800:]
+    assert "word=opened-the-vault" in log
+    assert "fixture-password" not in log

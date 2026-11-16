@@ -74,6 +74,7 @@ def fire_and_wait(app, sched):
         if run.finished:
             break
         time.sleep(0.2)
+    app.state.executor.wait_idle()
     app.state.notifier.wait_idle()
     return app.state.store.get(run.id)
 
@@ -116,6 +117,7 @@ def test_never_and_manual_runs_stay_quiet(app, c):
         if app.state.store.get(run_id).finished:
             break
         time.sleep(0.2)
+    app.state.executor.wait_idle()
     app.state.notifier.wait_idle()
     assert FakeSMTP.sent == []
 
@@ -129,6 +131,7 @@ def test_couldnt_start_and_smtp_failure_are_recorded(app, c):
         if app.state.store.get(run.id).finished:
             break
         time.sleep(0.1)
+    app.state.executor.wait_idle()
     app.state.notifier.wait_idle()
     run = app.state.store.get(run.id)
     assert run.status == "error" and "match no hosts" in run.error and run.notified.startswith("Email failed: 550 relay denied")
