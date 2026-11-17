@@ -237,6 +237,7 @@ ul, ol { padding: 0; list-style: none; }
 .value-null, .value-empty { color: var(--ink-muted); }
 .value-more summary { cursor: pointer; }
 .value-more pre { margin-top: var(--s1); }
+.row-muted th, .row-muted td { color: var(--ink-muted); }
 .row-mismatch { background: color-mix(in oklab, var(--changed) 8%, var(--canvas)); }
 .mismatch-note { color: var(--changed); font-weight: 600; margin-top: var(--s1); font-size: var(--fs-xs); }
 

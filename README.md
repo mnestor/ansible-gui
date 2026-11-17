@@ -137,6 +137,14 @@ playbook repository's `ansible.cfg` and the group_vars next to its playbooks. Th
 the button needs a second click (except for `ping` and `setup`), and the run is refused if the hosts changed
 since the list was shown. Commands appear in run history with **Run again…**; they can't be scheduled.
 
+## Ansible settings
+
+**Ansible settings**, next to each playbook repository on Repositories, shows what `ansible-config dump
+--only-changed` reports for runs from it: every setting that isn't Ansible's default, and whether the repository's
+`ansible.cfg` or an environment variable set it. Galaxy server tokens and other credential-looking values are shown
+as "set, not shown". Below that, `ansible-galaxy collection list`: each installed collection, its version and where
+it is, with a copy that an earlier path shadows marked "not used".
+
 ## Schedules
 
 A schedule is a saved run (playbook, `--limit`, mode, tags, credentials) plus a five-field cron expression

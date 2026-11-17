@@ -22,6 +22,7 @@ from . import auth
 from .config import Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
 from .facts import FactStore
+from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
 from .keys import Keys
@@ -742,6 +743,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         role = role if role in ("inventory", "playbooks") else ("playbooks" if has_inv else "inventory")
         return repo_form(request, values={"role": role, "branch": "main",
                                           "paths": "inventory/hosts.yml" if role == "inventory" else ""})
+
+    @app.get("/repos/{rid}/ansible", response_class=HTMLResponse)
+    def repo_ansible(request: Request, rid: int):
+        repo = ws.playbook_repo(rid)
+        if not repo:
+            return RedirectResponse("/repos", status_code=303)
+        found = ansible_config.report(repo.run_dir, repo.path, ws.ansible_env(repo)) if repo.run_dir.is_dir() else None
+        return render(request, "ansible_config.html", section="repos", repo=repo, report=found)
 
     @app.get("/repos/{rid}", response_class=HTMLResponse)
     def edit_repo(request: Request, rid: int):
