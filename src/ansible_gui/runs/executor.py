@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 import queue
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from ..credentials import ssh
 from ..credentials.store import CredentialStore
+from ..facts import GATHER_ACTIONS
 from ..wipe import wipe_tree
 from . import playbooks
 from .store import Run, RunStore, host_result, now
@@ -68,8 +70,9 @@ def _write_secret(path: Path, text: str) -> Path:
 
 class Executor:
     def __init__(self, store: RunStore, workspace, creds: CredentialStore | None = None,
-                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None):
+                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None, facts=None):
         self.on_finish = on_finish or (lambda run_id: None)
+        self.facts = facts  # FactStore: every gather_facts/setup result is saved there
         self.store = store
         self.workspace = workspace
         self.creds = creds
@@ -160,12 +163,15 @@ class Executor:
         inv_repo = self.workspace.inventory_repo(inv_repo.id)
         project = repo.run_dir
         opts = self.workspace.run_opts(repo, inv_repo)
+        facts_run = run.kind == "facts"
+        if facts_run:  # absolute: Ansible starts in run_dir, which may already be the playbook directory
+            opts = dataclasses.replace(opts, playbook_dir=str((repo.path / repo.playbook_dir).resolve()))
         playbook = str((repo.path / run.playbook).resolve())
-        if not (repo.path / run.playbook).is_file():
+        if not facts_run and not (repo.path / run.playbook).is_file():
             return stop(f"Didn’t start: {run.playbook} isn’t in {repo.name} any more.")
 
         # The files may have changed since the preview: ask Ansible again which hosts this run hits.
-        pv = playbooks.preview(opts, playbook, run.target)
+        pv = playbooks.list_hosts(opts, run.target) if facts_run else playbooks.preview(opts, playbook, run.target)
         if pv.error or not pv.hosts:
             why = pv.error or f"the targets ({run.target or 'the playbook’s hosts'}) match no hosts"
             return stop(f"Didn’t start: {why}.")
@@ -192,17 +198,28 @@ class Executor:
             return stop(str(e))
 
         def on_event(ev: dict) -> bool:
-            if ev.get("stdout"):
-                log_file.write(ev["stdout"] + "\n")
             data = ev.get("event_data") or {}
             host = data.get("host")
             kind = ev.get("event", "")
+            if facts_run and kind == "runner_on_ok":
+                # Ad hoc setup prints every fact, ansible_env included: the log keeps a count instead.
+                n = len((data.get("res") or {}).get("ansible_facts") or {})
+                log_file.write(f"{host} | SUCCESS | {n} facts gathered and saved\n")
+            elif ev.get("stdout"):
+                log_file.write(ev["stdout"] + "\n")
             if host and kind.startswith("runner_on_"):
                 c = live.setdefault(host, dict.fromkeys(_COUNTERS, 0))
                 if kind == "runner_on_ok":
                     c["ok"] += 1
-                    if (data.get("res") or {}).get("changed"):
+                    res = data.get("res") or {}
+                    if res.get("changed"):
                         c["changed"] += 1
+                    action = data.get("resolved_action") or data.get("task_action")
+                    if self.facts and action in GATHER_ACTIONS and res.get("ansible_facts"):
+                        try:
+                            self.facts.record(host, res["ansible_facts"], run_id)
+                        except Exception:  # facts are a bonus: never fail the run over them
+                            log.exception("saving facts of %s from run %s", host, run_id)
                 elif kind == "runner_on_failed" and not data.get("ignore_errors"):
                     c["failed"] += 1
                 elif kind == "runner_on_unreachable":
@@ -223,18 +240,24 @@ class Executor:
             cmdline.append("--diff")
         cmdline += prepared.cmdline
 
-        log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
+        if facts_run:
+            # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to
+            # the playbooks, exactly as for the repository's own playbooks.
+            cmdline = ["--playbook-dir", opts.playbook_dir, *cmdline]
+            what = dict(module="ansible.builtin.setup", host_pattern=run.target)
+            log_file.write(f"$ ansible {shlex.join(self._args(run, cmdline))}\n\n")
+        else:
+            what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
+                        skip_tags=run.skip_tags or None)
+            log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
         try:
             result = ansible_runner.run(
                 private_data_dir=str(prepared.runner_dir),
                 # Hand envvars, passwords and cmdline over in memory rather than as files in env/.
                 suppress_env_files=True,
                 project_dir=str(project),
-                playbook=playbook,
                 inventory=opts.sources,
-                limit=run.target or None,
-                tags=run.tags or None,
-                skip_tags=run.skip_tags or None,
+                **what,
                 verbosity=run.verbosity or None,
                 cmdline=shlex.join(cmdline) if cmdline else None,
                 envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
@@ -319,9 +342,12 @@ class Executor:
             raise
 
     def _args(self, run, cmdline: list[str]) -> list[str]:
+        """The command line shown at the top of the log."""
         args = []
         for s in self.workspace.inventory_sources(self.workspace.inventory_repo(run.inventory_id)):
             args += ["-i", s]
+        if run.kind == "facts":
+            return [run.target, "-m", "ansible.builtin.setup", *args, *cmdline]
         if run.target:
             args += ["--limit", run.target]
         if run.tags:

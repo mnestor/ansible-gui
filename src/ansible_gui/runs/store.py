@@ -48,6 +48,7 @@ MIGRATIONS = {
     "repo_id": "alter table runs add column repo_id integer not null default 0",
     "inventory_commit": "alter table runs add column inventory_commit text",
     "inventory_id": "alter table runs add column inventory_id integer",
+    "kind": "alter table runs add column kind text not null default 'playbook'",
 }
 
 
@@ -82,6 +83,7 @@ class Run:
     repo_id: int = 0  # the playbook repository; 0 is ANSIBLE_GUI_PROJECT_DIR
     inventory_commit: str | None = None
     inventory_id: int | None = None  # the inventory repository; None for runs from before there could be several
+    kind: str = "playbook"  # or "facts": ansible -m setup on the target, which changes nothing
 
     @property
     def finished(self) -> bool:
@@ -96,6 +98,8 @@ class Run:
 
     @property
     def mode(self) -> str:
+        if self.kind == "facts":
+            return "Read only"
         return "Dry run" if self.check_mode else "Apply"
 
 
@@ -129,6 +133,7 @@ def _row(r: sqlite3.Row) -> Run:
         repo_id=r["repo_id"],
         inventory_commit=r["inventory_commit"],
         inventory_id=r["inventory_id"],
+        kind=r["kind"],
     )
 
 
@@ -167,15 +172,15 @@ class RunStore:
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
                credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0,
-               inventory_id: int | None = None) -> Run:
+               inventory_id: int | None = None, kind: str = "playbook") -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id)"
-                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
                  json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
-                 inventory_id),
+                 inventory_id, kind),
             )
             self._db.commit()
             return self.get(cur.lastrowid)

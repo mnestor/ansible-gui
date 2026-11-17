@@ -52,22 +52,41 @@ class Preview:
 
 
 def _ansible_playbook(opts: CliOptions, playbook: str, args: list[str]) -> str:
-    cmd = ["ansible-playbook"]
+    return _cli(opts, ["ansible-playbook"], [*args, playbook])
+
+
+def _cli(opts: CliOptions, head: list[str], args: list[str]) -> str:
+    cmd = list(head)
     for src in opts.sources:
         cmd += ["-i", src]
     if opts.vault_password_file:
         cmd += ["--vault-password-file", str(opts.vault_password_file)]
-    cmd += [*args, playbook]
+    cmd += args
     env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **opts.env}
     try:
         proc = subprocess.run(cmd, cwd=opts.project_dir, env=env, capture_output=True, text=True, timeout=opts.timeout)
     except FileNotFoundError:
-        raise InventoryError("ansible-playbook is not installed or not on PATH.", cmd) from None
+        raise InventoryError(f"{head[0]} is not installed or not on PATH.", cmd) from None
     except subprocess.TimeoutExpired:
-        raise InventoryError(f"ansible-playbook took longer than {opts.timeout}s.", cmd) from None
+        raise InventoryError(f"{head[0]} took longer than {opts.timeout}s.", cmd) from None
     if proc.returncode != 0:
-        raise InventoryError(f"ansible-playbook exited with code {proc.returncode}.", cmd, proc.stderr or proc.stdout)
+        raise InventoryError(f"{head[0]} exited with code {proc.returncode}.", cmd, proc.stderr or proc.stdout)
     return proc.stdout
+
+
+def list_hosts(opts: CliOptions, pattern: str) -> Preview:
+    """Hosts an ad-hoc command on pattern reaches, as `ansible PATTERN --list-hosts` resolves them,
+    with the playbook directory's group_vars and host_vars loaded like a run's."""
+    if not pattern.strip() or pattern.lstrip().startswith("-"):
+        return Preview(error="Name the hosts or group to gather facts from.")
+    try:
+        out = _cli(opts, ["ansible", pattern.strip()], ["--list-hosts", "--playbook-dir", opts.playbook_dir])
+    except InventoryError as e:
+        detail = [line for line in e.stderr.strip().splitlines() if line.strip()]
+        return Preview(error=(detail[-1] if detail else str(e)))
+    hosts = [line.strip() for line in out.splitlines()[1:] if line.strip()] if _HOSTS_HEADER.match(
+        out.splitlines()[0] if out.strip() else "") else []
+    return Preview(hosts=hosts, plays=1)
 
 
 _HOSTS_HEADER = re.compile(r"^\s*hosts \((\d+)\):\s*$")

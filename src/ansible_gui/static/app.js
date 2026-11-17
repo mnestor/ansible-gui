@@ -1,4 +1,4 @@
-// Small client behaviours: sidebar search and tabs, variable filter, busy buttons.
+// Small client behaviours: sidebar search and tabs, variable and fact filters, busy buttons.
 // Re-run after every htmx swap, since hx-boost replaces the body.
 (function () {
   // setup() runs after every htmx swap (including the 1s run poll), so each
@@ -79,6 +79,19 @@
       varfilter.value = "";
       filterVars();
       varfilter.focus();
+    });
+
+    const factfilter = root.querySelector("[data-factfilter]");
+    if (once(factfilter, "Filter")) factfilter.addEventListener("input", () => {
+      const term = factfilter.value.trim().toLowerCase();
+      let shown = 0;
+      root.querySelectorAll("tr[data-fact]").forEach((tr) => {
+        const hit = term === "" || tr.dataset.fact.toLowerCase().includes(term);
+        tr.hidden = !hit;
+        if (hit) shown++;
+      });
+      const empty = root.querySelector("[data-factempty]");
+      if (empty) empty.hidden = shown > 0;
     });
 
     root.querySelectorAll("form").forEach((form) => {

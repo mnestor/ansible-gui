@@ -115,6 +115,19 @@ ansible-runner's own directory (where it writes the run's environment, the becom
 inside the run's temp directory and wiped with the keys when the run ends; only `output.log` stays in
 `data/runs/<id>/`. Runs older than `ANSIBLE_GUI_RUN_RETENTION_DAYS` are deleted at start and every six hours.
 
+## Facts
+
+Whenever a run gathers facts on a host (`gather_facts`, or the `setup` module), they are saved from the run's
+events and shown under **Facts** on the host page: a summary (OS, kernel, virtualization, CPU and RAM, IPv4,
+Python) and every fact, filterable. Nothing in `ansible.cfg` changes and no fact cache is configured, so plays
+gather exactly as before. Only the latest facts per host are kept: a full gather replaces them, a partial one
+(`gather_subset`, `filter`) updates the facts it returned. `ansible_env` is never saved.
+
+**Gather facts** on a host or group page starts a read-only run, `ansible <target> -m ansible.builtin.setup`,
+with the default credentials, the first playbook repository's `ansible.cfg`, and `--playbook-dir` so the
+group_vars and host_vars next to the playbooks apply as they would in a run. Its log shows a count per host,
+not the facts.
+
 ## Schedules
 
 A schedule is a saved run (playbook, `--limit`, mode, tags, credentials) plus a five-field cron expression

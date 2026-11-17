@@ -11,6 +11,13 @@
       <form method="post" action="/runs/{{ run.id }}/cancel" class="cancel-form" data-confirm-twice>
         <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to stop: hosts mid-task stay as they are" data-busy-label="Canceling…">Cancel run</button>
       </form>
+    {% elif run.kind == "facts" %}
+      <form method="post" action="/facts/gather" hx-boost="false">
+        <input type="hidden" name="target" value="{{ run.target }}">
+        <input type="hidden" name="inventory" value="{{ run.inventory_id or '' }}">
+        <button class="btn btn-secondary" type="submit" data-busy-label="Starting…">Gather again</button>
+      </form>
+      {% if run.expected_hosts | length == 1 %}<a class="btn btn-quiet" href="/inventory/hosts/{{ run.expected_hosts[0] }}#facts">Open the facts of {{ run.expected_hosts[0] }}</a>{% endif %}
     {% else %}
       {% if run.check_mode and run.status == "successful" %}
         <a class="btn btn-primary" href="{{ rerun_url(run, 'apply') }}">Apply these changes…</a>
