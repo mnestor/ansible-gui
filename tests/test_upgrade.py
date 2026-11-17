@@ -66,7 +66,9 @@ def old_data(tmp_path):
 
 
 def test_first_version_database_upgrades_in_place(old_data):
-    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=old_data))
+    # Retention off: the old run is from January, and pruning it is tested on its own.
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=old_data,
+                              run_retention_days=0))
     c = TestClient(app)
 
     for path in ("/", "/runs", "/runs/1", "/schedules", "/schedules/1", "/repos", "/credentials",

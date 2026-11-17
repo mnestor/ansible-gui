@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
+import shutil
 import sqlite3
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from ..db import Database
+from ..wipe import wipe_tree
+
+log = logging.getLogger(__name__)
 
 FINISHED = {"successful", "failed", "canceled", "error", "interrupted", "skipped"}
 
@@ -146,6 +151,10 @@ class RunStore:
             (now(), "The server restarted before this run finished."),
         )
         self._db.commit()
+        # Before 0.1.0, ansible-runner kept its files in runs/<id>/runner/: the environment (environment
+        # secrets included), the become password and the server's own environment, in plain text.
+        for old in (data_dir / "runs").glob("*/runner"):
+            wipe_tree(old)
 
     def run_dir(self, run_id: int) -> Path:
         d = self.data_dir / "runs" / str(run_id)
@@ -191,6 +200,28 @@ class RunStore:
         return [_row(r) for r in self._db.execute(
             "select * from runs where schedule_id=? order by id desc limit ?", (schedule_id, limit))]
 
+    def prune(self, days: int) -> int:
+        """Delete runs that finished more than `days` ago, with their logs. Each schedule keeps its
+        latest finished run, which the recovery email compares against. Returns how many went."""
+        if days <= 0:
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        done = ",".join(f"'{s}'" for s in sorted(FINISHED))
+        with self._lock:
+            ids = [r["id"] for r in self._db.execute(
+                f"select id from runs where status in ({done}) and finished_at is not null and finished_at < ?"  # noqa: S608
+                f" and id not in (select max(id) from runs where schedule_id is not null and status in ({done})"
+                " group by schedule_id)", (cutoff,))]
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                self._db.execute(f"delete from runs where id in ({','.join('?' * len(chunk))})", chunk)  # noqa: S608
+            self._db.commit()
+        for run_id in ids:
+            shutil.rmtree(self.data_dir / "runs" / str(run_id), ignore_errors=True)
+        if ids:
+            log.info("deleted %d run(s) that finished more than %d days ago", len(ids), days)
+        return len(ids)
+
     def last_notified(self) -> Run | None:
         r = self._db.execute("select * from runs where notified is not null order by id desc limit 1").fetchone()
         return _row(r) if r else None
@@ -219,3 +250,25 @@ def host_result(stats: dict[str, int]) -> str:
     if stats.get("ok") or stats.get("skipped"):
         return "ok"
     return "pending"
+
+
+class Retention:
+    """Applies ANSIBLE_GUI_RUN_RETENTION_DAYS: prunes at start, then every six hours, in its own thread."""
+
+    def __init__(self, store: RunStore, days: int, every: float = 6 * 3600):
+        self.store, self.days, self.every = store, days, every
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="ansible-gui-retention", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def _loop(self) -> None:
+        while True:
+            try:
+                self.store.prune(self.days)
+            except Exception:  # a failed prune must not end the thread; the next one tries again
+                log.exception("pruning old runs failed")
+            if self._stop.wait(self.every):
+                return

@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from .config import Settings
+from .sessions import SessionStore
 
 log = logging.getLogger(__name__)
 
@@ -42,9 +43,10 @@ def display_name(user: dict | None) -> str:
 class Gate(BaseHTTPMiddleware):
     """Signed-in users only, and writes only from this app's own pages."""
 
-    def __init__(self, app, settings: Settings):
+    def __init__(self, app, settings: Settings, sessions: SessionStore):
         super().__init__(app)
         self.settings = settings
+        self.sessions = sessions
 
     def _origin(self, request: Request) -> str:
         if self.settings.public_url:
@@ -63,8 +65,10 @@ class Gate(BaseHTTPMiddleware):
         path = request.url.path
         if not self.settings.auth_enabled or path.startswith(OPEN_PATHS):
             return await call_next(request)
-        if current_user(request):
+        if current_user(request) and self.sessions.valid(request.session.get("sid")):
             return await call_next(request)
+        # Signed out elsewhere, older than the session lifetime, or from before sessions were recorded.
+        request.session.clear()
         here = path + (f"?{request.url.query}" if request.url.query else "")
         if request.headers.get("hx-request") or request.method != "GET":
             # Return to the page the person was on, not to a fragment URL or a form POST target.
@@ -78,7 +82,7 @@ class Gate(BaseHTTPMiddleware):
         return RedirectResponse(login, status_code=303)
 
 
-def install(app: FastAPI, settings: Settings, templates) -> None:
+def install(app: FastAPI, settings: Settings, templates, sessions: SessionStore) -> None:
     if not settings.auth_enabled:
         return
     oauth = OAuth()
@@ -145,11 +149,13 @@ def install(app: FastAPI, settings: Settings, templates) -> None:
         request.session.clear()  # new session on sign-in
         request.session["user"] = {"sub": info.get("sub"), "username": info.get("preferred_username"),
                                    "name": info.get("name"), "email": info.get("email"), "groups": groups}
+        request.session["sid"] = sessions.start(str(who))
         log.info("signed in: %s", who)
         return RedirectResponse(target, status_code=303)
 
     @app.post("/auth/logout")
     async def auth_logout(request: Request):
+        sessions.end(request.session.get("sid"))  # dead everywhere, not just in this browser
         request.session.clear()
         return RedirectResponse("/auth/signed-out", status_code=303)
 

@@ -321,7 +321,7 @@ def build(
 
 def edit_url(template: str | None, layer: Layer) -> str | None:
     """Link to the file in the git web UI. template uses {path} and {line}."""
-    if not template or not layer.path:
+    if not template or not layer.path or not template.lower().startswith(("https://", "http://")):
         return None
     url = template.replace("{path}", layer.path)
     return url.replace("{line}", str(layer.line or 1))

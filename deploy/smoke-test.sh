@@ -7,6 +7,9 @@ image=${1:?usage: smoke-test.sh IMAGE}
 name=agui-smoke-$$
 fail() { echo "FAIL: $*" >&2; docker logs "$name" 2>&1 | tail -20 >&2 || true; exit 1; }
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+# The hardening deploy/docker-compose.yml applies; the last check runs the image under it.
+HARDENED=(--read-only --tmpfs /tmp:size=512m --tmpfs /home/app:size=64m,uid=10001,gid=10001,mode=0700
+          --cap-drop ALL --security-opt no-new-privileges:true)
 
 echo "- refuses to listen without sign-in"
 if out=$(docker run --rm "$image" 2>&1); then fail "started with no sign-in configured"; fi
@@ -42,5 +45,17 @@ docker exec "$name" ansible-galaxy --version >/dev/null || fail "ansible-galaxy 
 docker exec "$name" git --version >/dev/null || fail "git missing"
 docker exec "$name" ssh -V >/dev/null 2>&1 || fail "ssh missing"
 docker exec "$name" python -c "import ansible" 2>/dev/null && echo "  (ansible-core is importable in the venv, as expected; the app never imports it)"
+
+echo "- runs hardened: read-only root, no capabilities, no new privileges"
+docker rm -f "$name" >/dev/null
+docker run -d --name "$name" "${HARDENED[@]}" -e ANSIBLE_GUI_INSECURE_NO_AUTH=1 \
+  -e ANSIBLE_GUI_SECRET_KEY=smoke-test-key-smoke-test-key-0123456789 "$image" >/dev/null
+for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && break; sleep 1; done
+[ "$(get /credentials)" = 200 ] || fail "hardened: /credentials didn't return 200"
+docker exec "$name" grep -q "^CapEff:[[:space:]]*0000000000000000" /proc/1/status || fail "hardened: capabilities left"
+docker exec "$name" ansible localhost -c local -m setup -a filter=ansible_distribution \
+  -e ansible_python_interpreter=/app/.venv/bin/python | grep -q '"Debian"' || fail "hardened: a local Ansible task failed"
+docker exec "$name" sh -c 'eval "$(ssh-agent -s -a /tmp/smoke-agent.sock)" >/dev/null && ssh-agent -k >/dev/null' \
+  || fail "hardened: ssh-agent didn't start"
 
 echo "smoke test passed"

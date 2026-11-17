@@ -75,3 +75,22 @@ def test_smtp_half_configured_refuses(monkeypatch):
     env(monkeypatch, ANSIBLE_GUI_SMTP_HOST="mail.example.test")
     with pytest.raises(SystemExit, match="SMTP_FROM"):
         Settings.from_env()
+
+
+def test_host_key_checking_and_retention_defaults(monkeypatch):
+    s = Settings.from_env()
+    assert s.ssh_host_key_checking == "accept-new" and s.run_retention_days == 90
+    env(monkeypatch, ANSIBLE_GUI_SSH_HOST_KEY_CHECKING="YES", ANSIBLE_GUI_RUN_RETENTION_DAYS="0")
+    s = Settings.from_env()
+    assert s.ssh_host_key_checking == "yes" and s.run_retention_days == 0
+
+
+@pytest.mark.parametrize("name, value, says", [
+    ("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING", "off", "yes, accept-new or no"),
+    ("ANSIBLE_GUI_RUN_RETENTION_DAYS", "-1", "whole number of days"),
+    ("ANSIBLE_GUI_EDIT_URL", "javascript:alert(1)//{path}", "must start with https://"),
+])
+def test_bad_values_refuse_to_start(monkeypatch, name, value, says):
+    env(monkeypatch, **{name: value})
+    with pytest.raises(SystemExit, match=says):
+        Settings.from_env()

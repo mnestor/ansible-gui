@@ -108,3 +108,12 @@ def test_unsafe_value_is_unwrapped(inv):
     v = src(inv, "db1", "deploy_hook")
     assert v.value == "echo {{ not_a_template }}"
     assert v.mismatch is None
+
+
+def test_edit_links_are_web_links_only():
+    from ansible_gui.inventory.attribution import edit_url
+    from ansible_gui.inventory.model import Layer
+    layer = Layer(kind="unknown", path="host_vars/a.yml", line=3)
+    assert edit_url("https://git.lab/x/{path}#L{line}", layer) == "https://git.lab/x/host_vars/a.yml#L3"
+    assert edit_url("javascript:alert(1)//{path}", layer) is None
+    assert edit_url("JavaScript:alert(1)", layer) is None

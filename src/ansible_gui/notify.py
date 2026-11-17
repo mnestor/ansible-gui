@@ -88,7 +88,8 @@ class Notifier:
         msg = self._message("[ansible-gui] Test email",
                             f"This is a test from ansible-gui, sent by {by}.\n\n"
                             "Scheduled runs that need attention will be mailed to this address.\n")
-        return self._send(msg)
+        # Someone is waiting on the page: give up sooner than the background mailer does.
+        return self._send(msg, timeout=10)
 
     def wait_idle(self, timeout: float = 10) -> None:
         """For tests: block until queued emails are handled."""
@@ -145,13 +146,13 @@ class Notifier:
         msg.set_content(body)
         return msg
 
-    def _send(self, msg: EmailMessage) -> str | None:
+    def _send(self, msg: EmailMessage, timeout: float = 30) -> str | None:
         s = self.smtp
         try:
             if s.tls == "ssl":
-                server = smtplib.SMTP_SSL(s.host, s.port, timeout=30, context=ssl.create_default_context())
+                server = smtplib.SMTP_SSL(s.host, s.port, timeout=timeout, context=ssl.create_default_context())
             else:
-                server = smtplib.SMTP(s.host, s.port, timeout=30)
+                server = smtplib.SMTP(s.host, s.port, timeout=timeout)
             with server:
                 if s.tls == "starttls":
                     server.starttls(context=ssl.create_default_context())
@@ -161,7 +162,19 @@ class Notifier:
             return None
         except (OSError, smtplib.SMTPException) as e:
             log.warning("email to %s failed: %s", s.to, e)
-            return str(e) or e.__class__.__name__
+            return self._explain(e)
+
+    def _explain(self, e: Exception) -> str:
+        """The error, plus the usual cause when it's one of the two that look like a hang or gibberish."""
+        s = self.smtp
+        where = f"{s.host}:{s.port} ({s.tls})"
+        mismatch = (" Check that ANSIBLE_GUI_SMTP_TLS matches the port: starttls is usually 587, ssl 465.")
+        if isinstance(e, TimeoutError) or isinstance(e, smtplib.SMTPServerDisconnected) and "timed out" in str(e):
+            return (f"No answer from {where}." + mismatch +
+                    " If it does, this server may not be allowed to reach that port (a firewall dropping it).")
+        if isinstance(e, ssl.SSLError):
+            return f"TLS failed with {where}: {e}." + mismatch
+        return str(e) or e.__class__.__name__
 
     def _body(self, run: Run, summary: str, recovered: bool) -> str:
         link = f"{self.public_url}/runs/{run.id}" if self.public_url else f"/runs/{run.id} on the ansible-gui server"

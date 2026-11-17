@@ -17,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
-from .config import Settings
+from .config import Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
@@ -34,7 +34,9 @@ from .runs import playbooks
 from .runs.executor import Executor
 from .runs.schedules import Invalid as ScheduleInvalid
 from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
-from .runs.store import Run, RunStore, host_result
+from .runs.store import Retention, Run, RunStore, host_result
+from .headers import SecurityHeaders
+from .sessions import SessionStore
 
 HERE = Path(__file__).parent
 
@@ -142,13 +144,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     invs = Inventories(ws)
     ws.on_inventory_changed = invs.reload
     executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config)
+    sessions = SessionStore(settings.data_dir)
+    if settings.run_retention_days:
+        Retention(store, settings.run_retention_days)
 
+    https = bool(settings.public_url and settings.public_url.startswith("https://"))
     app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None)
     # Starlette runs the last-added middleware first: the session must exist before the gate looks at it.
-    app.add_middleware(auth.Gate, settings=settings)
+    app.add_middleware(auth.Gate, settings=settings, sessions=sessions)
     app.add_middleware(SessionMiddleware, secret_key=keys.session_secret, session_cookie="ansible_gui",
-                       max_age=12 * 3600, same_site="lax",
-                       https_only=bool(settings.public_url and settings.public_url.startswith("https://")))
+                       max_age=12 * 3600, same_site="lax", https_only=https)
+    app.add_middleware(SecurityHeaders, hsts=https)
     app.state.creds = creds
     schedules = ScheduleStore(settings.data_dir)
     notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
@@ -200,7 +206,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             status_code=status,
         )
 
-    auth.install(app, settings, templates)
+    auth.install(app, settings, templates, sessions)
 
     @app.get("/healthz")
     def healthz() -> PlainTextResponse:
@@ -478,9 +484,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- credentials -----------------------------------------------------------
     def ssh_config_panel() -> dict:
         path = settings.ssh_config
-        panel: dict = {"path": path, "exists": bool(path and path.is_file()), "text": None, "edit": None,
-                       "known_hosts": sshtools.known_hosts_count(settings.data_dir),
-                       "known_hosts_path": settings.data_dir / "ssh" / "known_hosts"}
+        panel: dict = {"path": path, "exists": bool(path and path.is_file()), "text": None, "edit": None}
         if panel["exists"]:
             try:
                 panel["text"] = path.read_text(errors="replace")[:20000]
@@ -500,12 +504,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         })
         return panel
 
+    def credentials_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
+                         status: int = 200) -> HTMLResponse:
+        q = request.query_params
+        host_keys = {"mode": settings.ssh_host_key_checking, "count": sshtools.known_hosts_count(settings.data_dir),
+                     "path": sshtools.known_hosts_path(settings.data_dir), "error": hosts_error,
+                     "text": sshtools.read_known_hosts(settings.data_dir) if hosts_text is None else hosts_text,
+                     "saved": q.get("hosts") if q.get("hosts", "").isdigit() else None}
+        return render(request, "credentials.html", status, section="credentials",
+                      groups={kind: creds.by_kind(kind) for kind in KINDS}, kinds=KINDS,
+                      ssh_panel=ssh_config_panel(), host_keys=host_keys, saved=q.get("saved"),
+                      deleted=q.get("deleted"), key_file=keys.generated_at)
+
     @app.get("/credentials", response_class=HTMLResponse)
     def credentials(request: Request):
-        return render(request, "credentials.html", section="credentials",
-                      groups={kind: creds.by_kind(kind) for kind in KINDS}, kinds=KINDS,
-                      ssh_panel=ssh_config_panel(), saved=request.query_params.get("saved"),
-                      deleted=request.query_params.get("deleted"), key_file=keys.generated_at)
+        return credentials_page(request)
+
+    @app.post("/credentials/known-hosts")
+    async def save_known_hosts(request: Request):
+        text = str((await request.form()).get("known_hosts", ""))
+        try:
+            count = sshtools.save_known_hosts(settings.data_dir, text)
+        except sshtools.InvalidKey as e:
+            return credentials_page(request, hosts_text=text, hosts_error=str(e), status=400)
+        return RedirectResponse(f"/credentials?hosts={count}#known-hosts", status_code=303)
 
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
@@ -608,6 +630,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             elif c.kind != want:
                 problem = ("An HTTPS URL signs in with a git token." if want == "git_token"
                            else "An SSH URL signs in with an SSH key.") + " Pick one of those, or change the URL."
+            elif want == "git_token" and not form["url"].strip().startswith("https://"):
+                problem = "A git token is only sent over https://, never unencrypted. Use the https:// URL."
             else:
                 problem = None
             if problem:
@@ -791,20 +815,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 def main() -> None:
-    import os
-
     import uvicorn
 
+    settings = Settings.from_env()
     host = os.environ.get("ANSIBLE_GUI_HOST", "127.0.0.1")
-    check_bind(Settings.from_env(), host, os.environ.get("ANSIBLE_GUI_INSECURE_NO_AUTH") == "1")
-    uvicorn.run(
-        "ansible_gui.web:create_app",
-        factory=True,
-        host=host,
-        port=int(os.environ.get("ANSIBLE_GUI_PORT", "8080")),
-        proxy_headers=True,
-        forwarded_allow_ips=os.environ.get("ANSIBLE_GUI_TRUSTED_PROXIES", "127.0.0.1"),
-    )
+    port = int(os.environ.get("ANSIBLE_GUI_PORT", "8080"))
+    proxies = os.environ.get("ANSIBLE_GUI_TRUSTED_PROXIES", "127.0.0.1")
+    check_bind(settings, host, os.environ.get("ANSIBLE_GUI_INSECURE_NO_AUTH") == "1")
+    # Everything is read: from here on no child process can see the secrets in the environment.
+    scrub_environment()
+    uvicorn.run(create_app(settings), host=host, port=port, proxy_headers=True, forwarded_allow_ips=proxies)
 
 
 def lock_down(data_dir: Path) -> None:
@@ -814,11 +834,18 @@ def lock_down(data_dir: Path) -> None:
     umask makes every new file and directory private, including those git and Ansible write."""
     os.umask(0o077)
     data_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(data_dir, 0o700)
-    for name in ("ansible-gui.db", "ansible-gui.db-journal", "ansible-gui.db-wal", "ansible-gui.db-shm", "secret.key"):
-        f = data_dir / name
-        if f.exists():
-            os.chmod(f, 0o600)
+    try:
+        os.chmod(data_dir, 0o700)
+        for name in ("ansible-gui.db", "ansible-gui.db-journal", "ansible-gui.db-wal", "ansible-gui.db-shm",
+                     "secret.key"):
+            f = data_dir / name
+            if f.exists():
+                os.chmod(f, 0o600)
+    except PermissionError as e:
+        raise SystemExit(
+            f"{e.filename} isn’t owned by the user ansible-gui runs as (uid {os.getuid()}), so it can’t be made "
+            f"private. On the host, give it to that user: sudo chown -R {os.getuid()} <the directory mounted at "
+            f"{data_dir}>") from None
 
 
 def check_bind(settings: Settings, host: str, insecure_ok: bool) -> None:

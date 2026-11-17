@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+HOST_KEY_CHECKING = ("yes", "accept-new", "no")  # OpenSSH's StrictHostKeyChecking values
 
 
 @dataclass
@@ -25,6 +26,10 @@ class Settings:
     oidc_groups: list[str] = field(default_factory=list)  # ["*"] allows anyone the provider lets in
     secret_key: str | None = None  # master key for sessions and stored credentials
     smtp: "SmtpSettings | None" = None
+    # StrictHostKeyChecking for runs and git pulls when the ssh_config doesn't set it: yes only connects to hosts
+    # whose key is already in known_hosts; accept-new trusts a new host's first answer; no trusts any answer.
+    ssh_host_key_checking: str = "accept-new"
+    run_retention_days: int = 90  # finished runs older than this are deleted; 0 keeps them forever
 
     @property
     def auth_enabled(self) -> bool:
@@ -47,12 +52,21 @@ class Settings:
         if issuer and not groups:
             raise SystemExit("Set ANSIBLE_GUI_OIDC_GROUPS to the groups allowed to use ansible-gui "
                              "(comma-separated), or to * to allow anyone your OIDC provider signs in.")
+        edit = os.environ.get("ANSIBLE_GUI_EDIT_URL") or None
+        if edit and not is_web_url(edit):
+            raise SystemExit("ANSIBLE_GUI_EDIT_URL must start with https:// or http://.")
+        host_keys = os.environ.get("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING", "accept-new").strip().lower()
+        if host_keys not in HOST_KEY_CHECKING:
+            raise SystemExit("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING must be yes, accept-new or no.")
+        retention = os.environ.get("ANSIBLE_GUI_RUN_RETENTION_DAYS", "90").strip()
+        if not retention.isdigit():
+            raise SystemExit("ANSIBLE_GUI_RUN_RETENTION_DAYS must be a whole number of days (0 keeps runs forever).")
         return cls(
             project_dir=project_dir,
             inventory=inventory,
             playbook_dir=os.environ.get("ANSIBLE_GUI_PLAYBOOK_DIR", "."),
             vault_password_file=Path(vault).expanduser() if vault else None,
-            edit_url=os.environ.get("ANSIBLE_GUI_EDIT_URL") or None,
+            edit_url=edit,
             data_dir=Path(os.environ.get("ANSIBLE_GUI_DATA_DIR", "data")).expanduser().resolve(),
             ssh_config=((project_dir or Path("/")) / Path(ssh_config).expanduser()).resolve() if ssh_config else None,
             public_url=(os.environ.get("ANSIBLE_GUI_PUBLIC_URL") or "").rstrip("/") or None,
@@ -62,7 +76,25 @@ class Settings:
             oidc_groups=groups,
             secret_key=_env_or_file("ANSIBLE_GUI_SECRET_KEY"),
             smtp=SmtpSettings.from_env(),
+            ssh_host_key_checking=host_keys,
+            run_retention_days=int(retention),
         )
+
+
+def is_web_url(url: str) -> bool:
+    """Only http(s) links are ever rendered as links: a javascript: URL would run in whoever clicks it."""
+    return url.lower().startswith(("https://", "http://"))
+
+
+def scrub_environment() -> None:
+    """Remove every ANSIBLE_GUI_* variable once the settings are read.
+
+    Every program ansible-gui starts (ansible-playbook, ansible-inventory, ansible-galaxy, git, ssh)
+    inherits this process's environment, and ansible-runner also writes it to disk. Without this, any
+    playbook, inventory plugin or collection could read the OIDC client secret, the SMTP password or the
+    master key with lookup('env', ...), and a debug task would put them in the run log and the email."""
+    for name in [k for k in os.environ if k.startswith("ANSIBLE_GUI_")]:
+        del os.environ[name]
 
 
 def _env_or_file(name: str) -> str | None:

@@ -60,6 +60,8 @@ def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
 
     private_key signs in over SSH; token is (user, token) for HTTPS, handed to git
     through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper."""
+    if token and not repo.url.startswith("https://"):
+        raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     with _lock(repo.id):
         workdir = Path(tempfile.mkdtemp(prefix="agui-git-"))
         try:
@@ -103,7 +105,8 @@ _PLAIN = [
     ("could not read Username", "The git server wants a sign-in. Pick a git token for this repository."),
     ("Authentication failed", "The git server refused the token. Check its user name, and that it hasn’t expired."),
     ("Permission denied (publickey", "The git server refused the SSH key. Add its public key as a deploy key."),
-    ("Host key verification failed", "The git server’s SSH host key doesn’t match the one pinned in known_hosts."),
+    ("Host key verification failed", "The git server’s SSH host key isn’t in known hosts, or doesn’t match "
+     "it. Add the key under Known hosts on the Credentials page."),
     ("couldn't find remote ref", "That branch doesn’t exist in the repository."),
     ("Could not resolve host", "The git server’s name doesn’t resolve from the ansible-gui server."),
 ]

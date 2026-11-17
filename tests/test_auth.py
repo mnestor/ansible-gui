@@ -103,3 +103,68 @@ def test_refuses_open_bind_without_sign_in(tmp_path):
         check_bind(s, "0.0.0.0", False)
     check_bind(s, "0.0.0.0", True)
     check_bind(settings(tmp_path), "0.0.0.0", False)
+
+
+# --- sessions recorded on the server ------------------------------------------------------
+MIKE = {"sub": "1", "preferred_username": "mike", "groups": ["admins"]}
+
+
+def test_signing_out_kills_a_copied_cookie(tmp_path):
+    app = create_app(settings(tmp_path))
+    c = signed_in_client(app, MIKE)
+    c.get("/auth/callback")
+    stolen = TestClient(app, cookies={"ansible_gui": c.cookies["ansible_gui"]})
+    assert stolen.get("/runs", follow_redirects=False).status_code == 200
+    c.post("/auth/logout")
+    assert stolen.get("/runs", follow_redirects=False).status_code == 303
+
+
+def test_session_ends_after_its_lifetime_however_often_its_used(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from ansible_gui import sessions
+    app = create_app(settings(tmp_path))
+    c = signed_in_client(app, MIKE)
+    c.get("/auth/callback")
+    assert c.get("/runs", follow_redirects=False).status_code == 200
+    later = sessions._now() + sessions.LIFETIME + timedelta(minutes=1)
+    monkeypatch.setattr(sessions, "_now", lambda: later)
+    r = c.get("/runs", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/auth/login")
+
+
+def test_cookie_from_before_sessions_were_recorded_signs_in_again(tmp_path):
+    """A cookie with a user but no session id (written by an older version) is not trusted."""
+    import base64
+    import json
+
+    from itsdangerous import TimestampSigner
+
+    from ansible_gui.keys import Keys
+    from ansible_gui.sessions import SessionStore
+    app = create_app(settings(tmp_path))
+    secret = Keys.load("x" * 40, tmp_path).session_secret
+
+    def cookie(session):
+        payload = base64.b64encode(json.dumps(session).encode())
+        return {"ansible_gui": TimestampSigner(secret).sign(payload).decode()}
+    assert TestClient(app, cookies=cookie({"user": MIKE})).get("/runs", follow_redirects=False).status_code == 303
+    # the same cookie with a recorded session id gets in, so it was the missing id that kept it out
+    sid = SessionStore(tmp_path).start("mike")
+    assert TestClient(app, cookies=cookie({"user": MIKE, "sid": sid})).get("/runs", follow_redirects=False).status_code == 200
+
+
+def test_sign_out_everyone(tmp_path, monkeypatch, capsys):
+    from ansible_gui import sign_out_everyone
+    app = create_app(settings(tmp_path))
+    first, second = signed_in_client(app, MIKE), signed_in_client(app, MIKE)
+    first.get("/auth/callback")
+    second.get("/auth/callback")
+    monkeypatch.setenv("ANSIBLE_GUI_DATA_DIR", str(tmp_path))
+    sign_out_everyone()
+    assert "Ended 2 sessions" in capsys.readouterr().out
+    assert first.get("/runs", follow_redirects=False).status_code == 303
+    assert second.get("/runs", follow_redirects=False).status_code == 303
+    monkeypatch.setenv("ANSIBLE_GUI_DATA_DIR", str(tmp_path / "nowhere"))
+    with pytest.raises(SystemExit, match="No ansible-gui database"):
+        sign_out_everyone()
