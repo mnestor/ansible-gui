@@ -19,6 +19,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from . import auth
 from .config import Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
+from .facts import FactStore
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
 from .keys import Keys
@@ -143,7 +144,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     ws = Workspace(settings, repos, creds)
     invs = Inventories(ws)
     ws.on_inventory_changed = invs.reload
-    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config)
+    facts = FactStore(settings.data_dir)
+    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config, facts=facts)
     sessions = SessionStore(settings.data_dir)
     if settings.run_retention_days:
         Retention(store, settings.run_retention_days)
@@ -170,8 +172,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
     app.state.executor = executor
     app.state.store = store
+    app.state.facts = facts
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
+
     env.globals.update(
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.edit_url if inv else None) or settings.edit_url, layer),
@@ -182,7 +186,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_label=status_label,
         rerun_url=rerun_url,
         rerun_hosts=rerun_hosts,
-        pb_label=lambda x: ws.label(x.repo_id, x.playbook),
+        pb_label=lambda x: "Gather facts" if getattr(x, "kind", "") == "facts" else ws.label(x.repo_id, x.playbook),
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
@@ -282,7 +286,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         found = invs.find_host(name)
         if not found and invs.loaded():
             return inventory_page(request, "missing.html", status=404, kind="host", name=name, selected=None)
-        return inventory_page(request, "host.html", name=name, found=found, selected=("host", name))
+        return inventory_page(request, "host.html", name=name, found=found, selected=("host", name),
+                              facts=facts.get(name), can_gather=bool(ws.playbook_repos()))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
     def group(request: Request, name: str):
@@ -292,6 +297,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                   selected=None)
         return inventory_page(request, "group.html", listing="groups", name=name, found=found,
                               selected=("group", name))
+
+    @app.post("/facts/gather")
+    async def gather_facts(request: Request):
+        """A read-only run: ansible TARGET -m setup, with the default credentials. Its facts are saved like
+        any run's. It uses the first playbook repository's ansible.cfg and group_vars."""
+        data = await request.form()
+        target = str(data.get("target") or "").strip()
+        inv_repo = chosen_inventory({"inventory": str(data.get("inventory") or "")})
+        books = ws.playbook_repos()
+        if not target or target.startswith("-") or inv_repo is None or not books:
+            return PlainTextResponse("Gather facts needs a host or group, an inventory and a playbook repository.",
+                                     status_code=400)
+        chosen: dict = {}
+        for kind in PER_RUN:
+            cred = creds.default(kind)
+            if cred:
+                chosen[kind] = {"id": cred.id, "name": cred.name}
+        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
+                                for c in creds.by_kind("env_secret")]
+        run = store.create(kind="facts", playbook="", repo_id=books[0].id, target=target, tags="", skip_tags="",
+                           check_mode=False, diff=False, verbosity=0, expected_hosts=[], credentials=chosen,
+                           trigger=auth.display_name(auth.current_user(request)), inventory_id=inv_repo.id)
+        executor.submit(run.id)
+        return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:

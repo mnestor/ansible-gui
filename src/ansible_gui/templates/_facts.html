@@ -1,0 +1,54 @@
+{# The latest facts of one host. Expects name, facts (Facts or None), can_gather, and inv_repo for the run. #}
+<section class="section" id="facts" aria-labelledby="facts-h">
+  <div class="section-head">
+    <h2 id="facts-h" class="section-title">Facts</h2>
+    {% if can_gather and inv_repo %}
+    <form method="post" action="/facts/gather" hx-boost="false">
+      <input type="hidden" name="target" value="{{ name }}">
+      <input type="hidden" name="inventory" value="{{ inv_repo.id }}">
+      <button class="btn btn-secondary" type="submit" data-busy-label="Starting…">Gather facts</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if not facts %}
+    <p class="empty">No facts yet. They’re saved whenever a run gathers facts on {{ name }}. Gather facts reads them now and changes nothing on the host.</p>
+  {% else %}
+    <p class="scope-note">Gathered <time datetime="{{ facts.gathered_at | stamp }}">{{ facts.gathered_at | when }}</time>{% if facts.run_id %} by <a href="/runs/{{ facts.run_id }}">run #{{ facts.run_id }}</a>{% endif %}. Only the latest are kept; any run that gathers facts on this host replaces them. <span class="mono">ansible_env</span> isn’t saved.</p>
+    {% set rows = facts.summary() %}
+    {% if rows %}
+    <dl class="facts">
+      {% for label, value in rows %}<dt>{{ label }}</dt><dd class="mono">{{ value }}</dd>{% endfor %}
+    </dl>
+    {% endif %}
+    <details class="more facts-all">
+      <summary>All {{ facts.facts | length }} facts</summary>
+      <div class="more-body">
+        <div class="vars-toolbar">
+          <label class="visually-hidden" for="factfilter">Filter facts</label>
+          <input id="factfilter" class="input input-small" type="search" placeholder="Filter facts" autocomplete="off" enterkeyhint="search" data-factfilter>
+        </div>
+        <div class="table-region">
+        <table class="vars">
+          <thead><tr><th scope="col">Fact</th><th scope="col">Value</th></tr></thead>
+          <tbody>
+          {% for key, value in facts.facts | dictsort %}
+            {% set shown = present(value) %}
+            <tr data-fact="{{ key }}">
+              <th scope="row" class="var-name mono">{{ key }}</th>
+              <td class="var-value" data-label="Value">
+                {% if shown.kind == "block" %}
+                  {% if shown.lines > 6 %}
+                    <details class="value-more"><summary class="mono">{{ shown.text.splitlines()[0] }} <span class="quiet">… {{ shown.lines }} lines</span></summary><pre class="well">{{ shown.text }}</pre></details>
+                  {% else %}<pre class="well">{{ shown.text }}</pre>{% endif %}
+                {% else %}<code class="value value-{{ shown.type if shown.type != 'template' else 'string' }}">{{ shown.text }}</code>{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+        <p class="empty" data-factempty hidden>No facts match that filter.</p>
+      </div>
+    </details>
+  {% endif %}
+</section>

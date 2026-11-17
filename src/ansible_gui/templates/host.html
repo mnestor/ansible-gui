@@ -30,7 +30,7 @@
   {% endif %}
 
   <h3 {% if found | length == 1 %}id="inv-{{ loop.index }}"{% endif %} class="section-title section-sub">Variables</h3>
-  <p class="scope-note">Inventory variables only, in Ansible’s precedence order. Role defaults, <span class="mono">vars_files</span>, <span class="mono">set_fact</span> and gathered facts are not shown.</p>
+  <p class="scope-note">Inventory variables only, in Ansible’s precedence order. Role defaults, <span class="mono">vars_files</span> and <span class="mono">set_fact</span> are not shown; gathered facts are under <a href="#facts">Facts</a>.</p>
   {% with vars = host.vars, show_filter = loop.first, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
     {% include "_vars.html" %}
   {% endwith %}
@@ -42,4 +42,6 @@
   </ol>
 </section>
 {% endfor %}
+
+{% with inv_repo = found[0][0] if found else None %}{% include "_facts.html" %}{% endwith %}
 {% endblock %}
