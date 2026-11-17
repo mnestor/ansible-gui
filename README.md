@@ -128,6 +128,15 @@ with the default credentials, the first playbook repository's `ansible.cfg`, and
 group_vars and host_vars next to the playbooks apply as they would in a run. Its log shows a count per host,
 not the facts.
 
+## Commands
+
+**Run a command** (on Runs, and on every host and group page) runs one module on the hosts a pattern matches:
+`ansible <targets> -m <module> -a <arguments>`, optionally with `--become`. Like Gather facts, it uses the first
+playbook repository's `ansible.cfg` and the group_vars next to its playbooks. There is no dry run: `shell` and
+`command` are skipped in check mode, so a "dry run" would report nothing. Instead the form lists the matched hosts,
+the button needs a second click (except for `ping` and `setup`), and the run is refused if the hosts changed
+since the list was shown. Commands appear in run history with **Run again…**; they can't be scheduled.
+
 ## Schedules
 
 A schedule is a saved run (playbook, `--limit`, mode, tags, credentials) plus a five-field cron expression

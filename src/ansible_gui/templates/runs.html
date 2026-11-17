@@ -6,7 +6,10 @@
     <p class="eyebrow">Runs</p>
     <h1 class="identity">Run history</h1>
   </div>
-  <a class="btn btn-primary" href="/runs/new">Run a playbook</a>
+  <div class="subject-actions">
+    <a class="btn btn-quiet" href="/runs/command">Run a command</a>
+    <a class="btn btn-primary" href="/runs/new">Run a playbook</a>
+  </div>
 </header>
 
 {% if not runs %}
@@ -15,7 +18,7 @@
 <div class="table-region">
 <table class="history">
   <thead><tr>
-    <th scope="col">Run</th><th scope="col">Playbook</th><th scope="col">Status</th>
+    <th scope="col">Run</th><th scope="col">What ran</th><th scope="col">Status</th>
     <th scope="col">Targets</th><th scope="col" class="col-wide">Mode</th>
     <th scope="col" class="col-wide">Started</th><th scope="col" class="num col-wide">Took</th>
   </tr></thead>

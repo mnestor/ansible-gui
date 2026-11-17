@@ -17,4 +17,5 @@
     <input type="hidden" name="inventory" value="{{ inv_repo.id }}">
     <button class="btn btn-quiet" type="submit" data-busy-label="Starting…">Gather facts</button>
   </form>
+  <a class="btn btn-quiet" href="/runs/command?{{ {'target': group.name, 'inventory': inv_repo.id} | urlencode }}">Run a command</a>
 </div>

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
+import re
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -117,6 +119,20 @@ def status_label(run: Run) -> str:
     return STATUS.get(run.status, ("neutral", run.status))[1]
 
 
+MODULE_NAME = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*){0,2}$")
+COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.builtin.ping", "ansible.builtin.setup",
+                  "ansible.builtin.package", "ansible.builtin.service", "ansible.builtin.systemd_service",
+                  "ansible.builtin.reboot"]
+
+
+def command_url(run: Run) -> str:
+    q = {"target": run.target, "module": run.module, "args": run.module_args, "become": "1" if run.become else "",
+         "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
+    for kind in PER_RUN:
+        q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
+    return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
+
+
 def rerun_url(run: Run, mode: str) -> str:
     q = {"playbook": f"{run.repo_id}:{run.playbook}", "target": run.target, "mode": mode,
          "inventory": "" if run.inventory_id is None else str(run.inventory_id),
@@ -176,6 +192,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     templates = Jinja2Templates(directory=HERE / "templates")
     env = templates.env
 
+    def run_label(x) -> str:
+        """What a run or schedule did, in a few words: the playbook, Gather facts, or the command."""
+        kind = getattr(x, "kind", "playbook")
+        if kind == "facts":
+            return "Gather facts"
+        if kind == "command":
+            what = x.module.removeprefix("ansible.builtin.")
+            text = f"{what}: {x.module_args}" if x.module_args else what
+            return text if len(text) <= 60 else text[:59] + "…"
+        return ws.label(x.repo_id, x.playbook)
     env.globals.update(
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.edit_url if inv else None) or settings.edit_url, layer),
@@ -186,7 +212,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         status_label=status_label,
         rerun_url=rerun_url,
         rerun_hosts=rerun_hosts,
-        pb_label=lambda x: "Gather facts" if getattr(x, "kind", "") == "facts" else ws.label(x.repo_id, x.playbook),
+        pb_label=run_label,
+        command_url=command_url,
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
@@ -393,6 +420,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 default = creds.default(kind)
                 form[kind] = str(default.id) if default else ""
 
+    def pick_credentials(form: dict) -> tuple[dict, str | None]:
+        """The credentials a form picked, as a run stores them, or the reason one can't be used."""
+        chosen: dict = {}
+        for kind in PER_RUN:
+            if not form[kind]:
+                continue
+            cred = creds.get(int(form[kind])) if form[kind].isdigit() else None
+            if not cred or cred.kind != kind:
+                return {}, f"That {KINDS[kind].lower()} no longer exists. Choose another."
+            chosen[kind] = {"id": cred.id, "name": cred.name}
+        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
+                                for c in creds.by_kind("env_secret")]
+        return chosen, None
+
     def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
         return render(request, "run_new.html", status, section="runs", form_error=form_error, purpose="run",
                       **form_context(form))
@@ -442,16 +483,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 f"The targets changed since the preview: they now match {len(pv.hosts)} host(s). Check the list below, then run again.",
                 status=409,
             )
-        chosen: dict = {}
-        for kind in PER_RUN:
-            if not form[kind]:
-                continue
-            cred = creds.get(int(form[kind])) if form[kind].isdigit() else None
-            if not cred or cred.kind != kind:
-                return launcher(request, form, f"That {KINDS[kind].lower()} no longer exists. Choose another.", 400)
-            chosen[kind] = {"id": cred.id, "name": cred.name}
-        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                for c in creds.by_kind("env_secret")]
+        chosen, problem = pick_credentials(form)
+        if problem:
+            return launcher(request, form, problem, 400)
         run = store.create(
             playbook=ws.find(form["playbook"]).path, repo_id=ws.find(form["playbook"]).repo.id,
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
@@ -459,6 +493,75 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
             inventory_id=inv_repo.id,
         )
+        executor.submit(run.id)
+        return RedirectResponse(f"/runs/{run.id}", status_code=303)
+
+    # --- ad hoc commands ------------------------------------------------------------
+    def read_command(src) -> dict:
+        return {"target": (src.get("target") or "").strip(),
+                "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
+                "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
+                "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
+
+    def command_hosts(form: dict) -> playbooks.Preview:
+        """Which hosts the command would reach. It runs with the first playbook repository's ansible.cfg and the
+        group_vars next to its playbooks, as Gather facts does."""
+        inv = chosen_inventory(form)
+        books = ws.playbook_repos()
+        if not form["target"]:
+            return playbooks.Preview()
+        if inv is None:
+            return playbooks.Preview(error="Choose the inventory to run against.")
+        if not books:
+            return playbooks.Preview(error="Add a playbook repository first: commands use its ansible.cfg.")
+        opts = dataclasses.replace(ws.run_opts(books[0], inv),
+                                   playbook_dir=str((books[0].path / books[0].playbook_dir).resolve()))
+        return playbooks.list_hosts(opts, form["target"])
+
+    def command_page(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
+        pv = command_hosts(form)
+        inv_repo = ws.inventory_repo(int(form["inventory"])) if form["inventory"].isdigit() else None
+        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        return render(request, "run_command.html", status, section="runs", form=form, form_error=form_error,
+                      preview=pv, inventories=ws.inventory_repos(), modules=COMMON_MODULES,
+                      cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
+                      env_secrets=creds.by_kind("env_secret"),
+                      hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [])
+
+    @app.get("/runs/command", response_class=HTMLResponse)
+    def new_command(request: Request):
+        form = read_command(request.query_params)
+        default_credentials(form, request.query_params)
+        return command_page(request, form)
+
+    @app.get("/runs/command/preview", response_class=HTMLResponse)
+    def command_preview(request: Request):
+        form = read_command(request.query_params)
+        return render(request, "_command_preview.html", section="runs", form=form, form_error=None,
+                      preview=command_hosts(form))
+
+    @app.post("/runs/command")
+    async def start_command(request: Request):
+        data = await request.form()
+        form = read_command(data)
+        if not MODULE_NAME.match(form["module"]):
+            return command_page(request, form, "Name a module, like ansible.builtin.shell or ansible.builtin.ping.", 400)
+        if len(form["args"]) > 4000:
+            return command_page(request, form, "The arguments are over 4000 characters. Put that in a playbook.", 400)
+        pv = command_hosts(form)
+        if pv.error or not pv.hosts:
+            return command_page(request, form, pv.error or "Nothing to run: the targets match no hosts.", 400)
+        if sorted(data.getlist("expected")) != sorted(pv.hosts):
+            return command_page(request, form, f"The targets now match {len(pv.hosts)} host(s), not the ones listed "
+                                "when you clicked. Check the list below, then run again.", 409)
+        chosen, problem = pick_credentials(form)
+        if problem:
+            return command_page(request, form, problem, 400)
+        run = store.create(kind="command", playbook="", module=form["module"], module_args=form["args"],
+                           become=form["become"], repo_id=ws.playbook_repos()[0].id, target=form["target"], tags="",
+                           skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=pv.hosts,
+                           trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
+                           inventory_id=int(form["inventory"]))
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
