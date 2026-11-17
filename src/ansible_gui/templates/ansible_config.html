@@ -1,0 +1,80 @@
+{% extends "runs_base.html" %}
+{% block title %}Ansible settings · {{ repo.name }}{% endblock %}
+{% block main %}
+<a class="crumb" href="/repos">← Repositories</a>
+<header class="subject">
+  <p class="eyebrow">Ansible settings</p>
+  <h1 class="identity mono">{{ repo.name }}</h1>
+  {% if report %}
+  <p class="subject-meta">{% if report.config_file %}Reads <span class="mono">{{ report.config_file }}</span>{% else %}No <span class="mono">ansible.cfg</span> found: only environment variables and defaults apply{% endif %}</p>
+  {% endif %}
+</header>
+
+{% if not report %}
+  <p class="empty">Not cloned yet, so there’s nothing to ask Ansible about. <a href="/repos">Pull it</a> first.</p>
+{% else %}
+<p class="help-block">What Ansible itself reports for runs from this repository: started in <span class="mono">{{ repo.run_dir }}</span>, with the same <span class="mono">ANSIBLE_*</span> environment. On top of these, every run passes <span class="mono">--ssh-common-args "-F …"</span> (the SSH config on the Credentials page), and <span class="mono">--vault-password-file</span> and <span class="mono">ANSIBLE_PRIVATE_KEY_FILE</span> when those credentials are picked. Those win over the settings below.</p>
+
+<section class="section" aria-labelledby="set-h">
+  <h2 id="set-h" class="section-title">Changed from Ansible’s defaults</h2>
+  {% if report.error %}
+    <p class="field-error" role="alert">{{ report.error }}</p>
+  {% elif not report.settings %}
+    <p class="empty">Nothing: every setting is Ansible’s default.</p>
+  {% else %}
+  <div class="table-region">
+  <table class="vars">
+    <thead><tr><th scope="col">Setting</th><th scope="col">Value</th><th scope="col">Set by</th></tr></thead>
+    <tbody>
+    {% for s in report.settings %}
+      <tr>
+        <th scope="row" class="var-name mono">{{ s.name }}</th>
+        <td class="var-value" data-label="Value">{% if s.hidden %}<span class="badge badge-neutral">set, not shown</span>{% else %}<code class="value value-string">{{ s.value }}</code>{% endif %}</td>
+        <td class="var-source" data-label="Set by">{% if s.from_env %}<span class="stack-why">environment</span> <span class="mono">{{ s.origin[4:] | trim }}</span>{% else %}<span class="source source-win mono">{{ s.origin or "—" }}</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+
+{% if report.galaxy %}
+<section class="section" aria-labelledby="gal-h">
+  <h2 id="gal-h" class="section-title">Galaxy servers</h2>
+  <p class="scope-note">Tokens and passwords are never shown here.</p>
+  {% for server, entries in report.galaxy.items() %}
+    <h3 class="section-title section-sub mono">{{ server }}</h3>
+    <dl class="facts">
+      {% for s in entries %}<dt class="mono">{{ s.name }}</dt><dd>{% if s.hidden %}<span class="badge badge-neutral">set, not shown</span>{% else %}<span class="mono">{{ s.value }}</span>{% endif %} <span class="help">{{ s.origin }}</span></dd>{% endfor %}
+    </dl>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="section" aria-labelledby="col-h">
+  <h2 id="col-h" class="section-title">Collections</h2>
+  {% if report.collections_error %}
+    <p class="field-error" role="alert">{{ report.collections_error }}</p>
+  {% elif not report.collections %}
+    <p class="empty">No collections installed besides <span class="mono">ansible.builtin</span>.{% if not repo.local %} List them in <span class="mono">collections/requirements.yml</span> and they’re installed on the next pull.{% endif %}</p>
+  {% else %}
+  <p class="scope-note">In the order Ansible searches. When a collection is installed twice, the first copy is the one runs load.</p>
+  <div class="table-region">
+  <table class="history creds">
+    <thead><tr><th scope="col">Collection</th><th scope="col">Version</th><th scope="col" class="col-wide">Installed in</th></tr></thead>
+    <tbody>
+    {% for c in report.collections %}
+      <tr {% if not c.used %}class="row-muted"{% endif %}>
+        <th scope="row" class="mono">{{ c.name }}{% if not c.used %} <span class="badge badge-neutral">not used</span>{% endif %}</th>
+        <td class="mono tabular">{{ c.version }}</td>
+        <td class="col-wide wrap"><span class="mono help">{{ c.path }}</span>{% if not c.used %}<br><span class="help">Ansible finds it first in <span class="mono">{{ c.shadowed_by }}</span>.</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
