@@ -60,8 +60,10 @@ class Facts:
             hardware.append(f"{g('memtotal_mb') / 1024:.1f} GiB RAM")
         if hardware:
             rows.append(("Hardware", ", ".join(hardware)))
-        ips = g("all_ipv4_addresses") or []
-        default = (g("default_ipv4") or {}).get("address")
+        # The host reports its own facts, so a value not shaped the way Ansible documents it is skipped.
+        ipv4, all_ipv4 = g("default_ipv4"), g("all_ipv4_addresses")
+        default = str(ipv4["address"]) if isinstance(ipv4, dict) and ipv4.get("address") else None
+        ips = [str(ip) for ip in all_ipv4 if ip] if isinstance(all_ipv4, list) else []
         if default or ips:
             rest = [ip for ip in ips if ip != default]
             rows.append(("IPv4", ", ".join([x for x in [default] if x] + rest)))

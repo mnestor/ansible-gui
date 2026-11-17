@@ -45,6 +45,16 @@ def test_summary_reads_like_a_spec_sheet(tmp_path):
     assert store.get("bare").summary() == []
 
 
+@pytest.mark.parametrize("default, every, shown", [("172.16.5.4", "172.16.5.4", None),
+                                                   (["172.16.5.4"], {"a": 1}, None),
+                                                   ({"address": 7}, [None, 8], "7, 8")])
+def test_summary_skips_addresses_shaped_unlike_ansibles(tmp_path, default, every, shown):
+    """A host controls its own facts: odd shapes must not break its page."""
+    store = FactStore(tmp_path)
+    store.record("odd", {**FULL, "ansible_default_ipv4": default, "ansible_all_ipv4_addresses": every}, run_id=1)
+    assert dict(store.get("odd").summary()).get("IPv4") == shown
+
+
 @pytest.fixture
 def project(tmp_path):
     """box1 connects locally only through group_vars next to the playbooks: a facts run that skipped
