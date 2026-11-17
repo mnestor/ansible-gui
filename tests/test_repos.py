@@ -231,7 +231,33 @@ import threading  # noqa: E402
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # noqa: E402
 
 
-def http_git_server(root: Path, user: str, token: str):
+def self_signed(tmp_path: Path) -> tuple[Path, Path]:
+    """A certificate for 127.0.0.1 that is its own CA, so git can be told to trust it (GIT_SSL_CAINFO)."""
+    import datetime
+    import ipaddress
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5)).not_valid_after(now + datetime.timedelta(hours=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(key, hashes.SHA256()))
+    crt, pem = tmp_path / "tls.crt", tmp_path / "tls.key"
+    crt.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    pem.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                      serialization.NoEncryption()))
+    return crt, pem
+
+
+def http_git_server(root: Path, user: str, token: str, tls: tuple[Path, Path] | None = None):
     seen = []
 
     class H(BaseHTTPRequestHandler):
@@ -272,24 +298,35 @@ def http_git_server(root: Path, user: str, token: str):
         do_GET = do_POST = _handle
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    if tls:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(*tls)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, seen
 
 
-def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, remotes, tmp_path):
-    srv, seen = http_git_server(tmp_path, "mike", "s3cret-token")
+def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, remotes, tmp_path, monkeypatch):
+    tls = self_signed(tmp_path)
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(tls[0]))
+    srv, seen = http_git_server(tmp_path, "mike", "s3cret-token", tls)
     try:
-        url = f"http://127.0.0.1:{srv.server_address[1]}/pb.git"
+        url = f"https://127.0.0.1:{srv.server_address[1]}/pb.git"
         # without a token: refused, and the reason is shown
         assert add(c, name="lab", role="playbooks", url=url).status_code == 303
         lab = app.state.repos.all()[0]
         assert lab.last_error.startswith("The git server wants a sign-in") and not lab.last_commit
         # a token in the URL is refused
-        r = add(c, name="x", role="playbooks", url=url.replace("http://", "http://mike:tok@"))
+        r = add(c, name="x", role="playbooks", url=url.replace("https://", "https://mike:tok@"))
         assert r.status_code == 400 and "Leave the user name and token out" in r.text
         # an SSH key for an HTTPS URL is refused
         c.post("/credentials", data={"kind": "git_token", "name": "forge", "username": "mike", "token": "s3cret-token"})
         tok = app.state.creds.by_kind("git_token")[0]
+        # ...and so is sending it over plain http://
+        r = c.post(f"/repos/{lab.id}", data={"name": "lab", "role": "playbooks", "url": url.replace("https:", "http:"),
+                                             "branch": "main", "ssh_key_id": str(tok.id)}, follow_redirects=False)
+        assert r.status_code == 400 and "only sent over https://" in r.text
         r = c.post(f"/repos/{lab.id}", data={"name": "lab", "role": "playbooks", "url": url, "branch": "main",
                                              "ssh_key_id": str(tok.id)}, follow_redirects=False)
         assert r.status_code == 303
@@ -303,6 +340,16 @@ def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, rem
         assert "s3cret-token" not in c.get("/repos").text and "s3cret-token" not in c.get(f"/repos/{lab.id}").text
     finally:
         srv.shutdown()
+
+
+def test_edit_link_must_be_a_web_address(app, c, remotes):
+    r = add(c, name="lab", role="playbooks", url=str(remotes["pb"]), edit_url="javascript:alert(document.cookie)")
+    assert r.status_code == 400 and "Use a web address starting with https://" in r.text
+    assert app.state.repos.all() == []
+
+
+def test_repo_form_says_who_it_trusts(c):
+    assert "Anyone who can push to it can run commands on this server" in c.get("/repos/new").text
 
 
 def test_credential_kind_must_match_url(app, c, remotes):

@@ -8,7 +8,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@700&family=Red+Hat+Mono:wght@400;600&family=Red+Hat+Text:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css">
-  <script>try { if (localStorage.getItem("rail") === "icon") document.documentElement.dataset.rail = "icon"; } catch (e) {}</script>
+  <script src="/static/early.js"></script>
+  {#- No eval or inline script (the CSP forbids both), no injected indicator styles, and no copies of pages
+      in localStorage: they hold inventory values, and would outlive signing out. -#}
+  <meta name="htmx-config" content='{"allowEval": false, "allowScriptTags": false, "includeIndicatorStyles": false, "historyCacheSize": 0, "refreshOnHistoryMiss": true}'>
   <script src="/static/htmx.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>

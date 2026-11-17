@@ -6,7 +6,6 @@ import logging
 import os
 import queue
 import shlex
-import shutil
 import subprocess
 import tempfile
 import threading
@@ -16,6 +15,7 @@ from pathlib import Path
 
 from ..credentials import ssh
 from ..credentials.store import CredentialStore
+from ..wipe import wipe_tree
 from . import playbooks
 from .store import Run, RunStore, host_result, now
 
@@ -39,23 +39,24 @@ class CredentialMissing(Exception):
 
 @dataclass
 class Prepared:
-    """What a run needs from the credential store, materialised for this run only."""
+    """What a run needs from the credential store, materialised for this run only.
+
+    ansible-runner's own directory lives in here too (runner/): it writes the environment, the become
+    password and every event to it, so it goes when the run ends, with the keys."""
     workdir: Path
     env: dict[str, str] = field(default_factory=dict)
     cmdline: list[str] = field(default_factory=list)
     passwords: dict[str, str] = field(default_factory=dict)
     agent: ssh.Agent | None = None
 
+    @property
+    def runner_dir(self) -> Path:
+        return self.workdir / "runner"
+
     def cleanup(self) -> None:
         if self.agent:
             self.agent.stop()
-        for f in self.workdir.glob("*"):
-            if f.is_file():
-                try:  # overwrite before unlinking: these are keys and passwords
-                    f.write_bytes(b"\0" * f.stat().st_size)
-                except OSError:
-                    pass
-        shutil.rmtree(self.workdir, ignore_errors=True)
+        wipe_tree(self.workdir)
 
 
 def _write_secret(path: Path, text: str) -> Path:
@@ -137,8 +138,6 @@ class Executor:
         run = self.store.get(run_id)
         if run is None or run.status != "queued":
             return
-        run_dir = self.store.run_dir(run_id)
-        (run_dir / "runner").mkdir(exist_ok=True)
         log_file = self.store.log_path(run_id).open("a", encoding="utf-8", buffering=1)
         self.store.update(run_id, status="running", started_at=now())
 
@@ -227,7 +226,9 @@ class Executor:
         log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
         try:
             result = ansible_runner.run(
-                private_data_dir=str(run_dir / "runner"),
+                private_data_dir=str(prepared.runner_dir),
+                # Hand envvars, passwords and cmdline over in memory rather than as files in env/.
+                suppress_env_files=True,
                 project_dir=str(project),
                 playbook=playbook,
                 inventory=opts.sources,
@@ -241,7 +242,6 @@ class Executor:
                 event_handler=on_event,
                 cancel_callback=lambda: run_id in self._cancel,
                 quiet=True,
-                rotate_artifacts=1,
             )
             if result.status == "canceled":
                 log_file.write("\n[ansible-gui] Run canceled from the web UI.\n")
@@ -267,6 +267,7 @@ class Executor:
         # Short path: the agent socket must fit in a Unix socket address.
         p = Prepared(workdir=Path(tempfile.mkdtemp(prefix="agui-")))
         try:
+            p.runner_dir.mkdir()
             chosen = run.credentials or {}
             loaded = {}
             for kind in ("ssh_key", "vault_password", "become_password"):
@@ -286,7 +287,8 @@ class Executor:
                 if cred and cred.readable:
                     envs.append((cred, self.creds.secret(cred)))
 
-            config = ssh.write_ssh_config(self.data_dir, self.ssh_config)
+            config = ssh.write_ssh_config(self.data_dir, self.ssh_config,
+                                          self.workspace.settings.ssh_host_key_checking)
             p.cmdline += ["--ssh-common-args", f"-F {shlex.quote(str(config))}"]
             p.agent = ssh.Agent(p.workdir)
             p.env["SSH_AUTH_SOCK"] = str(p.agent.socket)

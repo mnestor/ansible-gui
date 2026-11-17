@@ -129,10 +129,13 @@ class RepoStore:
             errors["paths"] = "Use paths inside the repository, like inventory/hosts.yml."
         if role == "inventory" and not paths:
             errors["paths"] = "Name the inventory file or directory in the repository, like inventory/hosts.yml."
+        edit = form.get("edit_url", "").strip()
+        if edit and not edit.lower().startswith(("https://", "http://")):
+            errors["edit_url"] = ("Use a web address starting with https://, like "
+                                  "https://git.example.com/me/ansible/src/branch/main/{path}#L{line}.")
         if errors:
             raise Invalid(errors)
         key = int(form["ssh_key_id"]) if str(form.get("ssh_key_id") or "").isdigit() else None
-        edit = form.get("edit_url", "").strip()
         values = (name, role, url, branch, key, paths, edit, reqs if role == "playbooks" else "", now(), user)
         with self._lock:
             if rid:

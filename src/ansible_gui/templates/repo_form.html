@@ -32,7 +32,7 @@
 
   {{ text("name", "Name", "Shown in the launcher before each playbook, like <span class=\"mono\">lxc / site.yml</span>.", "input-small", "lxc") }}
   {{ text("url", "Clone URL", "HTTPS or SSH. Leave any user name or token out of it.", "", "https://git.example.com/me/ansible.git") }}
-  {{ text("branch", "Branch", "Runs use the tip of this branch.", "input-small", "main") }}
+  {{ text("branch", "Branch", "Runs use the tip of this branch. Anyone who can push to it can run commands on this server, which hold every stored credential: opening the inventory page or previewing a run already runs its inventory plugins and <span class=\"mono\">ansible.cfg</span>. Protect the branch, and keep the deploy key read-only.", "input-small", "main") }}
 
   <div class="field">
     <label class="label" for="ssh_key_id">Sign in with</label>

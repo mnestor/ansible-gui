@@ -9,6 +9,8 @@ from ansible_gui import notify
 from ansible_gui.config import Settings, SmtpSettings
 from ansible_gui.web import create_app
 
+REAL_SMTP = notify.smtplib.SMTP  # before the autouse fixture swaps in the fake
+
 FIXTURE = Path(__file__).parent / "fixtures" / "runner"
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-core")
 
@@ -162,3 +164,23 @@ def test_classify():
     down = Run(**base, check_mode=False, status="failed",
                host_stats={"a": {"unreachable": 1}, "b": {"ok": 1, "failed": 1}, "c": {"ok": 3}})
     assert notify.classify(down) == ("failed", "1 failed and 1 unreachable of 3 hosts")
+
+
+def test_silent_server_times_out_with_a_reason(monkeypatch):
+    """A server that accepts the connection and never speaks (TLS port with starttls, say) used to
+    hold the page for 30 s and then say only "timed out"."""
+    import socket
+    monkeypatch.setattr(notify.smtplib, "SMTP", REAL_SMTP)
+    silent = socket.socket()
+    silent.bind(("127.0.0.1", 0))
+    silent.listen()
+    try:
+        port = silent.getsockname()[1]
+        n = notify.Notifier(SmtpSettings(host="127.0.0.1", port=port, to=["a@b.test"], sender="c@d.test"),
+                            None, None, None)
+        start = time.monotonic()
+        error = n._send(n._message("x", "y"), timeout=0.5)
+        assert time.monotonic() - start < 5
+        assert error.startswith(f"No answer from 127.0.0.1:{port} (starttls).") and "587" in error
+    finally:
+        silent.close()

@@ -190,6 +190,27 @@ def test_data_dir_is_private(tmp_path):
         os.umask(old)
 
 
+def test_data_dir_owned_by_someone_else_says_how_to_fix(tmp_path, monkeypatch):
+    import os
+
+    import pytest
+
+    from ansible_gui import web
+    data = tmp_path / "data"
+    data.mkdir()
+
+    def denied(path, mode):
+        raise PermissionError(1, "Operation not permitted", str(path))
+    monkeypatch.setattr(web.os, "chmod", denied)
+    old = os.umask(0o022)
+    try:
+        with pytest.raises(SystemExit) as e:
+            web.lock_down(data)
+    finally:
+        os.umask(old)
+    assert f"sudo chown -R {os.getuid()}" in str(e.value) and str(data) in str(e.value)
+
+
 def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
     """If ANSIBLE_GUI_SECRET_KEY changes (or its file goes missing), stored secrets can't be read:
     the page says so and a run using one stops before Ansible starts, with a reason."""
@@ -210,3 +231,71 @@ def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
     assert run.status == "error"
     assert "can’t be decrypted" in run.error and "secret key changed" in run.error
     assert run.host_stats == {}
+
+
+# --- host key checking (ANSIBLE_GUI_SSH_HOST_KEY_CHECKING) --------------------------------
+@pytest.mark.parametrize("mode, ssh_says", [("yes", "true"), ("accept-new", "accept-new"), ("no", "false")])
+def test_host_key_checking_reaches_ssh(tmp_path, mode, ssh_says):
+    path = ssh.write_ssh_config(tmp_path, None, mode)
+    out = subprocess.run(["ssh", "-F", str(path), "-G", "lab-1"], capture_output=True, text=True)
+    assert f"stricthostkeychecking {ssh_says}" in out.stdout
+
+
+def test_host_key_checking_defaults_to_accept_new(tmp_path):
+    assert "StrictHostKeyChecking accept-new" in ssh.write_ssh_config(tmp_path, None).read_text()
+    with pytest.raises(ValueError):
+        ssh.write_ssh_config(tmp_path, None, "maybe")
+
+
+def test_users_ssh_config_still_wins_over_the_fallback(tmp_path):
+    mine = tmp_path / "mine"
+    mine.write_text("Host legacy\n  StrictHostKeyChecking no\n")
+    path = ssh.write_ssh_config(tmp_path, mine, "yes")
+    legacy = subprocess.run(["ssh", "-F", str(path), "-G", "legacy"], capture_output=True, text=True).stdout
+    other = subprocess.run(["ssh", "-F", str(path), "-G", "other"], capture_output=True, text=True).stdout
+    assert "stricthostkeychecking false" in legacy and "stricthostkeychecking true" in other
+
+
+@pytest.fixture
+def host_line(tmp_path):
+    key = tmp_path / "hostkey"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    return " ".join(key.with_suffix(".pub").read_text().split()[:2])
+
+
+def test_known_hosts_takes_keyscan_hashed_and_ca_lines(host_line):
+    text, n = ssh.check_known_hosts(f"# from ssh-keyscan\r\ngit.lab {host_line}\n|1|abc=|def= {host_line}\n\n"
+                                    f"@cert-authority *.lab {host_line}\n[box]:2222,10.0.0.5 {host_line} c\n")
+    assert n == 4 and "\r" not in text
+
+
+@pytest.mark.parametrize("bad, says", [
+    ("git.lab", "Line 2 needs the host names"),
+    ("git.lab ssh-ed25519 AAAAnotakey", "Line 2: ssh-keygen can’t read the key for git.lab"),
+    ("@trusted git.lab ssh-ed25519 AAAA", "@trusted isn’t a known_hosts marker"),
+])
+def test_known_hosts_names_the_bad_line(host_line, bad, says):
+    with pytest.raises(ssh.InvalidKey, match=says):
+        ssh.check_known_hosts(f"ok.lab {host_line}\n{bad}\n")
+
+
+def test_known_hosts_editor(app, host_line):
+    c = TestClient(app)
+    page = c.get("/credentials").text
+    assert "A new host’s key is added here on its first connection" in page
+    r = c.post("/credentials/known-hosts", data={"known_hosts": f"git.lab {host_line}\n"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/credentials?hosts=1#known-hosts"
+    path = app.state.store.data_dir / "ssh" / "known_hosts"
+    assert path.read_text() == f"git.lab {host_line}\n"
+    assert "Saved 1 host key." in c.get(r.headers["location"]).text
+    bad = c.post("/credentials/known-hosts", data={"known_hosts": f"git.lab {host_line}\nnope\n"})
+    assert bad.status_code == 400 and "Not saved. Line 2" in bad.text and "nope" in bad.text  # input kept
+    assert path.read_text() == f"git.lab {host_line}\n"  # unchanged
+
+
+@pytest.mark.parametrize("mode, says", [("yes", "Runs and SSH pulls connect only to hosts whose key is listed"),
+                                        ("no", "Host keys aren’t checked")])
+def test_credentials_page_explains_the_other_modes(tmp_path, mode, says):
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
+                              secret_key="s" * 40, ssh_host_key_checking=mode))
+    assert says in TestClient(app).get("/credentials").text

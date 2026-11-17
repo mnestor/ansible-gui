@@ -36,6 +36,14 @@ dev = [
     "pytest>=9.2.0",
     "pytest-cov>=7.1.0",
 ]
+# The ansible-core the image ships and CI tests with, locked with hashes like everything else.
+# A separate program that ansible-gui runs as a subprocess; never imported (it is GPLv3).
+ansible = [
+    "ansible-core==2.21.4; python_full_version >= '3.12'",
+]
+
+[tool.uv]
+default-groups = ["dev", "ansible"]
 
 [tool.coverage.run]
 source = ["ansible_gui"]

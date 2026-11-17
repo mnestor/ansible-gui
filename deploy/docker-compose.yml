@@ -6,17 +6,29 @@
 #   1. Add the ansible-gui_edge network to ~/traefik/docker-compose.yml (next free 172.28.N.0/24).
 #   2. Create a Pocket ID OIDC client: callback https://ansible.nanestor.us/auth/callback,
 #      PKCE on, restricted to the admins group.
-#   3. Fill in app.env from app.env.example, and put the master key in secret.key (mode 600).
+#   3. Fill in app.env from app.env.example and create secret.key as it describes.
+#   4. mkdir data && sudo chown 10001 data   (the container runs as uid 10001; a
+#      ./data that Docker creates is owned by root and the app can't write to it).
 services:
   app:
-    image: ansible-gui:latest
-    build: ..
+    image: ghcr.io/mnestor/ansible-gui:sha-7574432
     container_name: ansible-gui-app
     restart: unless-stopped
     env_file: app.env
     volumes:
       - ./data:/data
       - ./secret.key:/run/secrets/ansible-gui-key:ro
+    # Only /data is writable, and nothing in the container can gain privileges: a compromised playbook
+    # or repository gets uid 10001 and these directories, not the image. deploy/smoke-test.sh runs a
+    # playbook under exactly this.
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m                                     # per-run keys, agent socket, ansible-runner
+      - /home/app:size=64m,uid=10001,gid=10001,mode=0700   # ~/.ansible for local tasks, ssh's ~/.ssh
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     networks:
       - edge
     labels:

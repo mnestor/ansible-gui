@@ -151,3 +151,47 @@ def test_vault_password_file_from_settings(tmp_path):
     assert run.status == "successful", log[-800:]
     assert "word=opened-the-vault" in log
     assert "fixture-password" not in log
+
+
+# --- retention (ANSIBLE_GUI_RUN_RETENTION_DAYS) --------------------------------------------
+def test_prune_deletes_old_runs_and_logs_but_keeps_each_schedules_latest(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from ansible_gui.runs.store import RunStore
+    store = RunStore(tmp_path)
+
+    def run(days_ago, status="successful", schedule_id=None):
+        r = store.create(playbook="site.yml", target="", tags="", skip_tags="", check_mode=True, diff=False,
+                         verbosity=0, expected_hosts=[], trigger="t", schedule_id=schedule_id)
+        at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+        store.update(r.id, status=status, finished_at=at if status != "running" else None)
+        store.log_path(r.id).write_text("log")
+        return r.id
+
+    old, recent = run(100), run(10)
+    sched_old, sched_latest = run(120, schedule_id=5), run(95, schedule_id=5)
+    still_running = run(200, status="running")
+    assert store.prune(0) == 0 and store.get(old)  # 0 keeps everything
+    assert store.prune(90) == 2
+    assert store.get(old) is None and store.get(sched_old) is None
+    assert not (tmp_path / "runs" / str(old)).exists()
+    for kept in (recent, sched_latest, still_running):
+        assert store.get(kept) and store.log_path(kept).exists()
+
+
+def test_retention_runs_at_start(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from ansible_gui.runs.store import RunStore
+    store = RunStore(tmp_path)
+    r = store.create(playbook="site.yml", target="", tags="", skip_tags="", check_mode=True, diff=False,
+                     verbosity=0, expected_hosts=[], trigger="t")
+    store.update(r.id, status="failed",
+                 finished_at=(datetime.now(timezone.utc) - timedelta(days=40)).isoformat(timespec="seconds"))
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
+                              run_retention_days=30))
+    for _ in range(50):
+        if app.state.store.get(r.id) is None:
+            break
+        time.sleep(0.1)
+    assert app.state.store.get(r.id) is None

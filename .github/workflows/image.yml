@@ -3,7 +3,8 @@
 #   tag v1.2.3        -> :1.2.3, :1.2, :latest
 #   tag v0.1.0-dev    -> :0.1.0-dev only (a pre-release never moves :latest)
 #   pull request      -> tests, a build and the smoke test, nothing pushed
-# Nothing is pushed unless the tests and deploy/smoke-test.sh pass.
+# Nothing is pushed unless the tests, the dependency audit and deploy/smoke-test.sh pass.
+# Actions are pinned to commit SHAs and base images to digests; .github/dependabot.yml proposes updates.
 name: image
 
 on:
@@ -24,12 +25,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: "3.12"
-      - name: Tests (with the same ansible-core as the image)
-        run: uv run --frozen --with "ansible-core==2.21.4" pytest -q --cov --cov-report=
+      - name: Tests (with the ansible-core from uv.lock, the one the image ships)
+        run: uv run --frozen pytest -q --cov --cov-report=
       - name: Coverage summary
         if: success() || failure()
         run: |
@@ -45,30 +46,42 @@ jobs:
           uv run --frozen coverage html -q
       - name: Upload coverage report
         if: success() || failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-html
           path: htmlcov/
           retention-days: 14
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.12"
+      - name: Known vulnerabilities in what the image installs (uv.lock, ansible-core included)
+        run: |
+          uv export --frozen --no-dev --group ansible --no-emit-project --format requirements-txt -o requirements.txt
+          uvx --python 3.12 --from pip-audit==2.10.1 pip-audit --strict --disable-pip -r requirements.txt
+
   image:
-    needs: test
+    needs: [test, audit]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
       - name: Log in to ghcr.io
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
           images: ghcr.io/${{ github.repository }}
           flavor: latest=false
@@ -79,7 +92,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
       - name: Build for the smoke test
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64
@@ -90,7 +103,7 @@ jobs:
       - name: Smoke test (refuses to run open, starts, unprivileged, tools present)
         run: deploy/smoke-test.sh ansible-gui:test
       - name: Push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           platforms: linux/amd64

@@ -108,13 +108,15 @@ def inspect_cert(cert: str, key: KeyInfo | None = None) -> CertInfo:
     return info
 
 
-def write_ssh_config(data_dir: Path, user_config: Path | None) -> Path:
-    """The ssh_config every run uses: the configured file first, then ansible-gui's fallbacks.
+def write_ssh_config(data_dir: Path, user_config: Path | None, host_key_checking: str = "accept-new") -> Path:
+    """The ssh_config every run and git pull uses: the configured file first, then ansible-gui's fallbacks.
 
     ssh keeps the first value it reads for each option, so anything in the configured
     file wins; the fallbacks only fill gaps. Known hosts live in the data directory,
-    never in the server user's ~/.ssh.
+    never in the server user's ~/.ssh. host_key_checking is ANSIBLE_GUI_SSH_HOST_KEY_CHECKING.
     """
+    if host_key_checking not in ("yes", "accept-new", "no"):
+        raise ValueError(f"StrictHostKeyChecking {host_key_checking!r}")
     d = data_dir / "ssh"
     d.mkdir(parents=True, exist_ok=True)
     os.chmod(d, 0o700)
@@ -125,7 +127,7 @@ def write_ssh_config(data_dir: Path, user_config: Path | None) -> Path:
     lines += [
         "Host *",
         f'  UserKnownHostsFile "{d / "known_hosts"}"',
-        "  StrictHostKeyChecking accept-new",
+        f"  StrictHostKeyChecking {host_key_checking}",
         "",
     ]
     path = d / "ssh_config"
@@ -133,11 +135,57 @@ def write_ssh_config(data_dir: Path, user_config: Path | None) -> Path:
     return path
 
 
+def known_hosts_path(data_dir: Path) -> Path:
+    return data_dir / "ssh" / "known_hosts"
+
+
 def known_hosts_count(data_dir: Path) -> int:
-    path = data_dir / "ssh" / "known_hosts"
+    path = known_hosts_path(data_dir)
     if not path.exists():
         return 0
     return sum(1 for line in path.read_text().splitlines() if line.strip() and not line.startswith("#"))
+
+
+def read_known_hosts(data_dir: Path) -> str:
+    path = known_hosts_path(data_dir)
+    return path.read_text(errors="replace") if path.exists() else ""
+
+
+def check_known_hosts(text: str) -> tuple[str, int]:
+    """Normalise pasted known_hosts lines and count the entries, or raise InvalidKey naming the first bad line.
+
+    Takes what ssh-keyscan prints, lines from a ~/.ssh/known_hosts (hashed names too), and
+    @cert-authority or @revoked lines. Each key is checked by ssh-keygen."""
+    text = normalize(text)
+    entries = 0
+    for n, line in enumerate(text.splitlines(), 1):
+        fields = line.split()
+        if not fields or fields[0].startswith("#"):
+            continue
+        if fields[0].startswith("@"):
+            if fields[0] not in ("@cert-authority", "@revoked"):
+                raise InvalidKey(f"Line {n}: {fields[0]} isn’t a known_hosts marker. Use @cert-authority or @revoked.")
+            fields = fields[1:]
+        if len(fields) < 3:
+            raise InvalidKey(f"Line {n} needs the host names, the key type and the key, like the lines "
+                             "ssh-keyscan prints: git.example.com ssh-ed25519 AAAA…")
+        check = _keygen("-l", "-f", "-", stdin=f"{fields[1]} {fields[2]}\n")
+        if check.returncode != 0:
+            raise InvalidKey(f"Line {n}: ssh-keygen can’t read the key for {fields[0]}. Paste the whole line.")
+        entries += 1
+    return text, entries
+
+
+def save_known_hosts(data_dir: Path, text: str) -> int:
+    """Replace the known_hosts runs and pulls check against. Returns the number of entries."""
+    text, entries = check_known_hosts(text)
+    path = known_hosts_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(path.parent, 0o700)
+    tmp = path.with_suffix(".new")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return entries
 
 
 class Agent:

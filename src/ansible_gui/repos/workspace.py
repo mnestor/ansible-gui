@@ -199,7 +199,8 @@ class Workspace:
                 key = secret["private_key"]
             else:
                 token = (cred.meta["username"], secret["token"])
-        config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config)
+        config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config,
+                                           self.settings.ssh_host_key_checking)
         try:
             result = git.sync(repo, config, key, token)
         except git.GitError as e:
