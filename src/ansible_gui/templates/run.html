@@ -11,6 +11,8 @@
       <form method="post" action="/runs/{{ run.id }}/cancel" class="cancel-form" data-confirm-twice>
         <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to stop: hosts mid-task stay as they are" data-busy-label="Canceling…">Cancel run</button>
       </form>
+    {% elif run.kind == "command" %}
+      <a class="btn btn-secondary" href="{{ command_url(run) }}">Run again…</a>
     {% elif run.kind == "facts" %}
       <form method="post" action="/facts/gather" hx-boost="false">
         <input type="hidden" name="target" value="{{ run.target }}">

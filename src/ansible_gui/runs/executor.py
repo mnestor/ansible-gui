@@ -164,14 +164,15 @@ class Executor:
         project = repo.run_dir
         opts = self.workspace.run_opts(repo, inv_repo)
         facts_run = run.kind == "facts"
-        if facts_run:  # absolute: Ansible starts in run_dir, which may already be the playbook directory
+        adhoc = run.kind in ("facts", "command")
+        if adhoc:  # absolute: Ansible starts in run_dir, which may already be the playbook directory
             opts = dataclasses.replace(opts, playbook_dir=str((repo.path / repo.playbook_dir).resolve()))
         playbook = str((repo.path / run.playbook).resolve())
-        if not facts_run and not (repo.path / run.playbook).is_file():
+        if not adhoc and not (repo.path / run.playbook).is_file():
             return stop(f"Didn’t start: {run.playbook} isn’t in {repo.name} any more.")
 
         # The files may have changed since the preview: ask Ansible again which hosts this run hits.
-        pv = playbooks.list_hosts(opts, run.target) if facts_run else playbooks.preview(opts, playbook, run.target)
+        pv = playbooks.list_hosts(opts, run.target) if adhoc else playbooks.preview(opts, playbook, run.target)
         if pv.error or not pv.hosts:
             why = pv.error or f"the targets ({run.target or 'the playbook’s hosts'}) match no hosts"
             return stop(f"Didn’t start: {why}.")
@@ -201,7 +202,8 @@ class Executor:
             data = ev.get("event_data") or {}
             host = data.get("host")
             kind = ev.get("event", "")
-            if facts_run and kind == "runner_on_ok":
+            gathered = (data.get("resolved_action") or data.get("task_action")) in GATHER_ACTIONS
+            if adhoc and gathered and kind == "runner_on_ok":
                 # Ad hoc setup prints every fact, ansible_env included: the log keeps a count instead.
                 n = len((data.get("res") or {}).get("ansible_facts") or {})
                 log_file.write(f"{host} | SUCCESS | {n} facts gathered and saved\n")
@@ -240,11 +242,12 @@ class Executor:
             cmdline.append("--diff")
         cmdline += prepared.cmdline
 
-        if facts_run:
+        if adhoc:
             # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to
             # the playbooks, exactly as for the repository's own playbooks.
-            cmdline = ["--playbook-dir", opts.playbook_dir, *cmdline]
-            what = dict(module="ansible.builtin.setup", host_pattern=run.target)
+            cmdline = ["--playbook-dir", opts.playbook_dir, *(["--become"] if run.become else []), *cmdline]
+            what = dict(module="ansible.builtin.setup", host_pattern=run.target) if facts_run else dict(
+                module=run.module, module_args=run.module_args or None, host_pattern=run.target)
             log_file.write(f"$ ansible {shlex.join(self._args(run, cmdline))}\n\n")
         else:
             what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
@@ -348,6 +351,8 @@ class Executor:
             args += ["-i", s]
         if run.kind == "facts":
             return [run.target, "-m", "ansible.builtin.setup", *args, *cmdline]
+        if run.kind == "command":
+            return [run.target, "-m", run.module, *(["-a", run.module_args] if run.module_args else []), *args, *cmdline]
         if run.target:
             args += ["--limit", run.target]
         if run.tags:

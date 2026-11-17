@@ -105,11 +105,13 @@
     });
 
     // Cancel needs a second click within 4s: interrupting a play can leave hosts half-done.
+    // The button is looked up on each submit: the command form's preview redraws it, and only a button
+    // with a data-confirm-label asks twice.
     root.querySelectorAll("form[data-confirm-twice]").forEach((form) => {
       if (!once(form, "Confirm")) return;
-      const btn = form.querySelector("button");
       form.addEventListener("submit", (e) => {
-        if (btn.dataset.armed) return;
+        const btn = form.querySelector("button[data-confirm-label]");
+        if (!btn || btn.dataset.armed) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         btn.dataset.armed = "1";

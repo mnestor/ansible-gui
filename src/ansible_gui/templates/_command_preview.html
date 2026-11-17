@@ -1,0 +1,30 @@
+{# The hosts a command would reach and its Run button, re-rendered on every change to the form. #}
+{% set read_only = form.module.removeprefix("ansible.builtin.") in ("ping", "setup") %}
+{% if form_error %}
+  <p class="field-error" role="alert">{{ form_error }}</p>
+{% endif %}
+{% if not form.target %}
+  <p class="preview-note">Type the targets to see which hosts the command reaches.</p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Choose the targets first.</span></div>
+{% elif preview.error %}
+  <p class="field-error" role="alert">Ansible couldn’t work out the targets: <span class="mono">{{ preview.error }}</span></p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Fix the target pattern, then try again.</span></div>
+{% elif not preview.hosts %}
+  <p class="preview-note"><strong>No hosts match</strong> <span class="mono">{{ form.target }}</span>.</p>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">Run</button>
+    <span class="help">Change the targets to run.</span></div>
+{% else %}
+  {% set n = preview.hosts | length %}
+  <p class="preview-note"><strong class="tabular">{{ n }} host{{ "s" if n != 1 }}</strong>, listed below.</p>
+  <div class="actions">
+    <button class="btn btn-primary btn-run" type="submit" data-busy-label="Starting…"
+      {% if not read_only %}data-confirm-label="Click again to run on {{ n }} host{{ 's' if n != 1 }}"{% endif %}>Run on {{ n }} host{{ "s" if n != 1 }}</button>
+    <span class="help">{% if read_only %}Reads only; changes nothing.{% else %}Runs for real: commands have no dry run, so check the hosts below.{% endif %}</span>
+  </div>
+  <div class="preview-hosts">
+    <ul class="chips">{% for h in preview.hosts[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if n > 24 %}<li class="help">and {{ n - 24 }} more</li>{% endif %}</ul>
+  </div>
+  {% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}
+{% endif %}

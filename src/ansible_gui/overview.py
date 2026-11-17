@@ -91,7 +91,7 @@ def run_issues(runs: list[Run]) -> list[Run]:
     for run in runs:  # newest first
         if run.schedule_id or not run.finished or run.status in ("skipped", "canceled"):
             continue
-        key = run.playbook
+        key = (run.kind, run.playbook, run.module, run.module_args)
         if key in seen:
             continue
         seen.add(key)

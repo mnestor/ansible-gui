@@ -11,6 +11,7 @@
 </ul>
 <div class="subject-actions">
   <a class="btn btn-secondary" href="/runs/new?{{ {'target': host.name, 'inventory': inv_repo.id} | urlencode }}">Run a playbook on {{ host.name }}{% if multi_inv %} with {{ inv_repo.name }}{% endif %}</a>
+  <a class="btn btn-quiet" href="/runs/command?{{ {'target': host.name, 'inventory': inv_repo.id} | urlencode }}">Run a command</a>
   {% set last = last_result(inv_repo, host.name) %}
   {% if last %}<a class="subject-last" href="/runs/{{ last[1] }}">Last run #{{ last[1] }}: <span class="badge badge-{{ last[0] }}">{{ last[0] }}</span></a>{% endif %}
 </div>

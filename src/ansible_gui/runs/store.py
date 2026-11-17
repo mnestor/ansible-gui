@@ -49,6 +49,9 @@ MIGRATIONS = {
     "inventory_commit": "alter table runs add column inventory_commit text",
     "inventory_id": "alter table runs add column inventory_id integer",
     "kind": "alter table runs add column kind text not null default 'playbook'",
+    "module": "alter table runs add column module text not null default ''",
+    "module_args": "alter table runs add column module_args text not null default ''",
+    "become": "alter table runs add column become integer not null default 0",
 }
 
 
@@ -83,7 +86,10 @@ class Run:
     repo_id: int = 0  # the playbook repository; 0 is ANSIBLE_GUI_PROJECT_DIR
     inventory_commit: str | None = None
     inventory_id: int | None = None  # the inventory repository; None for runs from before there could be several
-    kind: str = "playbook"  # or "facts": ansible -m setup on the target, which changes nothing
+    kind: str = "playbook"  # "facts": ansible -m setup, which changes nothing; "command": ansible -m MODULE -a ARGS
+    module: str = ""  # command runs only
+    module_args: str = ""
+    become: bool = False
 
     @property
     def finished(self) -> bool:
@@ -100,6 +106,8 @@ class Run:
     def mode(self) -> str:
         if self.kind == "facts":
             return "Read only"
+        if self.kind == "command":
+            return "Command"
         return "Dry run" if self.check_mode else "Apply"
 
 
@@ -134,6 +142,9 @@ def _row(r: sqlite3.Row) -> Run:
         inventory_commit=r["inventory_commit"],
         inventory_id=r["inventory_id"],
         kind=r["kind"],
+        module=r["module"],
+        module_args=r["module_args"],
+        become=bool(r["become"]),
     )
 
 
@@ -172,15 +183,17 @@ class RunStore:
     def create(self, *, playbook: str, target: str, tags: str, skip_tags: str, check_mode: bool,
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
                credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0,
-               inventory_id: int | None = None, kind: str = "playbook") -> Run:
+               inventory_id: int | None = None, kind: str = "playbook", module: str = "", module_args: str = "",
+               become: bool = False) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
-                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind)"
-                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind,"
+                " module, module_args, become)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
                  json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
-                 inventory_id, kind),
+                 inventory_id, kind, module, module_args, int(become)),
             )
             self._db.commit()
             return self.get(cur.lastrowid)
