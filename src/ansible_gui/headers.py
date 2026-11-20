@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import parse_qs
+
 from starlette.datastructures import MutableHeaders
 
 # Scripts and styles come only from /static (htmx, app.js, app.css) plus the Google Fonts stylesheet.
@@ -39,6 +41,7 @@ class SecurityHeaders:
         if scope["type"] != "http":
             return await self.app(scope, receive, send)
         static = scope["path"].startswith("/static/")
+        versioned = static and "v" in parse_qs(scope.get("query_string", b"").decode("latin-1"))
 
         async def with_headers(message):
             if message["type"] == "http.response.start":
@@ -48,8 +51,13 @@ class SecurityHeaders:
                         headers[name] = value
                 # Pages show inventory values and run logs: keep them out of the browser cache and the
                 # back-button cache after signing out.
-                if not static and "cache-control" not in headers:
-                    headers["Cache-Control"] = "no-store"
+                if "cache-control" not in headers:
+                    if not static:
+                        headers["Cache-Control"] = "no-store"
+                    elif versioned:  # the URL changes with the file (static_url): keep it for good
+                        headers["Cache-Control"] = "public, max-age=31536000, immutable"
+                    else:  # an unversioned URL: ask every time, a 304 when unchanged
+                        headers["Cache-Control"] = "no-cache"
             await send(message)
 
         await self.app(scope, receive, with_headers)

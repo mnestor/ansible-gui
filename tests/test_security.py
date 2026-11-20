@@ -129,3 +129,19 @@ def test_templates_need_no_inline_script():
         assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", text), t.name
         assert not re.search(r"\son[a-z]+\s*=", text), t.name
         assert "javascript:" not in text and "hx-on" not in text, t.name
+
+
+def test_static_urls_change_with_the_file_and_are_cached_only_when_versioned(tmp_path):
+    """A browser must never run a cached app.js against newer pages."""
+    import hashlib
+    import re
+    from ansible_gui.web import HERE
+    c = TestClient(create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
+                                       secret_key="s" * 40)))
+    page = c.get("/runs").text
+    for name in ("app.css", "early.js", "htmx.min.js", "app.js"):
+        want = hashlib.sha256((HERE / "static" / name).read_bytes()).hexdigest()[:12]
+        assert f'/static/{name}?v={want}"' in page, name
+    url = re.search(r'/static/app\.js\?v=\w+', page).group(0)
+    assert c.get(url).headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert c.get("/static/app.js").headers["cache-control"] == "no-cache"

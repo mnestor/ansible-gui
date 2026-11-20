@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import os
 import re
 
@@ -44,6 +45,19 @@ from .headers import SecurityHeaders
 from .sessions import SessionStore
 
 HERE = Path(__file__).parent
+_static_versions: dict[str, tuple[int, int, str]] = {}
+
+
+def static_url(name: str) -> str:
+    """A /static URL that changes whenever the file does, so a browser never runs a cached app.js against
+    newer pages. The hash is redone only when the file's mtime or size changes."""
+    path = HERE / "static" / name
+    st = path.stat()
+    seen = _static_versions.get(name)
+    if not seen or seen[:2] != (st.st_mtime_ns, st.st_size):
+        seen = (st.st_mtime_ns, st.st_size, hashlib.sha256(path.read_bytes()).hexdigest()[:12])
+        _static_versions[name] = seen
+    return f"/static/{name}?v={seen[2]}"
 
 STATUS = {
     "queued": ("neutral", "Queued"),
@@ -221,6 +235,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rerun_hosts=rerun_hosts,
         pb_label=run_label,
         command_url=command_url,
+        static_url=static_url,
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
