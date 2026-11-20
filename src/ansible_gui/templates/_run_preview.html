@@ -34,12 +34,12 @@
     <span class="help">Change the targets to run.</span></div>
 {% else %}
   <div class="preview-hosts">
-    <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>{% if preview.plays > 1 %} across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}, listed below.</p>
+    <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>{% if preview.plays > 1 %} across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}.</p>
   </div>
   <div class="actions">
     {% if purpose == "template" %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
-    <span class="help">Runs from it start as {{ "Apply" if apply else "a dry run" }} on whatever matches at the time: {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }} today, listed below. Whoever runs it can change any field.</span>
+    <span class="help">Runs from it start as {{ "Apply" if apply else "a dry run" }} on whatever matches at the time: {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }} today. Whoever runs it can change any field.</span>
     {% elif saving %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
     <span class="help">{% if apply %}Each run applies changes to the hosts that match at that time{% else %}Each run is a dry run on the hosts that match at that time{% endif %}: {{ preview.hosts | length }} today.</span>
@@ -47,11 +47,21 @@
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Starting…">
       {% if apply %}Apply to {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% else %}Dry run on {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% endif %}
     </button>
-    <span class="help">{% if apply %}Changes the hosts listed below.{% else %}Reports what would change; changes nothing.{% endif %}</span>
+    <span class="help">{% if apply %}Changes these hosts.{% else %}Reports what would change; changes nothing.{% endif %}</span>
     {% endif %}
   </div>
   <div class="preview-hosts">
-    <ul class="chips">{% for h in preview.hosts[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if preview.hosts | length > 24 %}<li class="help">and {{ preview.hosts | length - 24 }} more</li>{% endif %}</ul>
+    {% if run_sets %}<p class="preview-sub">Inventory values this run overrides</p>{% endif %}
+    <ul class="target-list">
+      {% for h, found in overrides or [] %}
+      <li><span class="mono target-host">{{ h }}</span>
+        {% if found %}<ul class="override-list">{% for o in found %}<li><span class="mono">{{ o.name }}</span> <s class="mono">{{ o.was }}</s> <span aria-hidden="true">→</span><span class="visually-hidden">becomes</span> <span class="mono">{{ o.now }}</span> <span class="mono override-where">{{ o.where }}</span></li>{% endfor %}</ul>
+        {% elif run_sets %}<span class="help">none: it keeps its inventory values</span>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% set rest = preview.hosts[(overrides or []) | length:] %}
+    {% if rest %}<ul class="chips">{% for h in rest[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if rest | length > 24 %}<li class="help">and {{ rest | length - 24 }} more</li>{% endif %}</ul>{% endif %}
   </div>
   {% if not saving %}{% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}{% endif %}
 {% endif %}

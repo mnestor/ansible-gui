@@ -23,6 +23,7 @@
 {% else %}
 <form class="launcher" method="post" action="/runs/templates{% if tmpl %}/{{ tmpl.id }}{% endif %}" hx-boost="false"
       hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
+  <div class="launcher-fields">
   <input type="hidden" name="purpose" value="template">
   {% if tmpl %}<input type="hidden" name="editing" value="1">{% endif %}
   <div class="field">
@@ -42,8 +43,11 @@
 
   {% include "_run_fields.html" %}
 
-  <div id="preview" class="preview" aria-live="polite">
+  </div>
+  <div class="launcher-side">
+    <div id="preview" class="preview" aria-live="polite">
     {% include "_run_preview.html" %}
+  </div>
   </div>
 </form>
 {% endif %}

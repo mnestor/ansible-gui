@@ -31,6 +31,7 @@
 {% else %}
 <form class="launcher" method="post" action="/schedules{% if sched %}/{{ sched.id }}{% endif %}" hx-boost="false"
       hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
+  <div class="launcher-fields">
   <input type="hidden" name="purpose" value="schedule">
   <input type="hidden" name="template_name" value="{{ form.template_name }}">
   {% if sched %}<input type="hidden" name="editing" value="1">{% endif %}
@@ -70,10 +71,13 @@
     <p class="help">{% if smtp %}To {{ smtp.to | join(", ") }}. Problems: failed or unreachable hosts, runs that couldn’t start, were skipped or missed, and dry runs that found changes; plus the first good run after one.{% else %}Email isn’t set up, so nothing is sent. Set <span class="mono">ANSIBLE_GUI_SMTP_HOST</span>, <span class="mono">ANSIBLE_GUI_SMTP_FROM</span> and <span class="mono">ANSIBLE_GUI_NOTIFY_TO</span>.{% endif %}</p>
   </fieldset>
 
-  <div id="preview" class="preview" aria-live="polite">
+  </div>
+  <div class="launcher-side">
+    <div id="preview" class="preview" aria-live="polite">
     {% include "_run_preview.html" %}
   </div>
   <p class="help">A run starts only if the previous run of this schedule has finished; otherwise it’s recorded as skipped. Runs missed while the server was down aren’t caught up.</p>
+  </div>
 </form>
 {% endif %}
 

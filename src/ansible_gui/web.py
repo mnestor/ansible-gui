@@ -497,6 +497,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                "more": max(0, len(found) - 4)}
         return names, notes
 
+    def run_overrides(form: dict, prompts: list, hosts: list[str], inv_repo, first: int = 5) -> tuple[list, bool]:
+        """For the first targeted hosts: each inventory value the run's variables override there,
+        {name, was, now, where}. Second: whether the run sets any variable at all."""
+        sets: dict[str, str] = {}
+        vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept_secrets(form))
+        for k, v in vals.items():
+            sets[k] = "secret" if isinstance(v, dict) and variables.SECRET in v else variables.show_value(v)
+        free, _ = variables.check_freeform(form.get("extra_vars", ""))
+        for k, v in free.items():
+            sets.setdefault(str(k), variables.show_value(v))
+        if form.get("remote_user"):
+            sets["ansible_user"] = sets["ansible_ssh_user"] = form["remote_user"]
+        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        out = []
+        for h in hosts[:first]:
+            host = inv.hosts.get(h) if inv else None
+            found = []
+            for name, now_text in sets.items():
+                v = host.var(name) if host else None
+                if v is not None:
+                    was = "vaulted" if v.vaulted else variables.show_value(v.value)
+                    found.append({"name": name, "was": was[:40], "now": now_text[:40],
+                                  "where": v.source.path or v.source.label})
+            out.append((h, found))
+        return out, bool(sets)
+
     def form_answers(form: dict, prompts: list) -> dict:
         """What the prompt fields show: the fields as sent, or else the stored values (template, schedule, link)."""
         if form.get("var_raw"):
@@ -573,8 +599,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["answers"] = form_answers(form, prompts)
         kept = form["kept"] if form.get("kept") is not None else kept_secrets(form)
         note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
+        overrides, run_sets = run_overrides(form, prompts, pv.hosts, inv_repo)
         return dict(
-            note_names=note_names, notes=notes,
+            note_names=note_names, notes=notes, overrides=overrides, run_sets=run_sets,
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
@@ -643,9 +670,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv_repo = chosen_inventory(form)
         pv = preview_for(form["playbook"], form["target"], inv_repo)
         template, changes = template_changes(form)
-        note_names, notes = inventory_notes(prompts_for(form["playbook"])[0], pv.hosts, inv_repo)
+        prompts = prompts_for(form["playbook"])[0]
+        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
+        overrides, run_sets = run_overrides(form, prompts, pv.hosts, inv_repo)
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
-                      note_names=note_names, notes=notes, oob=True,
+                      note_names=note_names, notes=notes, oob=True, overrides=overrides, run_sets=run_sets,
                       from_template=template, changes=changes,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")

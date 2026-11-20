@@ -269,3 +269,13 @@ def test_each_field_says_what_the_inventory_already_sets_on_the_targets(c):
     preview = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "lab"}).text
     count = preview.split('id="inv-build_count" hx-swap-oob="true">')[1].split("</p>")[0]
     assert "on 1 of 2 hosts" in count
+
+
+def test_the_preview_lists_the_inventory_values_the_run_overrides(c):
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "lab", "var.build_count": "5",
+                                      "remote_user": "deploy"}).text
+    side = page.split('class="launcher-side"')[1]
+    assert "Inventory values this run overrides" in side
+    box1 = side.split('target-host">box1</span>')[1].split("</li>\n      \n")[0]
+    assert "build_count</span> <s class=\"mono\">3</s>" in box1 and "deploy" in box1 and "host_vars/box1.yml" in box1
+    assert "none: it keeps its inventory values" in side.split('target-host">box2</span>')[1]

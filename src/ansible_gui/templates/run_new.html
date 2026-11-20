@@ -13,14 +13,18 @@
 {% else %}
 <form class="launcher" method="post" action="/runs" hx-boost="false"
       hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
+  <div class="launcher-fields">
 
   <input type="hidden" name="template" value="{{ form.template }}">
   {% include "_run_fields.html" %}
 
-  <div id="preview" class="preview" aria-live="polite">
+  </div>
+  <div class="launcher-side">
+    <div id="preview" class="preview" aria-live="polite">
     {% include "_run_preview.html" %}
   </div>
   <button class="btn btn-quiet" type="submit" formaction="/runs/templates/new" formmethod="get" formnovalidate>Save as template…</button>
+  </div>
 </form>
 {% endif %}
 {% endblock %}
