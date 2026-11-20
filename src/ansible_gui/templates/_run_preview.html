@@ -40,7 +40,7 @@
   <div class="actions">
     {% if purpose == "template" %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
-    <span class="help">Starts runs as {{ "Apply" if apply else "a dry run" }} on the hosts that match then: {{ preview.hosts | length }} today. Whoever runs it can change any field.</span>
+    <span class="help">Runs from it start as {{ "Apply" if apply else "a dry run" }} on whatever matches at the time: {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }} today, listed below. Whoever runs it can change any field.</span>
     {% elif saving %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
     <span class="help">{% if apply %}Each run applies changes to the hosts that match at that time{% else %}Each run is a dry run on the hosts that match at that time{% endif %}: {{ preview.hosts | length }} today.</span>

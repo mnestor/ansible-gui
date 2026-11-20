@@ -242,6 +242,13 @@
   });
   document.addEventListener("htmx:afterSettle", () => setup(document));
 
+  // htmx validates a form before any request from it, GETs included, and halts silently on an empty required
+  // field: a new schedule's or template's empty Name froze the host preview. The preview only reads the form;
+  // Save is still validated by the browser.
+  document.addEventListener("htmx:configRequest", (e) => {
+    if (e.detail.verb === "get" && e.detail.elt.matches?.("form.launcher")) e.detail.errors = [];
+  });
+
   // Rail width: one choice for every page, remembered in this browser.
   function railState() {
     const icon = document.documentElement.dataset.rail === "icon";
