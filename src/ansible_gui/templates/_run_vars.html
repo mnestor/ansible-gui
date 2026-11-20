@@ -32,7 +32,7 @@
                 aria-describedby="inv-{{ p.name }} {{ id }}-help">{{ a or "" }}</textarea>
     {% elif p.kind == "secret" %}
       <div class="reveal">
-        <input id="{{ id }}" class="input input-small" type="password" name="{{ p.field }}" autocomplete="new-password"
+        <input id="{{ id }}" class="input input-small" type="password" name="{{ p.field }}" autocomplete="off"
                aria-describedby="inv-{{ p.name }} {{ id }}-help">
         <button class="btn btn-quiet" type="button" data-reveal="{{ id }}" aria-pressed="false">Show value</button>
       </div>

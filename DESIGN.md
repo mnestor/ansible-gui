@@ -77,7 +77,7 @@ Accent badges are only for the winning source. "Running", "default" and the acti
 - Status dot: 8px core with a 3px halo at 22% of its colour; failed and unreachable pulse.
 - Page banner: `banner-ok` (ok tint, ink text) for a completed save, `banner-warn` (changed text on changed tint, 5.4:1 / 6.4:1) for a standing risk. 8px radius inside a page.
 - Kind switch: segmented links (`aria-current`) choosing what a form creates, same look as the segmented radio.
-- Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`).
+- Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`) and `autocomplete="off"`. Every field opts out of password managers (`data-1p-ignore`, `data-lpignore`, `data-bwignore`, `data-form-type="other"`, set by early.js): nothing here is the person's own login.
 - Issue card: card with the inset left rail in the status colour (danger, unreachable, changed), a badge, a one-line count, host chips, and at most two actions (secondary, then quiet). Used only on the Overview's "Needs attention".
 - Side block: card for the Overview's side column (running, next 24 hours, counts). Counts sit in a 2×2 grid: a micro label over a 22px 700 figure.
 - Lost-contact banner: `banner-warn`, `role="status"`, shown when a live poll fails and hidden on the next success.
