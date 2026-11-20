@@ -8,6 +8,7 @@ import logging
 import os
 import queue
 import shlex
+import signal
 import subprocess
 import tempfile
 import threading
@@ -34,6 +35,54 @@ def git_commit(project_dir: Path) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     return out.stdout.strip() or None if out.returncode == 0 else None
+
+
+def _parent_pairs():
+    """(pid, parent pid) for every process. /proc on Linux (the image has no ps), ps elsewhere."""
+    proc = Path("/proc")
+    if (proc / "self" / "stat").exists():
+        for d in proc.iterdir():
+            if not d.name.isdigit():
+                continue
+            try:
+                stat = (d / "stat").read_text()
+            except OSError:  # gone since the listing
+                continue
+            # The command (field 2) can hold spaces and parentheses: the parent pid is the second field after it.
+            yield int(d.name), int(stat.rsplit(")", 1)[1].split()[1])
+        return
+    out = subprocess.run(["ps", "-axo", "pid=,ppid="], capture_output=True, text=True, timeout=10).stdout
+    for line in out.splitlines():
+        pid, ppid = line.split()
+        yield int(pid), int(ppid)
+
+
+def kill_tree(root: int) -> None:
+    """SIGKILL `root` and every process under it.
+
+    ansible-runner's cancel kills only the playbook's process group, but each Ansible worker calls setsid():
+    the worker running the current task would carry on, on the hosts, after the run says it was canceled.
+    The root is stopped first so it can't fork another worker between the listing and the kill."""
+    try:
+        os.kill(root, signal.SIGSTOP)
+    except ProcessLookupError:
+        return
+    children: dict[int, list[int]] = {}
+    try:
+        for pid, ppid in _parent_pairs():
+            children.setdefault(ppid, []).append(pid)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        log.exception("listing processes to cancel %s", root)
+    tree, stack = [], [root]
+    while stack:
+        pid = stack.pop()
+        tree.append(pid)
+        stack.extend(children.get(pid, []))
+    for pid in reversed(tree):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 class CredentialMissing(Exception):
@@ -199,7 +248,18 @@ class Executor:
         except CredentialMissing as e:
             return stop(str(e))
 
+        playbook_pid: list[int] = []  # the ansible process, from its first event
+
+        def cancel_requested() -> bool:
+            if run_id not in self._cancel:
+                return False
+            if playbook_pid:
+                kill_tree(playbook_pid.pop())
+            return True
+
         def on_event(ev: dict) -> bool:
+            if not playbook_pid and isinstance(ev.get("pid"), int):
+                playbook_pid.append(ev["pid"])
             data = ev.get("event_data") or {}
             host = data.get("host")
             kind = ev.get("event", "")
@@ -270,7 +330,7 @@ class Executor:
                 envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
                 passwords=prepared.passwords or None,
                 event_handler=on_event,
-                cancel_callback=lambda: run_id in self._cancel,
+                cancel_callback=cancel_requested,
                 quiet=True,
             )
             if result.status == "canceled":

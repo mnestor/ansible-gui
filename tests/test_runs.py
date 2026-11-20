@@ -1,5 +1,6 @@
 import re
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -94,6 +95,13 @@ def test_cancel_running(app, c):
     assert run.status == "canceled"
     assert time.time() - started < 15
     assert "Run canceled from the web UI" in log.read_text()
+    # Every process of the run is gone, the worker running the pause too: Ansible's workers call setsid(),
+    # so killing the playbook's process group alone leaves them running.
+    data_dir = str(app.state.store.data_dir)
+    end = time.time() + 5
+    while (left := subprocess.run(["pgrep", "-f", data_dir], capture_output=True, text=True).stdout.split()):
+        assert time.time() < end, f"still running after cancel: {left}"
+        time.sleep(0.2)
 
 
 def test_executor_wait_idle_covers_on_finish(app, c):
