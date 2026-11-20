@@ -414,6 +414,9 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
   .launcher-side { position: sticky; top: var(--s6); max-height: calc(100dvh - 2 * var(--s6));
     overflow-y: auto; }
 }
+/* Several actions in one table cell (Run…, then quiet ones); they wrap rather than widen the table. */
+.row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s1) var(--s2); }
+.playbook-about { display: block; margin-top: var(--s1); font-weight: 400; color: var(--ink-muted); font-size: var(--fs-sm); max-width: 60ch; }
 /* The first targeted hosts, each with the inventory values this run overrides on it. */
 .target-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
 .target-host { font-weight: 600; }
@@ -427,6 +430,8 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .form-section { display: flex; flex-direction: column; gap: var(--s5); min-width: 0; padding: var(--s5);
   background: var(--well); border: 1px solid var(--rule); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
 .form-section-head { display: flex; flex-direction: column; gap: var(--s1); }
+.form-section-head-row { flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: var(--s3); }
+.form-section-head-row > div:first-child { display: flex; flex-direction: column; gap: var(--s1); flex: 1 1 280px; }
 .form-section-title { font: 700 var(--fs-lg)/1.3 var(--font-display); letter-spacing: -.01em; margin: 0; }
 /* Each role's variables: one card, headed by the role, so it reads as coming from the playbook. */
 .prompt-role { display: flex; flex-direction: column; gap: var(--s5); padding-top: var(--s5); border-top: 1px solid var(--rule);

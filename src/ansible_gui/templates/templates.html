@@ -31,7 +31,11 @@
       <td class="mono col-wide">{{ t.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ t.mode }}{% if t.tags %} · <span class="mono">{{ t.tags }}</span>{% endif %}</td>
       <td class="mono col-wide">{{ t.remote_user or "—" }}</td>
-      <td><a class="btn btn-quiet" href="/runs/templates/{{ t.id }}" aria-label="Edit {{ t.name }}">Edit</a></td>
+      <td><div class="row-actions">
+        <a class="btn btn-secondary" href="/runs/new?template={{ t.id }}" aria-label="Run {{ t.name }}">Run…</a>
+        <a class="btn btn-quiet" href="/schedules/new?template={{ t.id }}" aria-label="Schedule {{ t.name }}">Schedule…</a>
+        <a class="btn btn-quiet" href="/runs/templates/{{ t.id }}" aria-label="Edit {{ t.name }}">Edit</a>
+      </div></td>
     </tr>
   {% endfor %}
   </tbody>

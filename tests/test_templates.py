@@ -125,11 +125,11 @@ def test_save_as_template_from_the_launcher_keeps_the_picks(c):
 
 def test_the_rail_lists_runs_pages_and_marks_the_one_open(c):
     page = c.get("/runs/templates").text
-    assert 'href="/runs/new"' in page and 'href="/runs/command"' in page
+    assert 'href="/runs/playbooks"' in page and 'href="/runs/command"' in page
     assert '<a class="rail-item rail-sub" href="/runs/templates" aria-current="page">' in page
     assert '<a class="rail-item" href="/runs" aria-current="true">' in page
     runs = c.get("/runs").text
-    assert '<a class="rail-item" href="/runs" aria-current="page">' in runs and 'rail-sub" href="/runs/new" aria-current' not in runs
+    assert '<a class="rail-item" href="/runs" aria-current="page">' in runs and 'rail-sub" href="/runs/playbooks" aria-current' not in runs
 
 
 def test_schedules_sit_under_runs_in_the_rail(c):

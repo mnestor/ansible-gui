@@ -249,10 +249,10 @@
     if (e.detail.verb === "get" && e.detail.elt.matches?.("form.launcher")) e.detail.errors = [];
   });
 
-  // The Variables section is redrawn only when the playbook changes: a redraw on every change would close
+  // The Variables section is redrawn only when the playbook or its Fields/YAML view changes: a redraw on every change would close
   // "more optional variables" while someone fills it in.
   document.addEventListener("change", (e) => {
-    if (e.target.name !== "playbook") return;
+    if (e.target.name !== "playbook" && e.target.name !== "vars_mode") return;
     const vars = e.target.form && e.target.form.querySelector("#run-vars");
     if (vars && window.htmx) htmx.trigger(vars, "playbook-changed");
   });

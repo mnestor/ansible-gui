@@ -54,22 +54,32 @@
     </p>
   </div>
 {% endmacro %}
+{% set mode = form.vars_mode or "fields" %}
+{% set visible = prompts if mode == "fields" else prompts | selectattr("kind", "equalto", "secret") | list %}
 <section id="run-vars" class="form-section" aria-labelledby="sec-vars"
          hx-get="/runs/vars" hx-trigger="playbook-changed" hx-target="this"
          hx-swap="outerHTML" hx-include="closest form" hx-push-url="false">
   <input type="hidden" name="kept_from" value="{{ kept_from }}">
-  <div class="form-section-head">
-    <h2 class="form-section-title" id="sec-vars">Variables</h2>
-    <p class="help">Sent to the playbook with <span class="mono">-e</span>, which beats every other source. Leave a field empty to keep what the inventory or the role sets.</p>
+  <div class="form-section-head form-section-head-row">
+    <div>
+      <h2 class="form-section-title" id="sec-vars">Variables</h2>
+      <p class="help">Sent to the playbook with <span class="mono">-e</span>, which beats every other source. Leave a variable out to keep what the inventory or the role sets.</p>
+    </div>
+    {% if prompts %}
+    <div class="segmented segmented-inline" role="radiogroup" aria-label="Edit variables as">
+      <label><input type="radio" name="vars_mode" value="fields" {% if mode == "fields" %}checked{% endif %}> Fields</label>
+      <label><input type="radio" name="vars_mode" value="yaml" {% if mode == "yaml" %}checked{% endif %}> YAML</label>
+    </div>
+    {% endif %}
   </div>
 
-  {% set roles = [] %}{% for p in prompts %}{% if p.role not in roles %}{% set _ = roles.append(p.role) %}{% endif %}{% endfor %}
+  {% set roles = [] %}{% for p in visible %}{% if p.role not in roles %}{% set _ = roles.append(p.role) %}{% endif %}{% endfor %}
   {% for role in roles %}
-  {% set group = prompts | selectattr("role", "equalto", role) | list %}
+  {% set group = visible | selectattr("role", "equalto", role) | list %}
   {% set shown = [] %}{% set rest = [] %}
-  {% for p in group %}{% if p.required or form.answers.get(p.name) or p.name in saved_secrets %}{% set _ = shown.append(p) %}{% else %}{% set _ = rest.append(p) %}{% endif %}{% endfor %}
+  {% for p in group %}{% if p.required or form.answers.get(p.name) or p.name in saved_secrets or mode == "yaml" %}{% set _ = shown.append(p) %}{% else %}{% set _ = rest.append(p) %}{% endif %}{% endfor %}
   <div class="prompt-role">
-    <p class="prompt-role-head"><span class="help">Role</span> <span class="mono prompt-role-name">{{ role }}</span> <span class="help">· <span class="mono">meta/argument_specs.yml</span></span></p>
+    <p class="prompt-role-head"><span class="help">Role</span> <span class="mono prompt-role-name">{{ role }}</span> <span class="help">· <span class="mono">meta/argument_specs.yml</span>{% if mode == "yaml" %} · secrets stay as fields{% endif %}</span></p>
     {% for p in shown %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}
     {% if rest %}
     <details class="more prompt-more" {% if not shown %}open{% endif %}>
@@ -83,10 +93,19 @@
   <p class="help">{% if bare_roles %}Its roles ({{ bare_roles | join(", ") }}) declare no variables. Add a <span class="mono">meta/argument_specs.yml</span> to a role to get a field per variable here.{% else %}This playbook uses no roles with a <span class="mono">meta/argument_specs.yml</span>, so there are no fields to fill in.{% endif %}</p>
   {% endif %}
 
+  {% if prompts and mode == "fields" %}
+    {# The YAML view's other variables ride along unseen; YAML is where they are edited. #}
+    <textarea name="extra_vars" hidden>{{ form.extra_vars }}</textarea>
+    {% if form.extra_vars.strip() %}
+    {% set extra = (form.extra_vars | extra_names) %}
+    <p class="help also-sends">Also sends {% if extra %}{% for n in extra %}<span class="mono">{{ n }}</span>{{ ", " if not loop.last }}{% endfor %}{% else %}YAML that doesn’t parse{% endif %}, which no role declares. Switch to YAML to change {{ "it" if extra | length == 1 else "them" }}.</p>
+    {% endif %}
+  {% else %}
   <div class="field">
-    <label class="label" for="extra_vars">{{ "Other variables" if prompts else "Extra variables" }} <span class="optional">(optional)</span></label>
-    <textarea id="extra_vars" class="input" name="extra_vars" rows="3" spellcheck="false" autocapitalize="off"
+    <label class="label" for="extra_vars">{{ "Variables as YAML" if prompts else "Extra variables" }} <span class="optional">(optional)</span></label>
+    <textarea id="extra_vars" class="input" name="extra_vars" rows="{{ 8 if prompts else 3 }}" spellcheck="false" autocapitalize="off"
               placeholder="build_host: web3&#10;packages: [git, curl]" aria-describedby="extra_vars-help">{{ form.extra_vars }}</textarea>
-    <p class="help" id="extra_vars-help">YAML, one <span class="mono">name: value</span> per line. Jinja works here. Saved as typed, so put secrets in a secret field or a credential.</p>
+    <p class="help" id="extra_vars-help">YAML, one <span class="mono">name: value</span> per line.{% if prompts %} Declared variables ({{ prompts | rejectattr("kind", "equalto", "secret") | map(attribute="name") | join(", ") }}) are sent as plain text, like their fields; anything else may use Jinja.{% else %} Jinja works here.{% endif %} Saved as typed, so put secrets in a secret field or a credential.</p>
   </div>
+  {% endif %}
 </section>

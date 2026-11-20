@@ -18,7 +18,7 @@
   <thead><tr>
     <th scope="col">Name</th><th scope="col" class="col-wide">Next run</th><th scope="col">Last run</th>
     <th scope="col" class="col-wide">Playbook</th><th scope="col" class="col-wide">Targets</th>
-    <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">When</th>
+    <th scope="col" class="col-wide">Mode and when</th><th scope="col"><span class="visually-hidden">Actions</span></th>
   </tr></thead>
   <tbody>
   {% for s in schedules %}
@@ -28,8 +28,16 @@
       <td>{% if s.last_run %}<a class="badge-link" href="/runs/{{ s.last_run.id }}"><span class="badge badge-{{ run_tone(s.last_run) }}">{{ status_label(s.last_run) }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
       <td class="mono col-wide">{{ pb_label(s) }}</td>
       <td class="mono col-wide">{{ s.target or "playbook’s hosts" }}</td>
-      <td class="col-wide">{{ s.mode }}</td>
-      <td class="mono col-wide">{{ s.cron }}</td>
+      <td class="col-wide">{{ s.mode }} · <span class="mono">{{ s.cron }}</span></td>
+      <td>
+        <form method="post" action="/schedules/{{ s.id }}/run" hx-boost="false" {% if not s.check_mode %}data-confirm-twice{% endif %}>
+          {% if s.check_mode %}
+          <button class="btn btn-secondary" type="submit" data-busy-label="Starting…" aria-label="Dry run {{ s.name }} now">Dry run now</button>
+          {% else %}
+          <button class="btn btn-secondary" type="submit" data-busy-label="Starting…" data-confirm-label="Click again to apply" aria-label="Apply {{ s.name }} now">Apply now…</button>
+          {% endif %}
+        </form>
+      </td>
     </tr>
   {% endfor %}
   </tbody>

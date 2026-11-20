@@ -50,6 +50,11 @@ def make_project(root: Path) -> Path:
         "  tasks:\n    - ansible.builtin.include_role:\n        name: builder\n        tasks_from: extra\n"
         "    - ansible.builtin.include_role:\n        name: \"{{ dynamic }}\"\n      when: dynamic is defined\n")
     (project / "outer.yml").write_text("- import_playbook: build.yml\n")
+    (role / "defaults").mkdir()
+    (role / "defaults" / "main.yml").write_text("build_count: 4\n")  # what applies; the spec says 1
+    (role / "meta" / "main.yml").write_text("galaxy_info:\n  description: Builds a lab box from the cloud image\n")
+    (project / "commented.yml").write_text("---\n# Patches every host.\n# Reboots only if needed.\n"
+                                          "- hosts: lab\n  gather_facts: false\n  tasks: []\n")
     (project / "inventory" / "host_vars").mkdir()
     (project / "inventory" / "host_vars" / "box1.yml").write_text("build_count: 3\nansible_user: cloud-user\n")
     return project
@@ -281,3 +286,58 @@ def test_the_preview_lists_the_inventory_values_the_run_overrides(c):
     box1 = side.split('target-host">box1</span>')[1].split("</li>\n      \n")[0]
     assert "build_count</span> <s class=\"mono\">3</s>" in box1 and "deploy" in box1 and "host_vars/box1.yml" in box1
     assert "none: it keeps its inventory values" in side.split('target-host">box2</span>')[1]
+
+
+def test_the_default_shown_is_the_one_defaults_main_sets(project):
+    by = {p.name: p for p in variables.discover(project / "build.yml", project)[0]}
+    assert by["build_count"].default_text == "4" and by["build_size"].default_text == "small"
+
+
+def test_the_playbook_list_says_what_each_does_and_offers_its_actions(c):
+    page = c.get("/runs/playbooks").text
+    row = page.split('href="/runs/new?playbook=0%3Acommented.yml"')[1].split("</tr>")[0]
+    assert "Patches every host. Reboots only if needed." in row
+    assert "Builds a lab box from the cloud image" in page.split("0%3Abuild.yml")[1].split("</tr>")[0]  # its role
+    assert "Lab check" in page.split("0%3Asite.yml")[1].split("</tr>")[0]  # no comment, no roles: play names
+    assert 'href="/runs/templates/new?playbook=0%3Asite.yml"' in page and 'href="/schedules/new?playbook=0%3Asite.yml"' in page
+    assert '<a class="rail-item rail-sub" href="/runs/playbooks" aria-current="page">' in page
+    assert '<a class="rail-item rail-sub" href="/runs/playbooks" aria-current="page">' in c.get("/runs/new").text
+
+
+def test_template_and_schedule_rows_have_run_actions(app, c):
+    c.post("/runs/templates", data={"name": "t1", "playbook": "site.yml", "target": "box1", "mode": "check",
+                                    "diff": "1", "purpose": "template"})
+    t = app.state.templates.all()[0]
+    listing = c.get("/runs/templates").text
+    assert f'href="/runs/new?template={t.id}" aria-label="Run t1">Run…' in listing
+    assert f'href="/schedules/new?template={t.id}" aria-label="Schedule t1"' in listing
+    c.post("/schedules", data={"name": "n1", "cron": "0 3 * * *", "playbook": "site.yml", "target": "box1",
+                               "mode": "apply", "diff": "1", "purpose": "schedule"})
+    s = app.state.schedules.all()[0]
+    sched = c.get("/schedules").text
+    assert f'action="/schedules/{s.id}/run"' in sched and "Apply now…" in sched and "data-confirm-twice" in sched
+
+
+def test_the_yaml_view_carries_values_both_ways_and_stores_like_the_fields(app, c, project):
+    base = {"playbook": "0:build.yml", "target": "box1"}
+    to_yaml = c.get("/runs/vars", params={**base, "vars_mode": "yaml", "var.build_host": "web3", "var.build_size": "large",
+                                          "var.build_token": "", "extra_vars": "free_var: x"}).text
+    assert 'name="var.build_host"' not in to_yaml and 'type="password" name="var.build_token"' in to_yaml
+    text = html.unescape(to_yaml.split('name="extra_vars"')[1].split(">", 1)[1].split("</textarea>")[0])
+    assert text == "build_host: web3\nbuild_size: large\nfree_var: x"
+    back = c.get("/runs/vars", params={**base, "vars_mode": "fields", "extra_vars": text}).text
+    assert 'value="web3"' in back and 'value="large" selected' in back and "Also sends <span class=\"mono\">free_var</span>" in back
+    assert "<textarea name=\"extra_vars\" hidden>free_var: x</textarea>" in back
+
+    form = {**base, "vars_mode": "yaml", "mode": "check", "diff": "1", "expected": ["box1"],
+            "extra_vars": "build_host: \"{{ 6 * 7 }}\"\nfree_var: x"}
+    r = c.post("/runs", data=form, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    run = app.state.store.get(int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.prompt_vars == {"build_host": "{{ 6 * 7 }}"} and run.extra_vars == "free_var: x"
+
+
+def test_a_preview_sent_mid_switch_keeps_the_field_values(c):
+    page = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "box1", "vars_mode": "yaml",
+                                          "var.build_count": "5", "extra_vars": ""}).text
+    assert "build_count" in page.split('class="override-list"')[1]

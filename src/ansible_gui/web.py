@@ -247,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         static_url=static_url,
         shown_vars=variables.shown,
     )
+    env.filters["extra_names"] = lambda text: [str(k) for k in variables.check_freeform(text or "")[0]]
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
     env.filters["seconds"] = seconds
@@ -432,7 +433,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "prompt_vars": stored_vars(src),
             "var_raw": variables.raw_fields(src),
             "rerun": str(src.get("rerun") or "") if str(src.get("rerun") or "").isdigit() else "",
+            "vars_mode": "yaml" if src.get("vars_mode") == "yaml" else "fields",
         }
+
+    def effective(form: dict, prompts: list) -> dict:
+        """The form as the fields view sees it. In the YAML view the declared variables are typed in the YAML:
+        take them out into their fields (sent as plain text, like any field), and leave the rest as YAML."""
+        if form.get("vars_mode") != "yaml" or not prompts:
+            return form
+        if any(p.name in (form.get("var_raw") or {}) for p in prompts if p.kind != "secret"):
+            return form  # still drawn as fields: the switch was just clicked and the redraw hasn't landed
+        answers, rest = variables.split_yaml(form.get("extra_vars", ""), prompts)
+        secret = {p.name for p in prompts if p.kind == "secret"}
+        raw = {k: v for k, v in (form.get("var_raw") or {}).items() if k.split(".")[0] in secret}
+        raw.update({k: v if isinstance(v, list) else [v] for k, v in answers.items()})
+        raw["__yaml__"] = [""]  # never empty: an empty one would fall back to the template's values
+        return {**form, "var_raw": raw, "extra_vars": rest, "vars_mode": "fields"}
+
+    def switch_view(form: dict, prompts: list) -> None:
+        """Redraw for the view asked for, carrying the values over from the other one."""
+        secret = {p.name for p in prompts if p.kind == "secret"}
+        raw = form.get("var_raw") or {}
+        has_fields = any(k in raw for k in (p.name for p in prompts if p.kind != "secret"))
+        if form["vars_mode"] == "yaml" and has_fields:
+            vals, _ = variables.values(variables.read_answers(raw, prompts), prompts, creds.fernet)
+            plain = {k: v for k, v in vals.items() if k not in secret}
+            form["extra_vars"] = variables.join_yaml(plain, form.get("extra_vars", ""))
+            form["var_raw"] = {k: v for k, v in raw.items() if k.split(".")[0] in secret} or {"__yaml__": [""]}
+        elif form["vars_mode"] == "fields" and not has_fields and form.get("extra_vars"):
+            form.update(effective({**form, "vars_mode": "yaml"}, prompts))
 
     def secrets_of(source, form: dict) -> dict:
         """The encrypted answers of a run or template that an empty secret field may reuse: only for the same
@@ -500,6 +529,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def run_overrides(form: dict, prompts: list, hosts: list[str], inv_repo, first: int = 5) -> tuple[list, bool]:
         """For the first targeted hosts: each inventory value the run's variables override there,
         {name, was, now, where}. Second: whether the run sets any variable at all."""
+        form = effective(form, prompts)
         sets: dict[str, str] = {}
         vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept_secrets(form))
         for k, v in vals.items():
@@ -533,6 +563,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The prompt values to store, or what is wrong with the variables. `kept` holds the secrets an empty
         secret field keeps."""
         prompts, _ = prompts_for(form["playbook"])
+        form = effective(form, prompts)
         vals, errors = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept)
         if errors:
             return {}, next(iter(errors.values()))
@@ -575,6 +606,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         t = run_templates.get(int(form["template"])) if form.get("template") else None
         if not t:
             return None, []
+        form = effective(form, prompts_for(form["playbook"])[0])
         base = t.as_form()
         base["playbook"] = ws.canonical(base["playbook"])
         labels = dict(TEMPLATE_FIELDS)
@@ -639,6 +671,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runs(request: Request):
         return render(request, "runs.html", section="runs", runs=store.recent())
 
+    @app.get("/runs/playbooks", response_class=HTMLResponse)
+    def playbook_list(request: Request):
+        """Every playbook, with what it is for: its top comment, else its roles' descriptions, else its plays."""
+        books = ws.discover()
+        about = {b.key: variables.describe(b.repo.path / b.path, b.repo.path) for b in books}
+        by_book: dict[str, list] = {}
+        for t in run_templates.all():
+            by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
+        return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
+                      multi_repo=len(ws.playbook_repos()) > 1)
+
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):
         q = request.query_params
@@ -686,6 +729,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_form(q)
         form["playbook"] = ws.canonical(form["playbook"])
         prompts, bare_roles = prompts_for(form["playbook"])
+        switch_view(form, prompts)
         form["answers"] = form_answers(form, prompts)
         kind, _, ref = str(q.get("kept_from") or "").partition(":")
         source = (run_templates.get(int(ref)) if kind == "template" else schedules.get(int(ref)) if kind == "schedule"
@@ -725,6 +769,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             return launcher(request, form, problem, 400)
         template, changes = template_changes(form)
+        form.update(effective(form, prompts_for(form["playbook"])[0]))  # the YAML view stores like the fields
         prompt_vals, problem = vars_for(form, kept_secrets(form))
         if problem:
             return launcher(request, form, problem, 400)
@@ -832,8 +877,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_form(q)
         if "diff" not in q:
             form["diff"] = True
-        if "playbook" not in q:  # a blank form; one saved from the launcher keeps its own picks, None included
-            default_credentials(form, q)
+        default_credentials(form, q)  # only the kinds the link leaves out: Save as template… sends all, None included
         form["name"], form["note"] = q.get("name", ""), q.get("note", "")
         return template_page(request, form)
 
@@ -865,6 +909,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if inv_repo is None:
             return template_page(request, form, tmpl, form_error="Choose the inventory to run against.", status=400)
         form["kept"] = kept_secrets(form, tmpl)
+        form.update(effective(form, prompts_for(form["playbook"])[0]))  # the YAML view stores like the fields
         prompt_vals, problem = vars_for(form, form["kept"])
         if problem:
             return template_page(request, form, tmpl, form_error=problem, status=400)
@@ -1242,6 +1287,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if pv.error or not pv.hosts:
             return schedule_page(request, form, sched, status=400,
                                  form_error="The targets match no hosts, so every run would fail. Change them first.")
+        form.update(effective(form, prompts_for(form["playbook"])[0]))  # the YAML view stores like the fields
         prompt_vals, problem = vars_for(form, form["kept"])
         if problem:
             return schedule_page(request, form, sched, status=400, form_error=problem)

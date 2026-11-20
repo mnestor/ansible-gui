@@ -33,8 +33,9 @@
   {% set items = [("home", "/", "Overview"), ("hosts", "/inventory/hosts", "Hosts"), ("groups", "/inventory/groups", "Groups"), ("runs", "/runs", "Runs"),
                   ("repos", "/repos", "Repositories"), ("credentials", "/credentials", "Credentials")] %}
   {% set path = request.url.path if request is defined else "" %}
-  {% set run_subs = [("/runs/new", "Run playbook"), ("/runs/command", "Run command"), ("/runs/templates", "Templates"), ("/schedules", "Schedules")] %}
-  {% set sub_here = run_subs | selectattr(0, "in", [path, path.rsplit("/", 1)[0]]) | list %}
+  {% set run_subs = [("/runs/playbooks", "Run playbook"), ("/runs/command", "Run command"), ("/runs/templates", "Templates"), ("/schedules", "Schedules")] %}
+  {% set sub_path = "/runs/playbooks" if path == "/runs/new" else path %}{# the launcher belongs to Run playbook #}
+  {% set sub_here = run_subs | selectattr(0, "in", [sub_path, sub_path.rsplit("/", 1)[0]]) | list %}
   <nav class="navrail" aria-label="Sections">
     {% for key, href, label in items %}
       {% set here = section == key or (key == "runs" and (sub_here or section == "schedules")) %}

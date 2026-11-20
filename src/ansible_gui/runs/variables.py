@@ -190,10 +190,26 @@ def discover(playbook: Path, repo_dir: Path) -> tuple[list[Prompt], list[str]]:
             if role not in bare:
                 bare.append(role)
             continue
+        defaults = _role_defaults(d)
         for name, opt in (spec.get("options") or {}).items():
             if isinstance(opt, dict) and VAR_NAME.match(str(name)) and name not in prompts:
-                prompts[name] = _prompt(str(name), role, opt)
+                prompts[name] = p = _prompt(str(name), role, opt)
+                if name in defaults:  # what the run actually gets; the spec's default only documents it
+                    p.default, p.has_default = defaults[name], True
     return list(prompts.values()), bare
+
+
+def _role_defaults(role_dir: Path) -> dict:
+    """The role's defaults/main.yml (or defaults/main/*.yml): the values that apply when nothing else sets them."""
+    out: dict = {}
+    files = [role_dir / "defaults" / n for n in ("main.yml", "main.yaml")]
+    if (role_dir / "defaults" / "main").is_dir():
+        files += sorted((role_dir / "defaults" / "main").glob("*.y*ml"))
+    for f in files:
+        data = _load(f) if f.is_file() else None
+        if isinstance(data, dict):
+            out.update(data)
+    return out
 
 
 # --- reading answers --------------------------------------------------------------------------------------------
@@ -387,3 +403,94 @@ def vars_file_text(plain: dict) -> str:
     """YAML for `-e @file`: names plain, every string value !unsafe so Ansible never templates it."""
     return yaml.dump({k: _mark_unsafe(v) for k, v in plain.items()}, Dumper=_Dumper, sort_keys=False,
                      allow_unicode=True, default_flow_style=False)
+
+
+# --- Fields or YAML -----------------------------------------------------------------------------------------------
+_TAG = re.compile(r"(^|[\s:\-\[,])!\w")
+
+
+def join_yaml(values: dict, rest: str) -> str:
+    """The YAML view: the declared variables' values (secrets never), then the free-form text as typed."""
+    head = yaml.safe_dump(values, sort_keys=False, allow_unicode=True, default_flow_style=False) if values else ""
+    return (head + rest.strip("\n")).strip("\n")
+
+
+def split_yaml(text: str, prompts: list[Prompt]) -> tuple[dict, str]:
+    """The fields view of a YAML block: (answers for the declared variables, the rest as YAML). Text that doesn't
+    parse, or uses tags like !vault, stays whole: rewriting it would lose them."""
+    data, problem = check_freeform(text)
+    if problem or not data or _TAG.search(text):
+        return {}, text
+    by = {p.name: p for p in prompts if p.kind != "secret"}
+    answers = {k: answer_from_value(by[k], v) for k, v in data.items() if k in by}
+    if not answers:
+        return {}, text
+    rest = {k: v for k, v in data.items() if k not in answers}
+    return answers, yaml.safe_dump(rest, sort_keys=False, allow_unicode=True).strip("\n") if rest else ""
+
+
+# --- describing a playbook ----------------------------------------------------------------------------------------
+@dataclass
+class About:
+    comment: str = ""  # the comment block at the top of the file
+    roles: list[tuple[str, str]] = field(default_factory=list)  # (role, its description) in play order
+    plays: list[str] = field(default_factory=list)  # play names
+
+
+def _top_comment(path: Path) -> str:
+    lines = []
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return ""
+    for line in text.splitlines():
+        s = line.strip()
+        if not lines and (s in ("", "---") or s.startswith("#!")):
+            continue
+        if not s.startswith("#"):
+            break
+        body = s.lstrip("#").strip()
+        if re.match(r"^(-\*-|vim?:|yaml-language-server|code:|noqa|yamllint)", body):
+            continue
+        lines.append(body)
+    return " ".join(" ".join(lines).split())
+
+
+def _role_description(role_dir: Path) -> str:
+    for name in ("main.yml", "main.yaml"):
+        data = _load(role_dir / "meta" / name)
+        if isinstance(data, dict):
+            info = data.get("galaxy_info")
+            if isinstance(info, dict) and info.get("description"):
+                return " ".join(str(info["description"]).split())
+    spec = _spec(role_dir, "main")
+    return " ".join(_text(spec.get("short_description")).split()) if spec else ""
+
+
+def describe(playbook: Path, repo_dir: Path) -> About:
+    about = About(comment=_top_comment(playbook))
+    seen = set()
+    for role, _ in role_refs(playbook):
+        if role in seen:
+            continue
+        seen.add(role)
+        d = _role_dir(role, playbook.parent, repo_dir)
+        about.roles.append((role, _role_description(d) if d else ""))
+
+    def plays(path: Path, visited: set) -> None:
+        path = path.resolve()
+        if path in visited:
+            return
+        visited.add(path)
+        data = _load(path)
+        for play in data if isinstance(data, list) else []:
+            if not isinstance(play, dict):
+                continue
+            for key in _IMPORT_PLAYBOOK & play.keys():
+                if _static(play[key]):
+                    plays(path.parent / play[key].strip(), visited)
+            if isinstance(play.get("name"), str) and play["name"].strip():
+                about.plays.append(" ".join(play["name"].split()))
+
+    plays(playbook, set())
+    return about
