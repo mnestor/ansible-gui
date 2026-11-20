@@ -402,13 +402,24 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .more summary { cursor: pointer; font-weight: 600; color: var(--ink-muted); }
 .more summary:hover { color: var(--accent-ink); }
 .more-body { display: flex; flex-direction: column; gap: var(--s6); margin-top: var(--s4); }
-/* Variables: a field per option the roles declare; a role heading only when there are several. */
-.prompt-vars { gap: var(--s4); }
-.prompt-role { display: flex; flex-direction: column; gap: var(--s4); }
-.prompt-role + .prompt-role { padding-top: var(--s4); border-top: 1px solid var(--rule); }
-.prompt-role-name { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); margin: 0; }
+/* The launcher in three groups: what to run, its variables, how to run it. 40 between groups, 20 inside. */
+.launcher > .form-section, .launcher > .preview { margin-top: var(--s4); } /* 24 + 16 = 40 */
+.form-section { display: flex; flex-direction: column; gap: var(--s5); min-width: 0; }
+.form-section-head { display: flex; flex-direction: column; gap: var(--s1); }
+.form-section-title { font: 700 var(--fs-lg)/1.3 var(--font-display); letter-spacing: -.01em; margin: 0; }
+/* Each role's variables: one card, headed by the role, so it reads as coming from the playbook. */
+.prompt-role { display: flex; flex-direction: column; gap: var(--s5); padding: var(--s5); background: var(--well);
+  border: 1px solid var(--rule); border-radius: var(--radius-card); box-shadow: var(--shadow-card); min-width: 0; }
+.prompt-role-head { margin: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2); }
+.prompt-role-name { font-weight: 700; }
 .prompt-name { font-weight: 400; font-size: var(--fs-xs); color: var(--ink-muted); margin-left: var(--s1); }
 .prompt-group { display: flex; flex-direction: column; gap: var(--s2); border: 0; padding: 0; margin: 0; min-width: 0; }
+.prompt-more-body { display: flex; flex-direction: column; gap: var(--s5); margin-top: var(--s4); }
+/* What the inventory already sets, right under the field it bears on. */
+.inv-note { margin: 0; font-size: var(--fs-xs); color: var(--ink-muted); overflow-wrap: anywhere; }
+.inv-note:empty { display: none; }
+.inv-label { font-weight: 600; color: var(--ink); }
+.inv-value { color: var(--ink); }
 .choices-inline { flex-direction: row; flex-wrap: wrap; gap: var(--s1) var(--s4); }
 .extra-vars summary { cursor: pointer; }
 .extra-vars pre { margin: var(--s2) 0 0; padding: var(--s3); white-space: pre-wrap; overflow-wrap: anywhere; }

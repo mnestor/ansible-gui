@@ -34,8 +34,7 @@
     <span class="help">Change the targets to run.</span></div>
 {% else %}
   <div class="preview-hosts">
-    <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>
-      {% if preview.plays > 1 %}across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}, listed below.</p>
+    <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>{% if preview.plays > 1 %} across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}, listed below.</p>
   </div>
   <div class="actions">
     {% if purpose == "template" %}
@@ -57,3 +56,5 @@
   {% if not saving %}{% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}{% endif %}
 {% endif %}
 <template id="tag-options">{% for t in preview.tags %}<option value="{{ t }}">{% endfor %}</template>
+{# The inventory notes under the variable fields follow the targets. #}
+{% if oob %}{% from "_inv_note.html" import inv_note %}{% for n in note_names %}<p class="inv-note" id="inv-{{ n }}" hx-swap-oob="true">{{ inv_note(notes.get(n)) }}</p>{% endfor %}{% endif %}

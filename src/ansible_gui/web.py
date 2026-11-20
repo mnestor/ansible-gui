@@ -468,6 +468,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return [], []
         return variables.discover(pb.repo.path / pb.path, pb.repo.path)
 
+    def inventory_notes(prompts: list, hosts: list[str], inv_repo) -> tuple[list[str], dict]:
+        """For each prompt, and for ansible_user (Connect as): what the inventory already sets on the targeted
+        hosts. Returns (every name, so a redraw can clear a note; notes by name)."""
+        names = [p.name for p in prompts if p.name != "ansible_user"] + ["ansible_user"]
+        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        if not inv or not hosts:
+            return names, {}
+
+        def short(v) -> str:
+            text = "vaulted" if isinstance(v, Vaulted) else variables.show_value(v)
+            return text if len(text) <= 40 else text[:39] + "…"
+
+        notes = {}
+        for name in names:
+            found = [(h, inv.hosts[h].var(name)) for h in hosts if h in inv.hosts]
+            found = sorted((h, v) for h, v in found if v is not None)
+            if not found:
+                notes[name] = {"state": "none", "total": len(hosts)}
+                continue
+            values = {short(v.value) for _, v in found}
+            if len(values) == 1:
+                where = sorted({v.source.path or v.source.label for _, v in found})
+                notes[name] = {"state": "same", "value": values.pop(), "count": len(found), "total": len(hosts),
+                               "host": found[0][0], "where": where[0] if len(where) == 1 else f"{len(where)} files"}
+            else:
+                notes[name] = {"state": "mixed", "items": [(h, short(v.value)) for h, v in found[:4]],
+                               "more": max(0, len(found) - 4)}
+        return names, notes
+
     def form_answers(form: dict, prompts: list) -> dict:
         """What the prompt fields show: the fields as sent, or else the stored values (template, schedule, link)."""
         if form.get("var_raw"):
@@ -543,7 +572,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompts, bare_roles = prompts_for(form["playbook"])
         form["answers"] = form_answers(form, prompts)
         kept = form["kept"] if form.get("kept") is not None else kept_secrets(form)
+        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
         return dict(
+            note_names=note_names, notes=notes,
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
@@ -609,9 +640,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             form["playbook"] = ""
-        pv = preview_for(form["playbook"], form["target"], chosen_inventory(form))
+        inv_repo = chosen_inventory(form)
+        pv = preview_for(form["playbook"], form["target"], inv_repo)
         template, changes = template_changes(form)
+        note_names, notes = inventory_notes(prompts_for(form["playbook"])[0], pv.hosts, inv_repo)
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
+                      note_names=note_names, notes=notes, oob=True,
                       from_template=template, changes=changes,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
@@ -628,7 +662,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         source = (run_templates.get(int(ref)) if kind == "template" else schedules.get(int(ref)) if kind == "schedule"
                   else None) if ref.isdigit() else None
         kept = kept_secrets(form, source)
-        return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles,
+        inv_repo = chosen_inventory(form)
+        note_names, notes = inventory_notes(prompts, preview_for(form["playbook"], form["target"], inv_repo).hosts,
+                                            inv_repo)
+        return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles, notes=notes,
                       kept_from=q.get("kept_from", ""),
                       saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v})
 

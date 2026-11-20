@@ -50,6 +50,8 @@ def make_project(root: Path) -> Path:
         "  tasks:\n    - ansible.builtin.include_role:\n        name: builder\n        tasks_from: extra\n"
         "    - ansible.builtin.include_role:\n        name: \"{{ dynamic }}\"\n      when: dynamic is defined\n")
     (project / "outer.yml").write_text("- import_playbook: build.yml\n")
+    (project / "inventory" / "host_vars").mkdir()
+    (project / "inventory" / "host_vars" / "box1.yml").write_text("build_count: 3\nansible_user: cloud-user\n")
     return project
 
 
@@ -150,7 +152,7 @@ def test_the_launcher_draws_a_field_per_option(c):
     page = c.get("/runs/new", params={"playbook": "build.yml"}).text
     assert 'name="var.build_host"' in page and "(required by the role)" in page
     assert 'type="password" name="var.build_token"' in page and 'value="nfs"' in page
-    assert "Role default (small)" in page and 'name="extra_vars"' in page
+    assert "Not set here" in page and 'name="extra_vars"' in page
     assert 'name="var.' not in c.get("/runs/new", params={"playbook": "site.yml"}).text
     part = c.get("/runs/vars", params={"playbook": "build.yml", "var.build_host": "keep-me"}).text
     assert 'value="keep-me"' in part and part.lstrip().startswith("{#") is False
@@ -255,3 +257,15 @@ def test_run_again_reuses_the_runs_secret_for_the_same_playbook_only(app, c, pro
     data = {**form, "name": "from-run", "purpose": "template", "var.build_token": "", "rerun": str(first.id)}
     assert c.post("/runs/templates", data=data, follow_redirects=False).status_code == 303
     assert app.state.templates.all()[0].prompt_vars["build_token"] == first.prompt_vars["build_token"]
+
+
+def test_each_field_says_what_the_inventory_already_sets_on_the_targets(c):
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "box1"}).text
+    note = page.split('id="inv-build_count">')[1].split("</p>")[0]
+    assert "Inventory" in note and ">3<" in note and "on box1" in note and "host_vars/box1.yml" in note
+    assert "Not in the inventory for this host." in page.split('id="inv-build_size">')[1].split("</p>")[0]
+    assert "cloud-user" in page.split('id="inv-ansible_user">')[1].split("</p>")[0]  # under Connect as
+    # The preview redraws the notes when the targets change.
+    preview = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "lab"}).text
+    count = preview.split('id="inv-build_count" hx-swap-oob="true">')[1].split("</p>")[0]
+    assert "on 1 of 2 hosts" in count

@@ -1,0 +1,13 @@
+{# What the inventory already sets for a variable on the targeted hosts: under its field, so "leave empty" is an informed choice. #}
+{% macro inv_note(n) -%}
+{%- if n and n.state == "none" -%}
+Not in the inventory for {{ "this host" if n.total == 1 else "these " ~ n.total ~ " hosts" }}.
+{%- elif n -%}
+<span class="inv-label">Inventory</span>
+{% if n.state == "same" -%}
+sets <span class="mono inv-value">{{ n.value }}</span> {% if n.count == n.total %}{{ "on " ~ n.host if n.total == 1 else "on all " ~ n.total ~ " hosts" }}{% else %}on {{ n.count }} of {{ n.total }} hosts{% endif %}, from <span class="mono">{{ n.where }}</span>.
+{%- else -%}
+sets it per host: {% for h, v in n["items"] %}<span class="mono">{{ h }}: <span class="inv-value">{{ v }}</span></span>{{ ", " if not loop.last }}{% endfor %}{% if n.more %} and {{ n.more }} more{% endif %}.
+{%- endif %}
+{%- endif -%}
+{%- endmacro %}
