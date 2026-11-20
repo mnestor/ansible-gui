@@ -402,6 +402,16 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .more summary { cursor: pointer; font-weight: 600; color: var(--ink-muted); }
 .more summary:hover { color: var(--accent-ink); }
 .more-body { display: flex; flex-direction: column; gap: var(--s6); margin-top: var(--s4); }
+/* Variables: a field per option the roles declare; a role heading only when there are several. */
+.prompt-vars { gap: var(--s4); }
+.prompt-role { display: flex; flex-direction: column; gap: var(--s4); }
+.prompt-role + .prompt-role { padding-top: var(--s4); border-top: 1px solid var(--rule); }
+.prompt-role-name { font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); margin: 0; }
+.prompt-name { font-weight: 400; font-size: var(--fs-xs); color: var(--ink-muted); margin-left: var(--s1); }
+.prompt-group { display: flex; flex-direction: column; gap: var(--s2); border: 0; padding: 0; margin: 0; min-width: 0; }
+.choices-inline { flex-direction: row; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+.extra-vars summary { cursor: pointer; }
+.extra-vars pre { margin: var(--s2) 0 0; padding: var(--s3); white-space: pre-wrap; overflow-wrap: anywhere; }
 select.input { appearance: auto; }
 
 .preview { position: relative; display: flex; flex-direction: column; gap: var(--s4); padding: var(--s5); overflow: hidden; }

@@ -60,6 +60,8 @@ MIGRATIONS = {
     "template_id": "alter table runs add column template_id integer",
     "template_name": "alter table runs add column template_name text not null default ''",
     "template_changes": "alter table runs add column template_changes text not null default '[]'",
+    "prompt_vars": "alter table runs add column prompt_vars text not null default '{}'",
+    "extra_vars": "alter table runs add column extra_vars text not null default ''",
 }
 
 
@@ -102,6 +104,8 @@ class Run:
     template_id: int | None = None  # the template the launcher started from; the name stays if it is deleted
     template_name: str = ""
     template_changes: list[str] = field(default_factory=list)  # "Skip tags: none → nginx"
+    prompt_vars: dict = field(default_factory=dict)  # answers to the roles' prompts; secrets sealed (variables.py)
+    extra_vars: str = ""  # the free-form YAML, as typed
 
     @property
     def finished(self) -> bool:
@@ -161,6 +165,8 @@ def _row(r: sqlite3.Row) -> Run:
         template_id=r["template_id"],
         template_name=r["template_name"],
         template_changes=json.loads(r["template_changes"]),
+        prompt_vars=json.loads(r["prompt_vars"]),
+        extra_vars=r["extra_vars"],
     )
 
 
@@ -201,17 +207,18 @@ class RunStore:
                credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0,
                inventory_id: int | None = None, kind: str = "playbook", module: str = "", module_args: str = "",
                become: bool = False, remote_user: str = "", template_id: int | None = None,
-               template_name: str = "", template_changes: list[str] | None = None) -> Run:
+               template_name: str = "", template_changes: list[str] | None = None,
+               prompt_vars: dict | None = None, extra_vars: str = "") -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
                 " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind,"
-                " module, module_args, become, remote_user, template_id, template_name, template_changes)"
-                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " module, module_args, become, remote_user, template_id, template_name, template_changes, prompt_vars,"
+                " extra_vars) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
                  json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
                  inventory_id, kind, module, module_args, int(become), remote_user, template_id, template_name,
-                 json.dumps(template_changes or [])),
+                 json.dumps(template_changes or []), json.dumps(prompt_vars or {}), extra_vars),
             )
             self._db.commit()
             return self.get(cur.lastrowid)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import re
 
@@ -35,7 +36,7 @@ from .repos import git as gitsync
 from .repos.store import Invalid as RepoInvalid
 from .repos.store import RepoStore
 from .repos.workspace import Workspace
-from .runs import playbooks
+from .runs import playbooks, variables
 from .runs.executor import Executor
 from .runs.schedules import Invalid as ScheduleInvalid
 from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
@@ -159,6 +160,12 @@ def rerun_url(run: Run, mode: str) -> str:
          "template": "" if run.template_id is None else str(run.template_id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
+    # Secret answers never go in a link: a template keeps its own, anything else is typed again.
+    plain = {k: v for k, v in run.prompt_vars.items() if not (isinstance(v, dict) and variables.SECRET in v)}
+    if plain:
+        q["vars"] = json.dumps(plain, separators=(",", ":"))
+    if run.extra_vars.strip():
+        q["extra_vars"] = run.extra_vars
     return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
 
 
@@ -236,6 +243,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pb_label=run_label,
         command_url=command_url,
         static_url=static_url,
+        shown_vars=variables.shown,
     )
     env.filters["clock"] = lambda dt: dt.astimezone().strftime("%H:%M:%S") if dt else ""
     env.filters["stamp"] = lambda dt: dt.astimezone().isoformat(timespec="seconds") if dt else ""
@@ -418,7 +426,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
+            "extra_vars": "\n".join(line.rstrip() for line in str(src.get("extra_vars") or "").splitlines()).strip("\n"),
+            "prompt_vars": stored_vars(src),
+            "var_raw": variables.raw_fields(src),
         }
+
+    def stored_vars(src) -> dict:
+        """Prompt values a link carries as JSON (Run again, Save as template…). Never secrets."""
+        try:
+            data = json.loads(src.get("vars") or "{}")
+        except ValueError:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {k: v for k, v in data.items() if variables.VAR_NAME.match(str(k))
+                and not (isinstance(v, dict) and variables.SECRET in v)}
+
+    def prompts_for(key: str) -> tuple[list, list]:
+        """The playbook's prompts, from its roles' argument specs, and the roles that declare none."""
+        pb = ws.find(key) if key else None
+        if not pb:
+            return [], []
+        return variables.discover(pb.repo.path / pb.path, pb.repo.path)
+
+    def form_answers(form: dict, prompts: list) -> dict:
+        """What the prompt fields show: the fields as sent, or else the stored values (template, schedule, link)."""
+        if form.get("var_raw"):
+            return variables.read_answers(form["var_raw"], prompts)
+        return variables.answers_from_values(prompts, form.get("prompt_vars") or {})
+
+    def vars_for(form: dict, kept: dict) -> tuple[dict, str | None]:
+        """The prompt values to store, or what is wrong with the variables. `kept` holds the secrets an empty
+        secret field keeps."""
+        prompts, _ = prompts_for(form["playbook"])
+        vals, errors = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept)
+        if errors:
+            return {}, next(iter(errors.values()))
+        free, problem = variables.check_freeform(form["extra_vars"])
+        if problem:
+            return {}, problem
+        both = sorted(set(free) & set(vals))
+        if both:
+            return {}, f"{both[0]} is set in its own field and in Extra variables. Keep one."
+        if form["remote_user"] and {"ansible_user", "ansible_ssh_user"} & set(free):
+            return {}, "Extra variables set ansible_user, and so does Connect as. Keep one."
+        return vals, None
 
     def shown(key: str, value) -> str:
         """A launcher field's value, as the template changes list shows it."""
@@ -439,6 +491,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return value or "playbook’s hosts"
         if key == "remote_user":
             return value or "inventory’s user"
+        if key == "extra_vars":
+            text = " ".join(str(value or "").split())
+            return (text[:40] + "…" if len(text) > 41 else text) or "none"
         return value or "none"
 
     def template_changes(form: dict) -> tuple[Any, list[dict]]:
@@ -449,8 +504,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         base = t.as_form()
         base["playbook"] = ws.canonical(base["playbook"])
         labels = dict(TEMPLATE_FIELDS)
-        return t, [{"label": labels[k] or KINDS[k], "was": shown(k, base.get(k)), "now": shown(k, form.get(k))}
-                   for k in changed_fields(form, base)]
+        out = [{"label": labels[k] or KINDS[k], "was": shown(k, base.get(k)), "now": shown(k, form.get(k))}
+               for k in changed_fields(form, base)]
+        prompts, _ = prompts_for(form["playbook"])
+        now_vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, t.prompt_vars)
+        return t, out + variables.changes(now_vals, t.prompt_vars, prompts)
 
     def form_context(form: dict) -> dict:
         """What the launcher and the schedule form both need: playbooks, live host preview, credentials."""
@@ -463,8 +521,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pv = preview_for(form["playbook"], form["target"], inv_repo)
         inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
         template, changes = template_changes(form)
+        prompts, bare_roles = prompts_for(form["playbook"])
+        form["answers"] = form_answers(form, prompts)
+        kept = form.get("kept") if form.get("kept") is not None else (template.prompt_vars if template else {})
         return dict(
-            from_template=template, changes=changes,
+            from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
+            saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
             playbook_repos=ws.playbook_repos(), inventory_repo=inv_repo, inventories=ws.inventory_repos(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
@@ -507,7 +569,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         t = run_templates.get(int(form["template"])) if form["template"] else None
         if t:
             given = {k for k in q if k != "template"}
-            form = {**t.as_form(), **{k: v for k, v in form.items() if k in given}, "template": str(t.id)}
+            asked = form
+            form = {**t.as_form(), **{k: v for k, v in asked.items() if k in given}, "template": str(t.id),
+                    "var_raw": asked["var_raw"]}
+            if "vars" in given:
+                form["prompt_vars"] = asked["prompt_vars"]
             if "diff" in given:
                 form["diff"] = q.get("diff") == "1"
             return launcher(request, form)
@@ -530,6 +596,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       from_template=template, changes=changes,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
+
+    @app.get("/runs/vars", response_class=HTMLResponse)
+    def run_vars(request: Request):
+        """The prompt fields, redrawn when the playbook changes. Answers to names both playbooks share stay."""
+        q = request.query_params
+        form = read_form(q)
+        form["playbook"] = ws.canonical(form["playbook"])
+        prompts, bare_roles = prompts_for(form["playbook"])
+        form["answers"] = form_answers(form, prompts)
+        kind, _, ref = str(q.get("kept_from") or "").partition(":")
+        source = (run_templates.get(int(ref)) if kind == "template" else schedules.get(int(ref)) if kind == "schedule"
+                  else None) if ref.isdigit() else None
+        if source is None and form["template"]:
+            source = run_templates.get(int(form["template"]))
+        kept = source.prompt_vars if source else {}
+        return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles,
+                      kept_from=q.get("kept_from", ""),
+                      saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v})
 
     @app.post("/runs")
     async def start_run(request: Request):
@@ -558,6 +642,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             return launcher(request, form, problem, 400)
         template, changes = template_changes(form)
+        prompt_vals, problem = vars_for(form, template.prompt_vars if template else {})
+        if problem:
+            return launcher(request, form, problem, 400)
         run = store.create(
             playbook=ws.find(form["playbook"]).path, repo_id=ws.find(form["playbook"]).repo.id,
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
@@ -566,6 +653,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             inventory_id=inv_repo.id, remote_user=form["remote_user"],
             template_id=template.id if template else None, template_name=template.name if template else "",
             template_changes=[f"{c['label']}: {c['was']} → {c['now']}" for c in changes],
+            prompt_vars=prompt_vals, extra_vars=form["extra_vars"],
         )
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
@@ -671,7 +759,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         t = run_templates.get(tid)
         if not t:
             return RedirectResponse("/runs/templates", status_code=303)
-        form = {**t.as_form(), "name": t.name, "note": t.note}
+        form = {**t.as_form(), "name": t.name, "note": t.note, "kept": t.prompt_vars}
         return template_page(request, form, t, flash="Saved." if request.query_params.get("saved") else None)
 
     async def save_template(request: Request, tid: int | None):
@@ -682,6 +770,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tmpl = run_templates.get(tid) if tid else None
         if tid and not tmpl:
             return RedirectResponse("/runs/templates", status_code=303)
+        form["kept"] = tmpl.prompt_vars if tmpl else {}
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return template_page(request, form, tmpl, form_error="Choose one of the playbooks listed.", status=400)
@@ -692,8 +781,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return template_page(request, form, tmpl, form_error="Choose the inventory to run against.", status=400)
+        prompt_vals, problem = vars_for(form, form["kept"])
+        if problem:
+            return template_page(request, form, tmpl, form_error=problem, status=400)
         pb = ws.find(form["playbook"])
-        form.update(playbook_path=pb.path, repo_id=pb.repo.id, inventory_id=inv_repo.id)
+        form.update(playbook_path=pb.path, repo_id=pb.repo.id, inventory_id=inv_repo.id, prompt_vars=prompt_vals)
         try:
             saved = run_templates.save(form, auth.display_name(auth.current_user(request)), tid)
         except TemplateInvalid as e:
@@ -983,7 +1075,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
                 "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify,
                 "remote_user": sched.remote_user, "template_name": sched.template_name,
-                "inventory": "" if sched.inventory_id is None else str(sched.inventory_id)}
+                "inventory": "" if sched.inventory_id is None else str(sched.inventory_id),
+                "prompt_vars": sched.prompt_vars, "extra_vars": sched.extra_vars, "kept": sched.prompt_vars}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
         return form
 
@@ -1014,8 +1107,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         t = run_templates.get(int(form["template"])) if form["template"] else None
         if t:  # the template, then whatever the link says (Schedule this… on a run that changed it)
             given = {k for k in q if k != "template"}
-            form = {**t.as_form(), **{k: v for k, v in form.items() if k in given}}
+            asked = form
+            form = {**t.as_form(), **{k: v for k, v in asked.items() if k in given}, "var_raw": asked["var_raw"]}
+            if "vars" in given:
+                form["prompt_vars"] = asked["prompt_vars"]
             form["diff"] = q.get("diff") == "1" if "diff" in given else t.diff
+            form["copy_from"], form["kept"] = str(t.id), t.prompt_vars  # its secrets come along
         else:
             default_credentials(form, q)
         form["template"] = ""
@@ -1040,6 +1137,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         sched = schedules.get(sid) if sid else None
         if sid and not sched:
             return RedirectResponse("/schedules", status_code=303)
+        copy_from = str(data.get("copy_from") or "")
+        source = sched or (run_templates.get(int(copy_from)) if copy_from.isdigit() else None)
+        form["copy_from"] = copy_from if not sched else ""
+        form["kept"] = source.prompt_vars if source else {}
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
@@ -1056,6 +1157,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if pv.error or not pv.hosts:
             return schedule_page(request, form, sched, status=400,
                                  form_error="The targets match no hosts, so every run would fail. Change them first.")
+        prompt_vals, problem = vars_for(form, form["kept"])
+        if problem:
+            return schedule_page(request, form, sched, status=400, form_error=problem)
+        form["prompt_vars"] = prompt_vals
         form["inventory_id"] = inv_repo.id
         form["enabled"] = sched.enabled if sched else True
         chosen_pb = ws.find(form["playbook"])

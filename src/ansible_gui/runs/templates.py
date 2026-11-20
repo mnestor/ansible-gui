@@ -7,7 +7,7 @@ template it came from and what was changed. A schedule made from a template copi
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from ..credentials.store import NAME_RE, PER_RUN
@@ -30,6 +30,8 @@ create table if not exists templates (
   verbosity integer not null default 0,
   credentials text not null default '{}',
   remote_user text not null default '',
+  prompt_vars text not null default '{}',
+  extra_vars text not null default '',
   created_at text not null,
   updated_at text not null,
   updated_by text not null default ''
@@ -61,6 +63,8 @@ class Template:
     remote_user: str
     updated_at: datetime
     updated_by: str
+    prompt_vars: dict = field(default_factory=dict)  # secrets sealed (variables.py)
+    extra_vars: str = ""
 
     @property
     def mode(self) -> str:
@@ -72,6 +76,7 @@ class Template:
                 "mode": "check" if self.check_mode else "apply", "diff": self.diff, "tags": self.tags,
                 "skip_tags": self.skip_tags, "verbosity": self.verbosity, "remote_user": self.remote_user,
                 "inventory": "" if self.inventory_id is None else str(self.inventory_id),
+                "prompt_vars": dict(self.prompt_vars), "extra_vars": self.extra_vars,
                 **{k: str(self.credentials.get(k, "")) for k in PER_RUN}}
 
 
@@ -82,7 +87,8 @@ def _tags(text: str) -> list[str]:
 # The launcher fields a run can change from its template, in the order the launcher shows them.
 FIELDS = [("playbook", "Playbook"), ("inventory", "Inventory"), ("target", "Targets"), ("mode", "Mode"),
           ("diff", "Show diffs"), ("remote_user", "Connect as"), *((k, None) for k in PER_RUN),
-          ("tags", "Only tags"), ("skip_tags", "Skip tags"), ("verbosity", "Verbosity")]
+          ("tags", "Only tags"), ("skip_tags", "Skip tags"), ("verbosity", "Verbosity"),
+          ("extra_vars", "Extra variables")]
 
 
 def changed_fields(form: dict, template: dict) -> list[str]:
@@ -106,13 +112,19 @@ class TemplateStore:
         self._db = Database(data_dir / "ansible-gui.db")
         self._lock = self._db.lock
         self._db.executescript(SCHEMA)
+        have = {r["name"] for r in self._db.execute("pragma table_info(templates)")}
+        if "prompt_vars" not in have:
+            self._db.execute("alter table templates add column prompt_vars text not null default '{}'")
+        if "extra_vars" not in have:
+            self._db.execute("alter table templates add column extra_vars text not null default ''")
 
     def _row(self, r) -> Template:
         return Template(id=r["id"], name=r["name"], note=r["note"], playbook=r["playbook"], repo_id=r["repo_id"],
                         inventory_id=r["inventory_id"], target=r["target"], tags=r["tags"], skip_tags=r["skip_tags"],
                         check_mode=bool(r["check_mode"]), diff=bool(r["diff"]), verbosity=r["verbosity"],
                         credentials=json.loads(r["credentials"]), remote_user=r["remote_user"],
-                        updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"])
+                        updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
+                        prompt_vars=json.loads(r["prompt_vars"]), extra_vars=r["extra_vars"])
 
     def all(self) -> list[Template]:
         return [self._row(r) for r in self._db.execute("select * from templates order by lower(name)")]
@@ -139,16 +151,18 @@ class TemplateStore:
         creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
         values = (name, note, form["playbook_path"], form["repo_id"], form.get("inventory_id"), form["target"],
                   form["tags"], form["skip_tags"], int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"],
-                  json.dumps(creds), form.get("remote_user", ""), now(), user)
+                  json.dumps(creds), form.get("remote_user", ""), json.dumps(form.get("prompt_vars") or {}),
+                  form.get("extra_vars", ""), now(), user)
         with self._lock:
             if tid:
                 self._db.execute("update templates set name=?, note=?, playbook=?, repo_id=?, inventory_id=?, target=?,"
                                  " tags=?, skip_tags=?, check_mode=?, diff=?, verbosity=?, credentials=?, remote_user=?,"
-                                 " updated_at=?, updated_by=? where id=?", (*values, tid))
+                                 " prompt_vars=?, extra_vars=?, updated_at=?, updated_by=? where id=?", (*values, tid))
             else:
                 cur = self._db.execute("insert into templates (name, note, playbook, repo_id, inventory_id, target, tags,"
-                                       " skip_tags, check_mode, diff, verbosity, credentials, remote_user, updated_at,"
-                                       " updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                       " skip_tags, check_mode, diff, verbosity, credentials, remote_user, prompt_vars,"
+                                       " extra_vars, updated_at, updated_by, created_at)"
+                                       " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                        (*values, now()))
                 tid = cur.lastrowid
             self._db.commit()

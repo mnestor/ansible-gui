@@ -58,12 +58,16 @@
     <label class="check"><input type="checkbox" name="diff" value="1" {% if form.diff %}checked{% endif %}> Show diffs</label>
   </fieldset>
 
+  {% set kept_from = ("template:" ~ tmpl.id) if tmpl else (("schedule:" ~ sched.id) if sched else (("template:" ~ form.copy_from) if form.copy_from else "")) %}
+  {% if form.copy_from %}<input type="hidden" name="copy_from" value="{{ form.copy_from }}">{% endif %}
+  {% include "_run_vars.html" %}
+
   {% set picked = [] %}
   {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
   {% set missing = [] %}
   {% for kind, items in cred_choices.items() %}{% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}{% set _ = missing.append(kinds[kind] | lcfirst) %}{% endif %}{% endfor %}
   {% if missing %}<p class="banner banner-warn" role="alert">The {{ missing | join(" and ") }} picked here was deleted. Pick another under More options, or None.</p>{% endif %}
-  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or form.remote_user or missing %}open{% endif %}>
+  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or form.remote_user or form.extra_vars or missing %}open{% endif %}>
     <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
     <div class="more-body">
       <fieldset class="field">
@@ -96,6 +100,12 @@
         <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions">
       </div>
       <datalist id="tag-suggestions"></datalist>
+      <div class="field">
+        <label class="label" for="extra_vars">Extra variables <span class="optional">(optional)</span></label>
+        <textarea id="extra_vars" class="input" name="extra_vars" rows="4" spellcheck="false" autocapitalize="off"
+                  placeholder="build_host: web3&#10;packages: [git, curl]" aria-describedby="extra_vars-help">{{ form.extra_vars }}</textarea>
+        <p class="help" id="extra_vars-help">YAML, one <span class="mono">name: value</span> per line, sent with <span class="mono">-e</span>: it beats every other source, the inventory included. Jinja works here. Saved as typed, so keep secrets in a secret field or a credential.{% if bare_roles and not prompts %} To get a field per variable instead, give the role a <span class="mono">meta/argument_specs.yml</span>.{% endif %}</p>
+      </div>
       <fieldset class="field">
         <legend class="label">Verbosity</legend>
         <div class="segmented segmented-inline">

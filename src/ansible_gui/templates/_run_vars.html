@@ -1,0 +1,67 @@
+{# The playbook's prompts, from its roles' meta/argument_specs.yml. Redrawn when the playbook changes. #}
+<div id="run-vars" hx-get="/runs/vars" hx-trigger="change[target.name=='playbook'] from:closest form" hx-target="this"
+     hx-swap="outerHTML" hx-include="closest form" hx-push-url="false">
+  <input type="hidden" name="kept_from" value="{{ kept_from }}">
+  {% if prompts %}
+  <fieldset class="field prompt-vars">
+    <legend class="label">Variables</legend>
+    <p class="help">Declared by the roles in <span class="mono">meta/argument_specs.yml</span>. Leave a field empty to keep the value from the inventory or the role’s defaults; anything you fill in overrides it on every host.</p>
+    {% for role, group in prompts | groupby("role") %}
+    <div class="prompt-role">
+      {% if prompts | map(attribute="role") | unique | list | length > 1 %}<p class="prompt-role-name mono">{{ role }}</p>{% endif %}
+      {% for p in group %}
+      {% set a = form.answers.get(p.name) %}
+      {% set id = "var-" ~ p.name %}
+      <div class="field">
+        {% if p.kind == "multichoice" %}
+        <fieldset class="prompt-group" aria-describedby="{{ id }}-help">
+          <legend class="label">{{ p.label }} <span class="mono prompt-name">{{ p.name }}</span>{% if p.required %} <span class="optional">(required by the role)</span>{% endif %}</legend>
+          <input type="hidden" name="{{ p.field }}" value="">
+          <div class="choices choices-inline">
+            {% for c in p.choices %}<label class="check"><input type="checkbox" name="{{ p.field }}" value="{{ c }}" {% if a and c | string in a %}checked{% endif %}> <span class="mono">{{ c }}</span></label>{% endfor %}
+          </div>
+        </fieldset>
+        {% else %}
+        <label class="label" for="{{ id }}">{{ p.label }} <span class="mono prompt-name">{{ p.name }}</span>{% if p.required %} <span class="optional">(required by the role)</span>{% endif %}</label>
+        {% if p.kind == "bool" %}
+          <select id="{{ id }}" class="input input-small" name="{{ p.field }}" aria-describedby="{{ id }}-help">
+            <option value="">{{ "Not set" if not p.has_default else "Role default (" ~ p.default_text ~ ")" }}</option>
+            <option value="true" {% if a == "true" %}selected{% endif %}>Yes</option>
+            <option value="false" {% if a == "false" %}selected{% endif %}>No</option>
+          </select>
+        {% elif p.kind == "choice" %}
+          <select id="{{ id }}" class="input input-small mono" name="{{ p.field }}" aria-describedby="{{ id }}-help">
+            <option value="">{{ "Not set" if not p.has_default else "Role default (" ~ p.default_text ~ ")" }}</option>
+            {% for c in p.choices %}<option value="{{ c }}" {% if a == c | string %}selected{% endif %}>{{ c }}</option>{% endfor %}
+          </select>
+        {% elif p.kind in ("list", "dict", "multiline") %}
+          <textarea id="{{ id }}" class="input" name="{{ p.field }}" rows="3" spellcheck="false" autocapitalize="off"
+                    placeholder="{{ p.default_text }}" aria-describedby="{{ id }}-help">{{ a or "" }}</textarea>
+        {% elif p.kind == "secret" %}
+          <div class="reveal">
+            <input id="{{ id }}" class="input input-small" type="password" name="{{ p.field }}" autocomplete="new-password"
+                   aria-describedby="{{ id }}-help">
+            <button class="btn btn-quiet" type="button" data-reveal="{{ id }}" aria-pressed="false">Show value</button>
+          </div>
+          {% if p.name in saved_secrets %}<label class="check"><input type="checkbox" name="{{ p.field }}.clear" value="1"> Remove the saved value</label>{% endif %}
+        {% else %}
+          <input id="{{ id }}" class="input input-small mono" name="{{ p.field }}" value="{{ a or '' }}" autocomplete="off" spellcheck="false" autocapitalize="off"
+                 {% if p.kind == "int" %}inputmode="numeric" pattern="-?[0-9]+"{% elif p.kind == "float" %}inputmode="decimal"{% endif %}
+                 placeholder="{{ p.default_text }}" aria-describedby="{{ id }}-help">
+        {% endif %}
+        {% endif %}
+        <p class="help" id="{{ id }}-help">
+          {%- if p.help %}{{ p.help }} {% endif -%}
+          {%- if p.kind == "secret" %}{% if p.name in saved_secrets %}Saved, encrypted. Leave empty to keep it.{% else %}Stored encrypted; never shown again.{% endif %}
+          {%- elif p.kind == "list" %}One per line.{% if p.has_default %} Role default: <span class="mono">{{ p.default_text }}</span>.{% endif %}
+          {%- elif p.kind == "dict" %}YAML <span class="mono">key: value</span> lines.
+          {%- elif p.kind in ("text", "int", "float") and p.has_default %}Role default: <span class="mono">{{ p.default_text }}</span>.
+          {%- elif p.kind == "multichoice" %}Tick none to keep the role’s value.{% endif -%}
+        </p>
+      </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </fieldset>
+  {% endif %}
+</div>

@@ -20,7 +20,7 @@ from ..credentials import ssh
 from ..credentials.store import CredentialStore
 from ..facts import GATHER_ACTIONS
 from ..wipe import wipe_tree
-from . import playbooks
+from . import playbooks, variables
 from .store import Run, RunStore, host_result, now
 
 log = logging.getLogger(__name__)
@@ -302,6 +302,19 @@ class Executor:
         if run.diff:
             cmdline.append("--diff")
         cmdline += prepared.cmdline
+        # As files, not arguments: secret answers stay out of ps and the log. Free-form first, so a prompt
+        # answer wins over it, and Connect as over both.
+        if run.extra_vars.strip():
+            cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "extra-vars.yml", run.extra_vars))]
+        if run.prompt_vars:
+            try:
+                plain = variables.unseal(run.prompt_vars, self.creds.fernet)
+            except ValueError as e:
+                prepared.cleanup()
+                return stop(f"Didn’t start: the secret {e} can’t be decrypted: the secret key changed since it was "
+                            "saved. Enter it again and run again.")
+            text = variables.vars_file_text(plain)
+            cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "prompt-vars.yml", text))]
         if run.remote_user:
             # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
             cmdline += ["-e", json.dumps({"ansible_user": run.remote_user, "ansible_ssh_user": run.remote_user})]

@@ -101,6 +101,11 @@ class CredentialStore:
     def default(self, kind: str) -> Credential | None:
         return next((c for c in self.by_kind(kind) if c.is_default), None)
 
+    @property
+    def fernet(self) -> Fernet:
+        """The cipher credentials are stored with; run variables marked secret use it too."""
+        return self._fernet
+
     def secret(self, cred: Credential) -> dict:
         """The decrypted value. Only the executor calls this, right before a run."""
         return json.loads(self._fernet.decrypt(cred._secret))
