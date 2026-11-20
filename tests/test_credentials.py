@@ -113,8 +113,9 @@ def test_secret_values_never_render(app, keypair):
                follow_redirects=False)
     assert r.status_code == 303
     c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw-visible?"})
-    page = c.get("/credentials").text
+    page = c.get("/credentials/secrets").text
     assert "PRIVATE KEY" not in page and "pw-visible?" not in page and "SHA256:" in page
+    assert '<td>Become password</td>' in page and '<td>SSH key</td>' in page
     cred = app.state.creds.by_kind("become_password")[0]
     assert "pw-visible?" not in c.get(f"/credentials/{cred.id}").text
     bad = c.post("/credentials", data={"kind": "become_password", "name": "bad name!", "password": "pw-again"})
@@ -222,7 +223,7 @@ def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
 
     app = create_app(Settings(**settings, secret_key="b" * 40))
     c = TestClient(app)
-    assert "can’t decrypt" in c.get("/credentials").text
+    assert "can’t decrypt" in c.get("/credentials/secrets").text
     cred = app.state.creds.by_kind("ssh_key")[0]
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "check", "expected": ["box1"],
                               "ssh_key": str(cred.id)}, follow_redirects=False)
@@ -281,10 +282,10 @@ def test_known_hosts_names_the_bad_line(host_line, bad, says):
 
 def test_known_hosts_editor(app, host_line):
     c = TestClient(app)
-    page = c.get("/credentials").text
+    page = c.get("/credentials/ssh").text
     assert "A new host’s key is added here on its first connection" in page
     r = c.post("/credentials/known-hosts", data={"known_hosts": f"git.lab {host_line}\n"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/credentials?hosts=1#known-hosts"
+    assert r.status_code == 303 and r.headers["location"] == "/credentials/ssh?hosts=1#known-hosts"
     path = app.state.store.data_dir / "ssh" / "known_hosts"
     assert path.read_text() == f"git.lab {host_line}\n"
     assert "Saved 1 host key." in c.get(r.headers["location"]).text
@@ -298,7 +299,7 @@ def test_known_hosts_editor(app, host_line):
 def test_credentials_page_explains_the_other_modes(tmp_path, mode, says):
     app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
                               secret_key="s" * 40, ssh_host_key_checking=mode))
-    assert says in TestClient(app).get("/credentials").text
+    assert says in TestClient(app).get("/credentials/ssh").text
 
 
 @needs_ansible
@@ -347,3 +348,20 @@ def test_an_account_needs_something_and_a_certificate_needs_its_key(app, keypair
     assert lone.status_code == 400 and "private key this certificate is for" in lone.text
     ok = c.post("/credentials", data={"kind": "account", "name": "useronly", "username": "ansible"}, follow_redirects=False)
     assert ok.status_code == 303
+
+
+def test_accounts_secrets_and_ssh_settings_are_separate_pages(app):
+    c = TestClient(app)
+    c.post("/credentials", data={"kind": "account", "name": "admin", "username": "deploy"})
+    r = c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "x"}, follow_redirects=False)
+    assert r.headers["location"].startswith("/credentials/secrets?saved=")
+    accounts = c.get("/credentials").text
+    assert ">admin</a>" in accounts and '<td class="mono">deploy</td>' in accounts and ">v</a>" not in accounts
+    assert '<a class="rail-item rail-sub" href="/credentials" aria-current="page">' in accounts
+    secrets = c.get("/credentials/secrets").text
+    assert ">v</a>" in secrets and ">admin</a>" not in secrets and "<td>Vault password</td>" in secrets
+    acct = app.state.creds.by_kind("account")[0]
+    form = c.get(f"/credentials/{acct.id}").text
+    assert '<a class="crumb" href="/credentials">← Accounts</a>' in form
+    assert '<a class="rail-item rail-sub" href="/credentials" aria-current="page">' in form
+    assert "Known hosts" in c.get("/credentials/ssh").text

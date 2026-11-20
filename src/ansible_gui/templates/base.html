@@ -23,12 +23,16 @@
                   ("repos", "/repos", "Repositories"), ("credentials", "/credentials", "Credentials")] %}
   {% set path = request.url.path if request is defined else "" %}
   {% set run_subs = [("/runs/playbooks", "Run playbook"), ("/runs/command", "Run command"), ("/runs/templates", "Templates"), ("/schedules", "Schedules")] %}
+  {% set cred_subs = [("/credentials", "Accounts"), ("/credentials/secrets", "Secrets"), ("/credentials/ssh", "SSH settings")] %}
   {% set sub_path = "/runs/playbooks" if path == "/runs/new" else path %}{# the launcher belongs to Run playbook #}
   {% set sub_here = run_subs | selectattr(0, "in", [sub_path, sub_path.rsplit("/", 1)[0]]) | list %}
+  {# A credential's own page belongs to its list: accounts or secrets. #}
+  {% set cred_here = cred_subs | selectattr(0, "equalto", path) | list if path in ("/credentials", "/credentials/secrets", "/credentials/ssh") else
+     ([cred_subs[0]] if (kind is defined and kind == "account") else [cred_subs[1]]) if path.startswith("/credentials/") else [] %}
   <nav class="navrail" aria-label="Sections">
     {% for key, href, label in items %}
       {% set here = section == key or (key == "runs" and (sub_here or section == "schedules")) %}
-      <a class="rail-item" href="{{ href }}" {% if here %}aria-current="{{ 'true' if key == 'runs' and sub_here else 'page' }}"{% endif %}>
+      <a class="rail-item" href="{{ href }}" {% if here %}aria-current="{{ 'true' if (key == 'runs' and sub_here) or (key == 'credentials' and cred_here) else 'page' }}"{% endif %}>
         {{ icon(key) }}<span class="rail-label">{{ label }}</span>
         {% if key == "runs" and active_runs %}<span class="visually-hidden">, {{ active_runs }} running</span><span class="badge badge-neutral rail-count tabular" aria-hidden="true">{{ "99+" if active_runs > 99 else active_runs }}</span>{% endif %}
         <span class="rail-tip" aria-hidden="true">{{ label }}</span>
@@ -36,6 +40,10 @@
       {% if key == "runs" %}
         {% for sub_href, sub_label in run_subs %}
           <a class="rail-item rail-sub" href="{{ sub_href }}" {% if sub_here and sub_here[0][0] == sub_href %}aria-current="page"{% endif %}><span class="rail-label">{{ sub_label }}</span></a>
+        {% endfor %}
+      {% elif key == "credentials" %}
+        {% for sub_href, sub_label in cred_subs %}
+          <a class="rail-item rail-sub" href="{{ sub_href }}" {% if cred_here and cred_here[0][0] == sub_href %}aria-current="page"{% endif %}><span class="rail-label">{{ sub_label }}</span></a>
         {% endfor %}
       {% endif %}
     {% endfor %}

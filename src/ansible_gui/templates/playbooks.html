@@ -9,7 +9,7 @@
 </header>
 
 {% if not playbooks %}
-  <p class="empty">No playbooks found in <span class="mono">{{ settings.playbook_dir }}</span> under <span class="mono">{{ settings.project_dir }}</span>. A playbook is a YAML file whose top level is a list of plays with <span class="mono">hosts:</span>. Set <span class="mono">ANSIBLE_GUI_PLAYBOOK_DIR</span> if they live elsewhere, or add a <a href="/repos">repository</a>.</p>
+  <p class="empty"><span>No playbooks found in <span class="mono">{{ settings.playbook_dir }}</span> under <span class="mono">{{ settings.project_dir }}</span>. A playbook is a YAML file whose top level is a list of plays with <span class="mono">hosts:</span>. Set <span class="mono">ANSIBLE_GUI_PLAYBOOK_DIR</span> if they live elsewhere.</span> <a href="/repos">Add a repository</a></p>
 {% else %}
 <div class="table-region">
 <table class="history playbooks">

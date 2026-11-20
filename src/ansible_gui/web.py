@@ -234,6 +234,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return text if len(text) <= 60 else text[:59] + "…"
         return ws.label(x.repo_id, x.playbook)
     env.globals.update(
+        cred_list=lambda kind: "/credentials" if kind == "account" else "/credentials/secrets",
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
         commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
@@ -1027,30 +1028,53 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         })
         return panel
 
-    def credentials_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
-                         status: int = 200) -> HTMLResponse:
+    def credentials_page(request: Request, view: str = "accounts") -> HTMLResponse:
+        q = request.query_params
+        everything = creds.all()
+        if view == "accounts":
+            items = [c for c in everything if c.kind == "account"]
+        else:
+            order = list(KINDS)
+            items = sorted((c for c in everything if c.kind != "account"),
+                           key=lambda c: (order.index(c.kind), c.name.lower()))
+        used_by_repo: dict[int, list] = {}
+        for r in repos.all():
+            if r.ssh_key_id:
+                used_by_repo.setdefault(r.ssh_key_id, []).append(r)
+        return render(request, "credentials.html", section="credentials", view=view, items=items, kinds=KINDS,
+                      token_repos=used_by_repo, saved=q.get("saved"), deleted=q.get("deleted"),
+                      key_file=keys.generated_at,
+                      legacy=any(c.kind in ("ssh_key", "become_password") for c in everything))
+
+    def ssh_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
+                 status: int = 200) -> HTMLResponse:
         q = request.query_params
         host_keys = {"mode": settings.ssh_host_key_checking, "count": sshtools.known_hosts_count(settings.data_dir),
                      "path": sshtools.known_hosts_path(settings.data_dir), "error": hosts_error,
                      "text": sshtools.read_known_hosts(settings.data_dir) if hosts_text is None else hosts_text,
                      "saved": q.get("hosts") if q.get("hosts", "").isdigit() else None}
-        return render(request, "credentials.html", status, section="credentials",
-                      groups={kind: creds.by_kind(kind) for kind in KINDS}, kinds=KINDS,
-                      ssh_panel=ssh_config_panel(), host_keys=host_keys, saved=q.get("saved"),
-                      deleted=q.get("deleted"), key_file=keys.generated_at)
+        return render(request, "credentials_ssh.html", status, section="credentials",
+                      ssh_panel=ssh_config_panel(), host_keys=host_keys)
 
     @app.get("/credentials", response_class=HTMLResponse)
     def credentials(request: Request):
         return credentials_page(request)
 
+    @app.get("/credentials/secrets", response_class=HTMLResponse)
+    def credential_secrets(request: Request):
+        return credentials_page(request, "secrets")
+
+    @app.get("/credentials/ssh", response_class=HTMLResponse)
+    def credential_ssh(request: Request):
+        return ssh_page(request)
     @app.post("/credentials/known-hosts")
     async def save_known_hosts(request: Request):
         text = str((await request.form()).get("known_hosts", ""))
         try:
             count = sshtools.save_known_hosts(settings.data_dir, text)
         except sshtools.InvalidKey as e:
-            return credentials_page(request, hosts_text=text, hosts_error=str(e), status=400)
-        return RedirectResponse(f"/credentials?hosts={count}#known-hosts", status_code=303)
+            return ssh_page(request, hosts_text=text, hosts_error=str(e), status=400)
+        return RedirectResponse(f"/credentials/ssh?hosts={count}#known-hosts", status_code=303)
 
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
@@ -1074,6 +1098,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
                                                            "env": cred.meta.get("env", ""),
                                                            "username": cred.meta.get("username", "")})
+
+    def list_for(kind: str) -> str:
+        return "/credentials" if kind == "account" else "/credentials/secrets"
 
     def copy_into_account(values: dict) -> None:
         """An account can start from a saved SSH key and become password: their values, decrypted here, unless
@@ -1109,7 +1136,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "copy_key_from": values["copy_key_from"], "copy_become_from": values["copy_become_from"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
-        return RedirectResponse(f"/credentials?saved={cred.id}", status_code=303)
+        return RedirectResponse(f"{list_for(cred.kind)}?saved={cred.id}", status_code=303)
 
     @app.post("/credentials")
     async def create_credential(request: Request):
@@ -1124,7 +1151,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cred = creds.get(cred_id)
         if cred:
             creds.delete(cred_id)
-        return RedirectResponse(f"/credentials?deleted={cred.name if cred else ''}", status_code=303)
+        return RedirectResponse(f"{list_for(cred.kind if cred else 'account')}?deleted={cred.name if cred else ''}",
+                                status_code=303)
 
 
     # --- repositories ------------------------------------------------------------
