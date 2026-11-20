@@ -17,6 +17,7 @@ from . import ssh
 from ..db import Database
 
 KINDS = {
+    "account": "Account",
     "ssh_key": "SSH key",
     "vault_password": "Vault password",
     "become_password": "Become password",
@@ -24,7 +25,10 @@ KINDS = {
     "git_token": "Git token",
 }
 # Kinds a run picks one of. Environment secrets go to every run.
-PER_RUN = ("ssh_key", "vault_password", "become_password")
+PER_RUN = ("account", "ssh_key", "vault_password", "become_password")
+# An account is who a run signs in as: a user, an SSH key (and certificate), a become password. The separate
+# SSH key and become password kinds remain for deploy keys and for runs set up before accounts.
+USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\$?$", re.I)
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
@@ -133,36 +137,28 @@ class CredentialStore:
         secret: dict = {}
 
         if kind == "ssh_key":
-            key_text = ssh.normalize(values.get("private_key", ""))
-            if key_text:
-                try:
-                    info = ssh.inspect_key(key_text)
-                    meta.update(type=info.type, fingerprint=info.fingerprint, comment=info.comment,
-                                public_key=info.public_key)
-                    secret["private_key"] = key_text
-                except ssh.InvalidKey as e:
-                    errors["private_key"] = str(e)
-            elif old.get("private_key"):
-                secret["private_key"] = old["private_key"]
-            else:
-                errors["private_key"] = "Paste the private key."
-            cert_text = values.get("certificate", "").strip()
-            if values.get("remove_certificate"):
-                meta.pop("certificate", None)
-                meta.pop("cert", None)
-            elif cert_text and "private_key" not in errors:
-                try:
-                    key = ssh.KeyInfo(public_key=meta.get("public_key", ""), fingerprint=meta.get("fingerprint", ""),
-                                      type=meta.get("type", ""))
-                    cert = ssh.inspect_cert(cert_text, key)
-                    meta["certificate"] = cert_text
-                    meta["cert"] = {"key_id": cert.key_id, "principals": cert.principals, "valid": cert.valid}
-                except ssh.InvalidKey as e:
-                    errors["certificate"] = str(e)
-            elif cert_text == "" and existing and "private_key" in secret and secret["private_key"] != old.get("private_key"):
-                # A new key makes the old certificate useless.
-                meta.pop("certificate", None)
-                meta.pop("cert", None)
+            self._key(values, old, meta, secret, errors, existing, required=True)
+        elif kind == "account":
+            login = values.get("username", "").strip()
+            if login and not USER_RE.match(login):
+                errors["username"] = "Use a login name like ansible or deploy: letters, digits, dot, dash, underscore."
+            meta["username"] = login
+            if values.get("remove_key"):
+                for k in ("type", "fingerprint", "comment", "public_key", "certificate", "cert"):
+                    meta.pop(k, None)
+                old = {k: v for k, v in old.items() if k != "private_key"}
+            self._key(values, old, meta, secret, errors, existing, required=False)
+            pw = values.get("become_password", "")
+            if values.get("remove_become"):
+                pass
+            elif pw:
+                secret["become_password"] = pw
+            elif old.get("become_password"):
+                secret["become_password"] = old["become_password"]
+            meta["has_key"] = "private_key" in secret
+            meta["has_become"] = "become_password" in secret
+            if not (login or meta["has_key"] or meta["has_become"]) and not errors:
+                errors["username"] = "Give the account at least a user, a key or a become password."
         elif kind in ("vault_password", "become_password"):
             pw = values.get("password", "")
             if pw:
@@ -221,6 +217,43 @@ class CredentialStore:
                 new_id = cur.lastrowid
             self._db.commit()
         return self.get(new_id)
+
+    @staticmethod
+    def _key(values, old, meta, secret, errors, existing, required: bool) -> None:
+        """An SSH private key and its optional certificate, for an SSH key or an account."""
+        key_text = ssh.normalize(values.get("private_key", ""))
+        if key_text:
+            try:
+                info = ssh.inspect_key(key_text)
+                meta.update(type=info.type, fingerprint=info.fingerprint, comment=info.comment,
+                            public_key=info.public_key)
+                secret["private_key"] = key_text
+            except ssh.InvalidKey as e:
+                errors["private_key"] = str(e)
+        elif old.get("private_key"):
+            secret["private_key"] = old["private_key"]
+        elif required:
+            errors["private_key"] = "Paste the private key."
+        cert_text = values.get("certificate", "").strip()
+        if values.get("remove_certificate"):
+            meta.pop("certificate", None)
+            meta.pop("cert", None)
+        elif cert_text and "private_key" not in secret:
+            if "private_key" not in errors:
+                errors["certificate"] = "Add the private key this certificate is for."
+        elif cert_text and "private_key" not in errors:
+            try:
+                key = ssh.KeyInfo(public_key=meta.get("public_key", ""), fingerprint=meta.get("fingerprint", ""),
+                                  type=meta.get("type", ""))
+                cert = ssh.inspect_cert(cert_text, key)
+                meta["certificate"] = cert_text
+                meta["cert"] = {"key_id": cert.key_id, "principals": cert.principals, "valid": cert.valid}
+            except ssh.InvalidKey as e:
+                errors["certificate"] = str(e)
+        elif cert_text == "" and existing and "private_key" in secret and secret["private_key"] != old.get("private_key"):
+            # A new key makes the old certificate useless.
+            meta.pop("certificate", None)
+            meta.pop("cert", None)
 
     def delete(self, cred_id: int) -> None:
         with self._lock:

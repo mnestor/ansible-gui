@@ -50,27 +50,20 @@
 
   <label class="check"><input type="checkbox" name="become" value="1" {% if form.become %}checked{% endif %}> Run as root <span class="help mono">--become</span></label>
 
-  {% set picked = [] %}
-  {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
+  {% from "_signin.html" import account_field, other_credentials %}
+  {{ account_field(form, cred_choices) }}
+  {% set others = [] %}
+  {% for kind, items in cred_choices.items() if kind != "account" %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = others.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
   <details class="more" {% if form.remote_user %}open{% endif %}>
-    <summary>Sign-in <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
+    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "also " ~ others | join(", ") if others else "vault, user" }}</span></summary>
     <div class="more-body">
+      {{ other_credentials(form, cred_choices, kinds, settings) }}
       <div class="field">
-        <label class="label" for="remote_user">Connect as <span class="optional">(optional)</span></label>
-        <input id="remote_user" class="input input-small mono" name="remote_user" value="{{ form.remote_user }}" autocomplete="off" spellcheck="false" autocapitalize="off" pattern="[A-Za-z0-9_][A-Za-z0-9_.@\-]{0,63}" maxlength="64" placeholder="inventory’s user" aria-describedby="remote_user-help">
-        <p class="help" id="remote_user-help">The SSH user for this run. It overrides <span class="mono">ansible_user</span> wherever it is set, in the inventory or the playbook. Leave empty to use those.</p>
+        <label class="label" for="remote_user">Connect as a different user <span class="optional">(optional)</span></label>
+        <input id="remote_user" class="input input-small mono" name="remote_user" value="{{ form.remote_user }}" autocomplete="off" spellcheck="false" autocapitalize="off" pattern="[A-Za-z0-9_][A-Za-z0-9_.@\-]{0,63}" maxlength="64" placeholder="account’s or inventory’s user" aria-describedby="remote_user-help">
+        <p class="help" id="remote_user-help">Overrides the account’s user and <span class="mono">ansible_user</span> wherever it is set. Leave empty to use those.</p>
       </div>
-      <div class="cred-grid">
-      {% for kind, items in cred_choices.items() %}
-        <label class="cred-pick"><span class="help">{{ kinds[kind] }}</span>
-          <select class="input input-small" name="{{ kind }}">
-            <option value="">{% if kind == "vault_password" and settings.vault_password_file %}Server’s vault password file{% else %}None{% endif %}</option>
-            {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
-          </select>
-        </label>
-      {% endfor %}
-      </div>
-      <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks. <a href="/credentials">Manage credentials</a></p>
+      <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.</p>
     </div>
   </details>
 

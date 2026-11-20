@@ -100,6 +100,7 @@ class Prepared:
     cmdline: list[str] = field(default_factory=list)
     passwords: dict[str, str] = field(default_factory=dict)
     agent: ssh.Agent | None = None
+    user: str = ""  # the account's login, if the run signs in with one
 
     @property
     def runner_dir(self) -> Path:
@@ -315,9 +316,10 @@ class Executor:
                             "saved. Enter it again and run again.")
             text = variables.vars_file_text(plain)
             cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "prompt-vars.yml", text))]
-        if run.remote_user:
+        user = run.remote_user or prepared.user  # Connect as overrides the account's user
+        if user:
             # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
-            cmdline += ["-e", json.dumps({"ansible_user": run.remote_user, "ansible_ssh_user": run.remote_user})]
+            cmdline += ["-e", json.dumps({"ansible_user": user, "ansible_ssh_user": user})]
 
         if adhoc:
             # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to
@@ -373,7 +375,7 @@ class Executor:
             p.runner_dir.mkdir()
             chosen = run.credentials or {}
             loaded = {}
-            for kind in ("ssh_key", "vault_password", "become_password"):
+            for kind in ("account", "ssh_key", "vault_password", "become_password"):
                 ref = chosen.get(kind)
                 if not ref:
                     continue
@@ -384,6 +386,14 @@ class Executor:
                     raise CredentialMissing(f"The credential “{cred.name}” can’t be decrypted: the secret key changed "
                                             "since it was saved. Enter its value again on the Credentials page.")
                 loaded[kind] = (cred, self.creds.secret(cred))
+            if "account" in loaded:
+                # The account stands in for a separate key and become password; one picked as well wins.
+                acct, secret = loaded.pop("account")
+                p.user = acct.meta.get("username") or ""
+                if secret.get("private_key") and "ssh_key" not in loaded:
+                    loaded["ssh_key"] = (acct, secret)
+                if secret.get("become_password") and "become_password" not in loaded:
+                    loaded["become_password"] = (acct, {"password": secret["become_password"]})
             envs = []
             for ref in chosen.get("env_secret", []):
                 cred = self.creds.get(ref["id"]) if self.creds else None

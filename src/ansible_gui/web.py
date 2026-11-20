@@ -543,8 +543,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         free, _ = variables.check_freeform(form.get("extra_vars", ""))
         for k, v in free.items():
             sets.setdefault(str(k), variables.show_value(v))
-        if form.get("remote_user"):
-            sets["ansible_user"] = sets["ansible_ssh_user"] = form["remote_user"]
+        login, _ = login_for(form)
+        if login:
+            sets["ansible_user"] = sets["ansible_ssh_user"] = login
         inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
         out = []
         for h in hosts[:first]:
@@ -579,9 +580,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         both = sorted(set(free) & set(vals))
         if both:
             return {}, f"{both[0]} is set in its own field and in Extra variables. Keep one."
-        if form["remote_user"] and {"ansible_user", "ansible_ssh_user"} & set(free):
-            return {}, "Extra variables set ansible_user, and so does Connect as. Keep one."
+        login, by = login_for(form)
+        if login and {"ansible_user", "ansible_ssh_user"} & set(free):
+            return {}, f"Extra variables set ansible_user, and so does {by}. Keep one."
         return vals, None
+
+    def login_for(form: dict) -> tuple[str, str]:
+        """The user the run signs in as, and what sets it: Connect as, else the account's user."""
+        if form.get("remote_user"):
+            return form["remote_user"], "Connect as"
+        acct = creds.get(int(form["account"])) if str(form.get("account") or "").isdigit() else None
+        if acct and acct.kind == "account" and acct.meta.get("username"):
+            return acct.meta["username"], f"the account {acct.name}"
+        return "", ""
 
     def shown(key: str, value) -> str:
         """A launcher field's value, as the template changes list shows it."""
@@ -1047,7 +1058,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         used_by_repos = [r for r in repos.all() if cred and r.ssh_key_id == cred.id] if cred else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
                       cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
-                      used_by_repos=used_by_repos)
+                      used_by_repos=used_by_repos,
+                      other_creds={k: creds.by_kind(k) for k in ("ssh_key", "become_password")})
 
     @app.get("/credentials/new", response_class=HTMLResponse)
     def new_credential(request: Request, kind: str = "ssh_key"):
@@ -1063,11 +1075,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                            "env": cred.meta.get("env", ""),
                                                            "username": cred.meta.get("username", "")})
 
+    def copy_into_account(values: dict) -> None:
+        """An account can start from a saved SSH key and become password: their values, decrypted here, unless
+        something was typed in their place."""
+        for field, kind in (("copy_key_from", "ssh_key"), ("copy_become_from", "become_password")):
+            src = creds.get(int(values[field])) if str(values[field]).isdigit() else None
+            if not src or src.kind != kind or not src.readable:
+                continue
+            secret = creds.secret(src)
+            if kind == "ssh_key" and not values["private_key"].strip():
+                values["private_key"] = secret["private_key"]
+                values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
+            elif kind == "become_password" and not values["become_password"]:
+                values["become_password"] = secret["password"]
+
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
-        values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token")}
-        values["remove_certificate"] = data.get("remove_certificate") == "1"
+        values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token",
+                                                "become_password", "copy_key_from", "copy_become_from")}
+        for flag in ("remove_certificate", "remove_key", "remove_become"):
+            values[flag] = data.get(flag) == "1"
+        if kind == "account":
+            copy_into_account(values)
         is_default = data.get("is_default") == "1"
         try:
             cred = creds.save(kind=kind, name=data.get("name", ""), values=values, is_default=is_default,
@@ -1075,7 +1105,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Invalid as e:
             # Secrets are never echoed back into the page; the form asks for them again.
             keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
-                    "certificate": values["certificate"]}
+                    "certificate": values["certificate"] if not values["copy_key_from"] else "",
+                    "copy_key_from": values["copy_key_from"], "copy_become_from": values["copy_become_from"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
         return RedirectResponse(f"/credentials?saved={cred.id}", status_code=303)

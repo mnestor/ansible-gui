@@ -120,7 +120,7 @@ def test_secret_values_never_render(app, keypair):
     bad = c.post("/credentials", data={"kind": "become_password", "name": "bad name!", "password": "pw-again"})
     assert bad.status_code == 400 and "pw-again" not in bad.text
     launcher = c.get("/runs/new").text
-    assert "signs in with lab" in launcher
+    assert "also lab" in launcher and ">No account<" in launcher
 
 
 @needs_ansible
@@ -299,3 +299,51 @@ def test_credentials_page_explains_the_other_modes(tmp_path, mode, says):
     app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
                               secret_key="s" * 40, ssh_host_key_checking=mode))
     assert says in TestClient(app).get("/credentials").text
+
+
+@needs_ansible
+def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair):
+    c = TestClient(app)
+    key, cert = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "old-key", "private_key": key, "certificate": cert})
+    c.post("/credentials", data={"kind": "become_password", "name": "old-sudo", "password": "pw-copied"})
+    c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})
+    creds = app.state.creds
+    r = c.post("/credentials", data={"kind": "account", "name": "admin", "username": "deploy", "is_default": "1",
+                                     "copy_key_from": str(creds.by_kind("ssh_key")[0].id),
+                                     "copy_become_from": str(creds.by_kind("become_password")[0].id)},
+               follow_redirects=False)
+    assert r.status_code == 303, r.text
+    acct = creds.by_kind("account")[0]
+    assert acct.meta["username"] == "deploy" and acct.meta["has_key"] and acct.meta["has_become"] and acct.meta["cert"]
+    assert creds.secret(acct)["become_password"] == "pw-copied"
+    listing = c.get("/credentials").text
+    assert "pw-copied" not in listing and "PRIVATE KEY" not in listing and "become password" in listing
+
+    launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
+    assert f'<option value="{acct.id}" selected>admin (deploy · certificate · become password), default' in launcher
+
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                              "account": str(acct.id)}, follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful", log
+    assert "ED25519-CERT" in log and "user=deploy" in log and "pw-copied" not in log
+    assert run.credentials["account"]["name"] == "admin"
+
+    # Connect as still overrides the account's user.
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                              "account": str(acct.id), "remote_user": "other"}, follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert "user=other" in app.state.store.log_path(run.id).read_text()
+
+
+def test_an_account_needs_something_and_a_certificate_needs_its_key(app, keypair):
+    c = TestClient(app)
+    _, cert = keypair
+    empty = c.post("/credentials", data={"kind": "account", "name": "nothing"})
+    assert empty.status_code == 400 and "at least a user" in empty.text
+    lone = c.post("/credentials", data={"kind": "account", "name": "certonly", "username": "u", "certificate": cert})
+    assert lone.status_code == 400 and "private key this certificate is for" in lone.text
+    ok = c.post("/credentials", data={"kind": "account", "name": "useronly", "username": "ansible"}, follow_redirects=False)
+    assert ok.status_code == 303
