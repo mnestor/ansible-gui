@@ -69,7 +69,7 @@
   {% set shown = [] %}{% set rest = [] %}
   {% for p in group %}{% if p.required or form.answers.get(p.name) or p.name in saved_secrets %}{% set _ = shown.append(p) %}{% else %}{% set _ = rest.append(p) %}{% endif %}{% endfor %}
   <div class="prompt-role">
-    <p class="prompt-role-head"><span class="mono prompt-role-name">{{ role }}</span> <span class="help">role · <span class="mono">meta/argument_specs.yml</span></span></p>
+    <p class="prompt-role-head"><span class="help">Role</span> <span class="mono prompt-role-name">{{ role }}</span> <span class="help">· <span class="mono">meta/argument_specs.yml</span></span></p>
     {% for p in shown %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}
     {% if rest %}
     <details class="more prompt-more" {% if not shown %}open{% endif %}>
