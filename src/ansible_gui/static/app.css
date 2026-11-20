@@ -414,6 +414,44 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
   .launcher-side { position: sticky; top: var(--s6); max-height: calc(100dvh - 2 * var(--s6));
     overflow-y: auto; }
 }
+/* Icon buttons: a square target (44px on touch) with the action's name as a tooltip on hover (after a beat) and focus. */
+.btn-icon { position: relative; padding: 0; width: 36px; }
+.btn-icon .icon { width: 18px; height: 18px; }
+.btn-icon[data-armed], .btn-icon[aria-busy="true"] { width: auto; padding-inline: var(--s3); }
+@media (pointer: coarse) { .btn-icon { width: 44px; } }
+.tip { position: absolute; bottom: calc(100% + var(--s2)); left: 50%; transform: translateX(-50%); z-index: 30;
+  padding: var(--s1) var(--s3); background: var(--well); color: var(--ink); white-space: nowrap; box-shadow: var(--shadow-pop);
+  font: 600 var(--fs-sm)/1.4 var(--font-text); border-radius: var(--radius-control); pointer-events: none; display: none; }
+.btn-icon:hover .tip { display: block; animation: tip-in var(--ease) .35s both; }
+.btn-icon:focus-visible .tip { display: block; }
+@keyframes tip-in { from { opacity: 0; } to { opacity: 1; } }
+/* At a row's end the tooltip aligns right, so it never widens the table's scroll region. */
+.row-actions .btn-icon:last-child .tip, .row-actions form:last-child .tip { left: auto; right: 0; transform: none; }
+@media (prefers-reduced-motion: reduce) { .btn-icon:hover .tip { animation: none; } }
+
+/* Playbook picker: the choice as a field-like button; the list drops over the page below it. */
+.picker { position: relative; }
+.picker-current { list-style: none; display: flex; align-items: center; gap: var(--s3); cursor: pointer;
+  padding: var(--s2) var(--s3); min-height: 44px; background: var(--well); border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-control); transition: border-color var(--ease); }
+.picker-current::-webkit-details-marker { display: none; }
+.picker-current:hover { border-color: color-mix(in oklab, var(--accent) 35%, var(--rule-strong)); }
+.picker-current:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
+.picker-current-body, .picker-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.picker-path { font-weight: 600; overflow-wrap: anywhere; }
+.picker-about { color: var(--ink-muted); font-size: var(--fs-sm); }
+.picker-change { display: inline-flex; align-items: center; gap: var(--s1); color: var(--accent-ink); font: 600 var(--fs-sm)/1 var(--font-text); white-space: nowrap; }
+.picker-change .icon { width: 16px; height: 16px; transition: transform var(--ease); }
+.picker[open] .picker-change .icon { transform: rotate(180deg); }
+.picker-list { position: absolute; top: calc(100% + var(--s1)); left: 0; right: 0; z-index: 40; max-height: min(420px, 60dvh); overflow-y: auto;
+  display: flex; flex-direction: column; padding: var(--s1); background: var(--well); border: 1px solid var(--rule);
+  border-radius: var(--radius-card); box-shadow: var(--shadow-pop); }
+.picker-option { display: flex; padding: var(--s2) var(--s3); border-radius: var(--radius-control); cursor: pointer; }
+.picker-option:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.picker-option:has(input:checked) { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.picker-option:has(input:checked) .picker-path { color: var(--accent-ink); }
+.picker-option:has(input:focus-visible) { box-shadow: inset 0 0 0 2px var(--accent); }
+
 /* Several actions in one table cell (Run…, then quiet ones); they wrap rather than widen the table. */
 .row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s1) var(--s2); }
 .playbook-about { display: block; margin-top: var(--s1); font-weight: 400; color: var(--ink-muted); font-size: var(--fs-sm); max-width: 60ch; }

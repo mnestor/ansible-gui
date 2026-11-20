@@ -115,11 +115,11 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         btn.dataset.armed = "1";
-        btn.dataset.original = btn.textContent;
+        btn.dataset.original = btn.innerHTML;
         btn.textContent = btn.dataset.confirmLabel;
         setTimeout(() => {
           delete btn.dataset.armed;
-          if (btn.dataset.original) btn.textContent = btn.dataset.original;
+          if (btn.dataset.original) btn.innerHTML = btn.dataset.original;
         }, 4000);
       }, true);
     });
@@ -251,6 +251,25 @@
 
   // The Variables section is redrawn only when the playbook or its Fields/YAML view changes: a redraw on every change would close
   // "more optional variables" while someone fills it in.
+  // Playbook picker: choosing closes the list and shows the choice; Escape or a click elsewhere closes it.
+  document.addEventListener("change", (e) => {
+    const picker = e.target.closest && e.target.closest("[data-picker]");
+    if (!picker || e.target.name !== "playbook") return;
+    const body = e.target.closest(".picker-option").querySelector(".picker-option-body");
+    picker.querySelector("[data-picker-current]").innerHTML = body.innerHTML;
+    picker.open = false;
+    picker.querySelector("summary").focus();
+  });
+  document.addEventListener("keydown", (e) => {
+    const picker = e.key === "Escape" && e.target.closest && e.target.closest("[data-picker][open]");
+    if (picker && picker.querySelector("input:checked")) { picker.open = false; picker.querySelector("summary").focus(); }
+  });
+  document.addEventListener("click", (e) => {
+    document.querySelectorAll("[data-picker][open]").forEach((p) => {
+      if (!p.contains(e.target) && p.querySelector("input:checked")) p.open = false;
+    });
+  });
+
   document.addEventListener("change", (e) => {
     if (e.target.name !== "playbook" && e.target.name !== "vars_mode") return;
     const vars = e.target.form && e.target.form.querySelector("#run-vars");

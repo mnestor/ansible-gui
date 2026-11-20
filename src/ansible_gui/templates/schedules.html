@@ -1,5 +1,7 @@
 {% extends "runs_base.html" %}
 {% block title %}Schedules{% endblock %}
+{% from "_icon_button.html" import icon_link %}
+{% from "_icons.html" import icon %}
 {% block main %}
 <header class="subject subject-row">
   <div>
@@ -29,15 +31,14 @@
       <td class="mono col-wide">{{ pb_label(s) }}</td>
       <td class="mono col-wide">{{ s.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ s.mode }} · <span class="mono">{{ s.cron }}</span></td>
-      <td>
+      <td><div class="row-actions">
         <form method="post" action="/schedules/{{ s.id }}/run" hx-boost="false" {% if not s.check_mode %}data-confirm-twice{% endif %}>
-          {% if s.check_mode %}
-          <button class="btn btn-secondary" type="submit" data-busy-label="Starting…" aria-label="Dry run {{ s.name }} now">Dry run now</button>
-          {% else %}
-          <button class="btn btn-secondary" type="submit" data-busy-label="Starting…" data-confirm-label="Click again to apply" aria-label="Apply {{ s.name }} now">Apply now…</button>
-          {% endif %}
+          {% set label = ("Dry run " if s.check_mode else "Apply ") ~ s.name ~ " now" %}
+          <button class="btn btn-secondary btn-icon" type="submit" aria-label="{{ label }}" data-busy-label="Starting…"
+                  {% if not s.check_mode %}data-confirm-label="Click again to apply"{% endif %}>{{ icon("play") }}<span class="tip" aria-hidden="true">{{ label }}</span></button>
         </form>
-      </td>
+        {{ icon_link("/schedules/" ~ s.id, "edit", "Edit " ~ s.name) }}
+      </div></td>
     </tr>
   {% endfor %}
   </tbody>

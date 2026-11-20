@@ -301,7 +301,12 @@ def test_the_playbook_list_says_what_each_does_and_offers_its_actions(c):
     assert "Lab check" in page.split("0%3Asite.yml")[1].split("</tr>")[0]  # no comment, no roles: play names
     assert 'href="/runs/templates/new?playbook=0%3Asite.yml"' in page and 'href="/schedules/new?playbook=0%3Asite.yml"' in page
     assert '<a class="rail-item rail-sub" href="/runs/playbooks" aria-current="page">' in page
-    assert '<a class="rail-item rail-sub" href="/runs/playbooks" aria-current="page">' in c.get("/runs/new").text
+    launcher = c.get("/runs/new", params={"playbook": "commented.yml"}).text
+    assert '<a class="rail-item rail-sub" href="/runs/playbooks" aria-current="page">' in launcher
+    current = launcher.split("data-picker-current>")[1].split('<span class="picker-change">')[0]
+    assert "commented.yml" in current and "Patches every host." in current and 'class="repo-prefix"' in current
+    assert "<details class=\"picker\" data-picker >" in launcher or "data-picker >" in launcher  # closed once chosen
+    assert "Choose a playbook" in c.get("/runs/new").text.split("data-picker-current>")[1][:120]
 
 
 def test_template_and_schedule_rows_have_run_actions(app, c):
@@ -309,13 +314,14 @@ def test_template_and_schedule_rows_have_run_actions(app, c):
                                     "diff": "1", "purpose": "template"})
     t = app.state.templates.all()[0]
     listing = c.get("/runs/templates").text
-    assert f'href="/runs/new?template={t.id}" aria-label="Run t1">Run…' in listing
-    assert f'href="/schedules/new?template={t.id}" aria-label="Schedule t1"' in listing
+    assert f'href="/runs/new?template={t.id}" aria-label="Run t1…"' in listing
+    assert f'href="/schedules/new?template={t.id}" aria-label="Schedule t1…"' in listing
+    assert '<span class="tip" aria-hidden="true">Run t1…</span>' in listing
     c.post("/schedules", data={"name": "n1", "cron": "0 3 * * *", "playbook": "site.yml", "target": "box1",
                                "mode": "apply", "diff": "1", "purpose": "schedule"})
     s = app.state.schedules.all()[0]
     sched = c.get("/schedules").text
-    assert f'action="/schedules/{s.id}/run"' in sched and "Apply now…" in sched and "data-confirm-twice" in sched
+    assert f'action="/schedules/{s.id}/run"' in sched and 'aria-label="Apply n1 now"' in sched and "data-confirm-twice" in sched
 
 
 def test_the_yaml_view_carries_values_both_ways_and_stores_like_the_fields(app, c, project):

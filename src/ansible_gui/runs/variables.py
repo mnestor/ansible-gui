@@ -494,3 +494,13 @@ def describe(playbook: Path, repo_dir: Path) -> About:
 
     plays(playbook, set())
     return about
+
+
+def summary(about: About) -> str:
+    """One line on what a playbook does: its top comment, else its roles' descriptions, else its play names."""
+    if about.comment:
+        return about.comment
+    described = [f"{role}: {desc}" for role, desc in about.roles if desc]
+    if described:
+        return "; ".join(described)
+    return "; ".join(about.plays)

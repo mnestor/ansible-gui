@@ -3,25 +3,28 @@
 {% from "_inv_note.html" import inv_note %}
 <section class="form-section" aria-labelledby="sec-what">
   <h2 class="form-section-title" id="sec-what">What to run</h2>
+  {% from "_icons.html" import icon %}
+  {% set chosen = playbooks | selectattr("key", "equalto", form.playbook) | first %}
+  {% macro pb_body(p) -%}
+    <span class="picker-path mono"><span class="repo-prefix">{{ p.repo.name }} /</span> {{ p.path }}</span>
+    {% if playbook_about[p.key] %}<span class="picker-about">{{ playbook_about[p.key] }}</span>{% endif %}
+  {%- endmacro %}
   <fieldset class="field">
-    <legend class="label">Playbook</legend>
-    {% if playbooks | length <= 7 %}
-      <div class="choices">
+    <legend class="label" id="pb-legend">Playbook</legend>
+    {# A dropdown of rich options; underneath it is a radio group, so the keyboard, the form and the
+       variables redraw work as they always have. Open while nothing is chosen, so "required" can be shown. #}
+    <details class="picker" data-picker {% if not chosen %}open{% endif %}>
+      <summary class="picker-current">
+        <span class="picker-current-body" data-picker-current>{% if chosen %}{{ pb_body(chosen) }}{% else %}<span class="help">Choose a playbook</span>{% endif %}</span>
+        <span class="picker-change">Change {{ icon("chevron") }}</span>
+      </summary>
+      <div class="picker-list" role="radiogroup" aria-labelledby="pb-legend">
         {% for p in playbooks %}
-          <label class="choice"><input type="radio" name="playbook" value="{{ p.key }}" {% if p.key == form.playbook %}checked{% endif %} required>
-            <span class="mono">{% if multi_repo %}<span class="repo-prefix">{{ p.repo.name }} /</span> {% endif %}{{ p.path }}</span></label>
+          <label class="picker-option"><input class="visually-hidden" type="radio" name="playbook" value="{{ p.key }}" {% if p.key == form.playbook %}checked{% endif %} required>
+            <span class="picker-option-body">{{ pb_body(p) }}</span></label>
         {% endfor %}
       </div>
-    {% else %}
-      <select class="input input-small" name="playbook" required aria-label="Playbook">
-        <option value="" disabled {% if not form.playbook %}selected{% endif %}>Choose a playbook</option>
-        {% for repo in playbook_repos %}
-          <optgroup label="{{ repo.name }}">
-            {% for p in playbooks if p.repo.id == repo.id %}<option value="{{ p.key }}" {% if p.key == form.playbook %}selected{% endif %}>{{ p.path }}</option>{% endfor %}
-          </optgroup>
-        {% endfor %}
-      </select>
-    {% endif %}
+    </details>
     {% set git_repos = playbook_repos | rejectattr("local") | list %}
     {% if git_repos or (inventory_repo and not inventory_repo.local) %}
       <p class="help">Runs pull first{% if inventory_repo and not inventory_repo.local %}: inventory {{ inventory_repo.name }} at <span class="mono">{{ inventory_repo.short or "not cloned" }}</span>{% endif %}{% for r in git_repos %}, {{ r.name }} at <span class="mono">{{ r.short or "not cloned" }}</span>{% endfor %}. <a href="/repos">Repositories</a></p>

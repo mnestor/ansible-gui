@@ -1,5 +1,6 @@
 {% extends "runs_base.html" %}
 {% block title %}Run a playbook{% endblock %}
+{% from "_icon_button.html" import icon_link %}
 {% block main %}
 <header class="subject">
   <p class="eyebrow">Runs</p>
@@ -17,25 +18,19 @@
   </tr></thead>
   <tbody>
   {% for p in playbooks %}
-    {% set a = about[p.key] %}
     {% set ts = templates_by.get(p.key, []) %}
     <tr>
       <th scope="row">
-        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}">{% if multi_repo %}<span class="repo-prefix">{{ p.repo.name }} /</span> {% endif %}{{ p.path }}</a>
-        <span class="playbook-about">
-          {%- if a.comment %}{{ a.comment }}
-          {%- elif a.roles | selectattr(1) | list %}{% for role, desc in a.roles %}<span class="mono">{{ role }}</span>{% if desc %}: {{ desc }}{% endif %}{{ "; " if not loop.last }}{% endfor %}
-          {%- elif a.plays %}{{ a.plays | join("; ") }}
-          {%- else %}<span class="help">No description: add a comment at the top of the file.</span>{% endif -%}
-        </span>
+        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}"><span class="repo-prefix">{{ p.repo.name }} /</span> {{ p.path }}</a>
+        <span class="playbook-about">{% if about[p.key] %}{{ about[p.key] }}{% else %}<span class="help">No description: add a comment at the top of the file.</span>{% endif %}</span>
         {% if ts %}<span class="phone-only help">{{ ts | length }} template{{ "s" if ts | length != 1 }}</span>{% endif %}
       </th>
       <td class="col-wide">{% if ts %}{% for t in ts[:3] %}<a class="mono" href="/runs/templates/{{ t.id }}">{{ t.name }}</a>{{ ", " if not loop.last }}{% endfor %}{% if ts | length > 3 %} and {{ ts | length - 3 }} more{% endif %}{% else %}<span class="help">—</span>{% endif %}</td>
       <td>
         <div class="row-actions">
-          <a class="btn btn-secondary" href="/runs/new?{{ {'playbook': p.key} | urlencode }}" aria-label="Run {{ p.path }}">Run…</a>
-          <a class="btn btn-quiet" href="/runs/templates/new?{{ {'playbook': p.key} | urlencode }}" aria-label="New template from {{ p.path }}">New template</a>
-          <a class="btn btn-quiet" href="/schedules/new?{{ {'playbook': p.key} | urlencode }}" aria-label="Schedule {{ p.path }}">Schedule…</a>
+          {{ icon_link("/runs/new?" ~ ({'playbook': p.key} | urlencode), "play", "Run " ~ p.path ~ "…", "secondary") }}
+          {{ icon_link("/schedules/new?" ~ ({'playbook': p.key} | urlencode), "schedule", "Schedule " ~ p.path ~ "…") }}
+          {{ icon_link("/runs/templates/new?" ~ ({'playbook': p.key} | urlencode), "template", "New template from " ~ p.path) }}
         </div>
       </td>
     </tr>

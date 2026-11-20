@@ -637,6 +637,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
+            playbook_about=playbook_summaries(books),
             playbook_repos=ws.playbook_repos(), inventory_repo=inv_repo, inventories=ws.inventory_repos(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
             env_secrets=creds.by_kind("env_secret"),
@@ -671,16 +672,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def runs(request: Request):
         return render(request, "runs.html", section="runs", runs=store.recent())
 
+    def playbook_summaries(books) -> dict[str, str]:
+        return {b.key: variables.summary(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
+
     @app.get("/runs/playbooks", response_class=HTMLResponse)
     def playbook_list(request: Request):
         """Every playbook, with what it is for: its top comment, else its roles' descriptions, else its plays."""
         books = ws.discover()
-        about = {b.key: variables.describe(b.repo.path / b.path, b.repo.path) for b in books}
+        about = playbook_summaries(books)
         by_book: dict[str, list] = {}
         for t in run_templates.all():
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
-        return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
-                      multi_repo=len(ws.playbook_repos()) > 1)
+        return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book)
 
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):

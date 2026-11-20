@@ -1,5 +1,6 @@
 {% extends "runs_base.html" %}
 {% block title %}Run templates{% endblock %}
+{% from "_icon_button.html" import icon_link %}
 {% block main %}
 <a class="crumb" href="/runs">← All runs</a>
 <header class="subject subject-row">
@@ -32,9 +33,9 @@
       <td class="col-wide">{{ t.mode }}{% if t.tags %} · <span class="mono">{{ t.tags }}</span>{% endif %}</td>
       <td class="mono col-wide">{{ t.remote_user or "—" }}</td>
       <td><div class="row-actions">
-        <a class="btn btn-secondary" href="/runs/new?template={{ t.id }}" aria-label="Run {{ t.name }}">Run…</a>
-        <a class="btn btn-quiet" href="/schedules/new?template={{ t.id }}" aria-label="Schedule {{ t.name }}">Schedule…</a>
-        <a class="btn btn-quiet" href="/runs/templates/{{ t.id }}" aria-label="Edit {{ t.name }}">Edit</a>
+        {{ icon_link("/runs/new?template=" ~ t.id, "play", "Run " ~ t.name ~ "…", "secondary") }}
+        {{ icon_link("/schedules/new?template=" ~ t.id, "schedule", "Schedule " ~ t.name ~ "…") }}
+        {{ icon_link("/runs/templates/" ~ t.id, "edit", "Edit " ~ t.name) }}
       </div></td>
     </tr>
   {% endfor %}

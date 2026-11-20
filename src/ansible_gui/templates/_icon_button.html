@@ -1,0 +1,5 @@
+{# An action shown as an icon: the name is the aria-label and a tooltip on hover (after a beat) and on keyboard focus. #}
+{% from "_icons.html" import icon %}
+{% macro icon_link(href, name, label, kind="quiet") -%}
+<a class="btn btn-{{ kind }} btn-icon" href="{{ href }}" aria-label="{{ label }}">{{ icon(name) }}<span class="tip" aria-hidden="true">{{ label }}</span></a>
+{%- endmacro %}
