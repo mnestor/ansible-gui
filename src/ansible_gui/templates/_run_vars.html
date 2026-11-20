@@ -52,7 +52,7 @@
         {% endif %}
         <p class="help" id="{{ id }}-help">
           {%- if p.help %}{{ p.help }} {% endif -%}
-          {%- if p.kind == "secret" %}{% if p.name in saved_secrets %}Saved, encrypted. Leave empty to keep it.{% else %}Stored encrypted; never shown again.{% endif %}
+          {%- if p.kind == "secret" %}{% if p.name in saved_secrets %}Saved, encrypted. Leave empty to reuse it.{% else %}Stored encrypted; never shown again.{% endif %}
           {%- elif p.kind == "list" %}One per line.{% if p.has_default %} Role default: <span class="mono">{{ p.default_text }}</span>.{% endif %}
           {%- elif p.kind == "dict" %}YAML <span class="mono">key: value</span> lines.
           {%- elif p.kind in ("text", "int", "float") and p.has_default %}Role default: <span class="mono">{{ p.default_text }}</span>.

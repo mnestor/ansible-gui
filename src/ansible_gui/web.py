@@ -166,6 +166,8 @@ def rerun_url(run: Run, mode: str) -> str:
         q["vars"] = json.dumps(plain, separators=(",", ":"))
     if run.extra_vars.strip():
         q["extra_vars"] = run.extra_vars
+    if any(isinstance(v, dict) and variables.SECRET in v for v in run.prompt_vars.values()):
+        q["rerun"] = str(run.id)  # its secrets stay on the server; an empty secret field reuses them
     return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
 
 
@@ -429,7 +431,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "extra_vars": "\n".join(line.rstrip() for line in str(src.get("extra_vars") or "").splitlines()).strip("\n"),
             "prompt_vars": stored_vars(src),
             "var_raw": variables.raw_fields(src),
+            "rerun": str(src.get("rerun") or "") if str(src.get("rerun") or "").isdigit() else "",
         }
+
+    def secrets_of(source, form: dict) -> dict:
+        """The encrypted answers of a run or template that an empty secret field may reuse: only for the same
+        playbook, so they can't be handed to another one that prints a variable of that name."""
+        if source is None or ws.canonical(f"{source.repo_id}:{source.playbook}") != ws.canonical(form["playbook"]):
+            return {}
+        return {k: v for k, v in source.prompt_vars.items() if isinstance(v, dict) and variables.SECRET in v}
+
+    def kept_secrets(form: dict, base=None) -> dict:
+        """What empty secret fields keep: `base` (the template or schedule being edited, or copied), else the
+        template the form started from; then the run being re-run, which used what it used."""
+        if base is None and form.get("template"):
+            base = run_templates.get(int(form["template"]))
+        kept = secrets_of(base, form)
+        rerun = store.get(int(form["rerun"])) if form.get("rerun") else None
+        return {**kept, **secrets_of(rerun, form)}
 
     def stored_vars(src) -> dict:
         """Prompt values a link carries as JSON (Run again, Save as template…). Never secrets."""
@@ -507,7 +526,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         out = [{"label": labels[k] or KINDS[k], "was": shown(k, base.get(k)), "now": shown(k, form.get(k))}
                for k in changed_fields(form, base)]
         prompts, _ = prompts_for(form["playbook"])
-        now_vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, t.prompt_vars)
+        now_vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept_secrets(form, t))
         return t, out + variables.changes(now_vals, t.prompt_vars, prompts)
 
     def form_context(form: dict) -> dict:
@@ -523,7 +542,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         template, changes = template_changes(form)
         prompts, bare_roles = prompts_for(form["playbook"])
         form["answers"] = form_answers(form, prompts)
-        kept = form.get("kept") if form.get("kept") is not None else (template.prompt_vars if template else {})
+        kept = form["kept"] if form.get("kept") is not None else kept_secrets(form)
         return dict(
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
@@ -608,9 +627,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         kind, _, ref = str(q.get("kept_from") or "").partition(":")
         source = (run_templates.get(int(ref)) if kind == "template" else schedules.get(int(ref)) if kind == "schedule"
                   else None) if ref.isdigit() else None
-        if source is None and form["template"]:
-            source = run_templates.get(int(form["template"]))
-        kept = source.prompt_vars if source else {}
+        kept = kept_secrets(form, source)
         return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles,
                       kept_from=q.get("kept_from", ""),
                       saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v})
@@ -642,7 +659,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             return launcher(request, form, problem, 400)
         template, changes = template_changes(form)
-        prompt_vals, problem = vars_for(form, template.prompt_vars if template else {})
+        prompt_vals, problem = vars_for(form, kept_secrets(form))
         if problem:
             return launcher(request, form, problem, 400)
         run = store.create(
@@ -770,7 +787,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         tmpl = run_templates.get(tid) if tid else None
         if tid and not tmpl:
             return RedirectResponse("/runs/templates", status_code=303)
-        form["kept"] = tmpl.prompt_vars if tmpl else {}
+        form["kept"] = None
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return template_page(request, form, tmpl, form_error="Choose one of the playbooks listed.", status=400)
@@ -781,6 +798,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return template_page(request, form, tmpl, form_error="Choose the inventory to run against.", status=400)
+        form["kept"] = kept_secrets(form, tmpl)
         prompt_vals, problem = vars_for(form, form["kept"])
         if problem:
             return template_page(request, form, tmpl, form_error=problem, status=400)
@@ -1112,7 +1130,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if "vars" in given:
                 form["prompt_vars"] = asked["prompt_vars"]
             form["diff"] = q.get("diff") == "1" if "diff" in given else t.diff
-            form["copy_from"], form["kept"] = str(t.id), t.prompt_vars  # its secrets come along
+            form["copy_from"] = str(t.id)  # its secrets come along
+            form["kept"] = kept_secrets(form, t)
         else:
             default_credentials(form, q)
         form["template"] = ""
@@ -1140,8 +1159,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         copy_from = str(data.get("copy_from") or "")
         source = sched or (run_templates.get(int(copy_from)) if copy_from.isdigit() else None)
         form["copy_from"] = copy_from if not sched else ""
-        form["kept"] = source.prompt_vars if source else {}
         form["playbook"] = ws.canonical(form["playbook"])
+        form["kept"] = kept_secrets(form, source)
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
         if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):

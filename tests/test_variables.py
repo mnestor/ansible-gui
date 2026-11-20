@@ -198,7 +198,7 @@ def test_template_keeps_its_secret_and_records_changed_answers(app, c):
     t = app.state.templates.all()[0]
     assert t.prompt_vars["build_host"] == "web1" and "tpl-secret" not in str(t.prompt_vars)
     page = c.get(f"/runs/templates/{t.id}").text
-    assert "Saved, encrypted. Leave empty to keep it." in page and "tpl-secret" not in page
+    assert "Saved, encrypted. Leave empty to reuse it." in page and "tpl-secret" not in page
 
     launcher = c.get("/runs/new", params={"template": t.id}).text
     assert 'value="web1"' in launcher and "As template <strong>web</strong> sets it" in launcher
@@ -227,3 +227,31 @@ def test_a_schedule_from_a_template_copies_its_answers_and_secret(app, c):
     assert r.status_code == 303, r.text
     s = app.state.schedules.all()[0]
     assert s.prompt_vars == t.prompt_vars and s.extra_vars == "a: 1"
+
+
+@needs_ansible
+def test_run_again_reuses_the_runs_secret_for_the_same_playbook_only(app, c, project):
+    form = {"playbook": "build.yml", "target": "box1", "mode": "apply", "diff": "1", "expected": ["box1"],
+            "var.build_host": "web1", "var.build_token": "typed-once"}
+    first = wait(app, int(c.post("/runs", data=form, follow_redirects=False).headers["location"].rsplit("/", 1)[1]))
+    page = c.get(f"/runs/{first.id}").text
+    link = html.unescape(re.search(r'href="(/runs/new\?[^"]+)"', page).group(1))
+    assert f"rerun={first.id}" in link and "typed-once" not in link
+    launcher = c.get(link).text
+    assert f'name="rerun" value="{first.id}"' in launcher and "Leave empty to reuse it." in launcher
+
+    again = {**form, "var.build_token": "", "rerun": str(first.id), "target": "box2", "expected": ["box2"]}
+    second = wait(app, int(c.post("/runs", data=again, follow_redirects=False).headers["location"].rsplit("/", 1)[1]))
+    assert second.prompt_vars["build_token"] == first.prompt_vars["build_token"]
+    assert "token=10" in app.state.store.log_path(second.id).read_text()
+
+    # Another playbook with a prompt of the same name doesn't get it.
+    (project / "build2.yml").write_text((project / "build.yml").read_text())
+    other = {**again, "playbook": "build2.yml"}
+    third = wait(app, int(c.post("/runs", data=other, follow_redirects=False).headers["location"].rsplit("/", 1)[1]))
+    assert "build_token" not in third.prompt_vars
+
+    # Save as template… from the run keeps the secret too.
+    data = {**form, "name": "from-run", "purpose": "template", "var.build_token": "", "rerun": str(first.id)}
+    assert c.post("/runs/templates", data=data, follow_redirects=False).status_code == 303
+    assert app.state.templates.all()[0].prompt_vars["build_token"] == first.prompt_vars["build_token"]
