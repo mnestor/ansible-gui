@@ -23,6 +23,7 @@ create table if not exists repos (
   ssh_key_id integer,              -- a stored SSH key used as the deploy key, or null
   paths text not null default '',  -- inventory: comma-separated sources; playbooks: playbook directory
   edit_url text not null default '',
+  forge text not null default '',
   requirements text not null default '',
   last_fetch_at text,
   last_commit text,
@@ -33,6 +34,8 @@ create table if not exists repos (
   updated_by text not null default ''
 );
 """
+
+from . import forge
 
 URL_RE = re.compile(r"^(https?://\S+|ssh://\S+|[\w.-]+@[\w.-]+:\S+|file://\S+|/\S+)$")
 
@@ -60,6 +63,17 @@ class Repo:
     last_subject: str | None = None
     last_error: str | None = None
     local: bool = False  # a directory from ANSIBLE_GUI_PROJECT_DIR, not a clone
+    forge: str = ""  # "" detects from the address; see forge.FORGES
+
+    @property
+    def link_template(self) -> str | None:
+        """How to link a file: the hand-written template, else one derived from the address, at the checked-out commit."""
+        if self.edit_url:
+            return self.edit_url
+        return None if self.local else forge.file_template(self.url, self.forge, self.branch, self.last_commit)
+
+    def commit_url(self, sha: str | None) -> str | None:
+        return None if self.local else forge.commit_url(self.url, self.forge, sha)
 
     @property
     def sources(self) -> list[str]:
@@ -85,13 +99,16 @@ class RepoStore:
         self._db = Database(data_dir / "ansible-gui.db")
         self._lock = self._db.lock
         self._db.executescript(SCHEMA)
-        if "requirements" not in {r["name"] for r in self._db.execute("pragma table_info(repos)")}:
+        cols = {r["name"] for r in self._db.execute("pragma table_info(repos)")}
+        if "requirements" not in cols:
             self._db.execute("alter table repos add column requirements text not null default ''")
+        if "forge" not in cols:
+            self._db.execute("alter table repos add column forge text not null default ''")
 
     def _row(self, r) -> Repo:
         dt = lambda v: datetime.fromisoformat(v) if v else None  # noqa: E731
         return Repo(id=r["id"], name=r["name"], role=r["role"], url=r["url"], branch=r["branch"],
-                    ssh_key_id=r["ssh_key_id"], paths=r["paths"], edit_url=r["edit_url"],
+                    ssh_key_id=r["ssh_key_id"], paths=r["paths"], edit_url=r["edit_url"], forge=r["forge"],
                     path=self.root / str(r["id"]), requirements=r["requirements"], last_fetch_at=dt(r["last_fetch_at"]),
                     last_commit=r["last_commit"], last_subject=r["last_subject"], last_error=r["last_error"])
 
@@ -133,23 +150,26 @@ class RepoStore:
         if edit and not edit.lower().startswith(("https://", "http://")):
             errors["edit_url"] = ("Use a web address starting with https://, like "
                                   "https://git.example.com/me/ansible/src/branch/main/{path}#L{line}.")
+        fg = form.get("forge", "")
+        if fg not in forge.FORGES:
+            fg = ""
         if errors:
             raise Invalid(errors)
         key = int(form["ssh_key_id"]) if str(form.get("ssh_key_id") or "").isdigit() else None
-        values = (name, role, url, branch, key, paths, edit, reqs if role == "playbooks" else "", now(), user)
+        values = (name, role, url, branch, key, paths, edit, fg, reqs if role == "playbooks" else "", now(), user)
         with self._lock:
             if rid:
                 old = self.get(rid)
                 # A new URL or branch means a new clone; forget the old state.
                 reset = old and (old.url != url or old.branch != branch)
                 self._db.execute("update repos set name=?, role=?, url=?, branch=?, ssh_key_id=?, paths=?, edit_url=?,"
-                                 " requirements=?, updated_at=?, updated_by=? where id=?", (*values, rid))
+                                 " forge=?, requirements=?, updated_at=?, updated_by=? where id=?", (*values, rid))
                 if reset:
                     self._db.execute("update repos set last_commit=null, last_subject=null, last_fetch_at=null,"
                                      " last_error=null where id=?", (rid,))
             else:
                 cur = self._db.execute("insert into repos (name, role, url, branch, ssh_key_id, paths, edit_url,"
-                                       " requirements, updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?)",
+                                       " forge, requirements, updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)",
                                        (*values, now()))
                 rid = cur.lastrowid
             self._db.commit()

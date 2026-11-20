@@ -6,9 +6,9 @@
     {% if run.skip_tags %}<div><dt>Skip tags</dt><dd class="mono">{{ run.skip_tags }}</dd></div>{% endif %}
     <div><dt>Started</dt><dd class="tabular">{% if run.started_at %}<time datetime="{{ run.started_at | stamp }}">{{ run.started_at | clock }}</time>{% else %}not yet{% endif %}</dd></div>
     <div><dt>Took</dt><dd class="tabular">{{ run.duration | seconds }}</dd></div>
-    {% if run.commit_sha %}<div><dt>Playbook commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
+    {% if run.commit_sha %}{% set u = commit_link(playbook_repo(run.repo_id), run.commit_sha) %}<div><dt>Playbook commit</dt><dd class="mono">{% if u %}<a href="{{ u }}" rel="noopener" target="_blank">{{ run.commit_sha }}</a>{% else %}{{ run.commit_sha }}{% endif %}</dd></div>{% endif %}
     {% if run.inventory_id is not none %}<div><dt>Inventory</dt><dd>{{ inv_label(run.inventory_id) }}</dd></div>{% endif %}
-    {% if run.inventory_commit %}<div><dt>Inventory commit</dt><dd class="mono">{{ run.inventory_commit }}</dd></div>{% endif %}
+    {% if run.inventory_commit %}{% set u = commit_link(inventory_repo(run.inventory_id), run.inventory_commit) %}<div><dt>Inventory commit</dt><dd class="mono">{% if u %}<a href="{{ u }}" rel="noopener" target="_blank">{{ run.inventory_commit }}</a>{% else %}{{ run.inventory_commit }}{% endif %}</dd></div>{% endif %}
     {% if run.template_name %}<div><dt>Template</dt><dd>{% if run.template_id %}<a class="mono" href="/runs/templates/{{ run.template_id }}">{{ run.template_name }}</a>{% else %}<span class="mono">{{ run.template_name }}</span>{% endif %}{% if run.template_changes %}, changed: {{ run.template_changes | join("; ") }}{% else %}, unchanged{% endif %}</dd></div>{% endif %}
     {% if run.remote_user %}<div><dt>Connected as</dt><dd class="mono">{{ run.remote_user }}</dd></div>{% endif %}
     {% if run.prompt_vars %}<div><dt>Variables</dt><dd class="mono">{% for k, v in shown_vars(run.prompt_vars) %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>{% endif %}

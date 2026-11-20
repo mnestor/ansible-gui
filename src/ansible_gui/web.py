@@ -27,6 +27,7 @@ from .facts import FactStore
 from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 from .inventory.attribution import edit_url
+from .repos import forge
 from .keys import Keys
 from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
@@ -234,7 +235,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ws.label(x.repo_id, x.playbook)
     env.globals.update(
         present=present,
-        edit_url=lambda layer, inv=None: edit_url((inv.edit_url if inv else None) or settings.edit_url, layer),
+        edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
+        commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
+        playbook_repo=lambda rid: ws.playbook_repo(rid),
+        inventory_repo=lambda iid: ws.inventory_repo(iid),
+        forges=forge.FORGES,
+        detected_forge=lambda url: (forge.KNOWN.get((forge.web_base(url) or ("",))[0]) or ""),
         inv_label=lambda inv_id: (ws.inventory_repo(inv_id).name if ws.inventory_repo(inv_id) else "removed inventory"),
         host_result=host_result,
         status_tone=lambda s: STATUS.get(s, ("neutral", s))[0],
@@ -1134,7 +1140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     async def save_repo(request: Request, rid: int | None):
         data = await request.form()
-        form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url",
+        form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url", "forge",
                                              "requirements")}
         if form["ssh_key_id"]:
             c = creds.get(int(form["ssh_key_id"])) if form["ssh_key_id"].isdigit() else None

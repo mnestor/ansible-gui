@@ -58,7 +58,20 @@
     {{ text("paths", "Run from", "The directory Ansible starts in, inside the repository: its <span class=\"mono\">ansible.cfg</span> applies, and the playbooks directly in it are listed. Empty means the top level. To run two directories of one repository (say <span class=\"mono\">lxc</span> and <span class=\"mono\">lockdown</span>), add the repository twice.", "input-small", "lxc", optional=True) }}
     {{ text("requirements", "Collections file", "Installed after each pull that changes it, before the run. Empty looks for <span class=\"mono\">collections/requirements.yml</span> or <span class=\"mono\">requirements.yml</span> in the run directory, then at the top level.", "input-small", "collections/requirements.yml", optional=True) }}
   {% endif %}
-  {{ text("edit_url", "Open in git link", "For the inventory page’s links, with <span class=\"mono\">{path}</span> and <span class=\"mono\">{line}</span>, like <span class=\"mono\">https://git.example.com/me/ansible/src/branch/main/{path}#L{line}</span>.", "", optional=True) }}
+  {% set found = detected_forge(values.url or "") %}
+  <div class="field">
+    <label class="label" for="forge">Git host, for “Open in git” links</label>
+    <select id="forge" class="input input-small" name="forge" aria-describedby="forge-help">
+      {% for k, label in forges.items() %}<option value="{{ k }}" {% if (values.forge or "") == k %}selected{% endif %}>{{ label }}{% if k == "" and found %} ({{ forges[found] }}){% endif %}</option>{% endfor %}
+    </select>
+    <p class="help" id="forge-help">Links to files and commits are made from the address: github.com, gitlab.com, codeberg.org and bitbucket.org are recognised. For your own server, say which software it runs. Links point at the commit last pulled, which is what runs use.</p>
+  </div>
+  <details class="more" {% if values.edit_url %}open{% endif %}>
+    <summary>Custom link</summary>
+    <div class="more-body">
+  {{ text("edit_url", "Link template", "Overrides the host above, with <span class=\"mono\">{path}</span> and <span class=\"mono\">{line}</span>, like <span class=\"mono\">https://git.example.com/me/ansible/src/branch/main/{path}#L{line}</span>.", "", optional=True) }}
+    </div>
+  </details>
 
   <div class="actions">
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving and pulling…">{{ "Save and pull" if repo else "Add and pull" }}</button>
