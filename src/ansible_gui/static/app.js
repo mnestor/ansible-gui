@@ -23,12 +23,12 @@
       if (!find) return;
       const term = find.value.trim().toLowerCase();
       lists.forEach((list) => {
-        list.querySelectorAll("li").forEach((li) => {
+        list.querySelectorAll("[data-name]").forEach((li) => {
           li.hidden = term !== "" && !li.dataset.name.toLowerCase().includes(term);
         });
       });
       const list = visibleList();
-      const any = list && [...list.querySelectorAll("li")].some((li) => !li.hidden);
+      const any = list && [...list.querySelectorAll("[data-name]")].some((li) => !li.hidden);
       if (empty) {
         empty.hidden = any || term === "";
         empty.querySelector("[data-term]").textContent = find.value.trim();
@@ -47,7 +47,7 @@
       find.addEventListener("input", filterSidebar);
       find.addEventListener("keydown", (e) => {
         if (e.key !== "Enter") return;
-        const first = visibleList()?.querySelector("li:not([hidden]) a");
+        const first = visibleList()?.querySelector("[data-name]:not([hidden]) a");
         if (first) first.click();
       });
     }

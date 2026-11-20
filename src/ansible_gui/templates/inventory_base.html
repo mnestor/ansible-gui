@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% block bodyclass %}{% if selected %}has-selection{% endif %}{% endblock %}
 
 
 {% block body %}
@@ -51,55 +50,8 @@
       {% include "_load_error.html" %}
     </main>
   {% else %}
-  <div class="layout">
-    <nav class="sidebar" aria-label="{{ "Groups" if listing == "groups" else "Hosts" }}">
-      {% set noun = "group" if listing == "groups" else "host" %}
-      <label class="visually-hidden" for="find">Find a {{ noun }}</label>
-      <input id="find" class="input" type="search" placeholder="Find a {{ noun }}" autocomplete="off" enterkeyhint="search" data-find>
-
-      {% if listing == "groups" %}
-      <ul class="navlist navtree" data-list="groups">
-        {% for inv_repo, data in loaded %}
-          {% if multi_inv %}<li class="navlist-heading" data-name="" aria-hidden="true">{{ inv_repo.name }}</li>{% endif %}
-          {% for level, g in data.tree() %}
-            <li data-name="{{ g.name }} {{ inv_repo.name }}" style="--level: {{ level }}">
-              <a href="/inventory/groups/{{ g.name }}" {% if selected == ('group', g.name) %}aria-current="page"{% endif %}>
-                <span class="navlist-name mono">{{ g.name }}</span>
-                <span class="navlist-meta tabular">{{ g.all_hosts | length }}</span>
-              </a>
-            </li>
-          {% endfor %}
-        {% endfor %}
-      </ul>
-      {% else %}
-      <ul class="navlist" data-list="hosts">
-        {% for name, found_in in merged_hosts %}
-          {% set inv_repo, h = found_in[0] %}
-          {% set addr = h.var("ansible_host") %}
-          {% set last = last_result(inv_repo, name) if found_in | length == 1 else None %}
-          <li data-name="{{ name }} {{ addr.value if addr and not addr.vaulted else '' }} {% for i, _ in found_in %}{{ i.name }} {% endfor %}">
-            <a href="/inventory/hosts/{{ name }}" {% if selected == ('host', name) %}aria-current="page"{% endif %}>
-              {% if last %}<span class="dot dot-{{ last[0] }}" title="Last run #{{ last[1] }}: {{ last[0] }}"></span>{% endif %}
-              <span class="navlist-name mono">{{ name }}</span>
-              {% if found_in | length > 1 %}<span class="badge badge-changed" title="In {{ found_in | map(attribute=0) | map(attribute='name') | join(' and ') }}">in {{ found_in | length }}</span>
-              {% elif multi_inv %}<span class="navlist-meta">{{ inv_repo.name }}</span>
-              {% elif addr and not addr.vaulted and addr.value != name %}<span class="navlist-meta mono">{{ addr.value }}</span>{% endif %}
-              {% if h.mismatches and found_in | length == 1 %}<span class="badge badge-changed" title="Source differs from Ansible for {{ h.mismatches | length }} variable(s)">{{ h.mismatches | length }} ≠</span>{% endif %}
-            </a>
-          </li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-
-      <div class="navempty" data-empty hidden>
-        <p>Nothing matches “<span data-term></span>”.</p>
-        <button type="button" class="btn btn-quiet" data-clear>Clear search</button>
-      </div>
-    </nav>
-
-    <main class="content" id="main" tabindex="-1">
-      {% block main %}{% endblock %}
-    </main>
-  </div>
+  <main class="page" id="main" tabindex="-1">
+    {% block main %}{% endblock %}
+  </main>
   {% endif %}
 {% endblock %}

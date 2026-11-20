@@ -77,11 +77,18 @@ def test_reload_redirects_with_flash():
     assert r.headers["location"].startswith("/inventory?reloaded=")
 
 
-def test_rail_lists_hosts_and_groups_and_the_second_rail_shows_one_list():
+def test_hosts_and_groups_are_full_width_lists_and_detail_pages_have_breadcrumbs():
     c = client()
-    page = c.get("/inventory/groups/web").text
+    page = c.get("/inventory/groups").text
     assert 'href="/inventory/groups" aria-current="page"' in page
-    assert 'data-list="groups"' in page and 'data-list="hosts"' not in page and "data-show" not in page
+    assert 'data-list="groups"' in page and 'data-list="hosts"' not in page and 'class="sidebar"' not in page
     page = c.get("/inventory/hosts").text
-    assert 'href="/inventory/hosts" aria-current="page"' in page and 'data-list="groups"' not in page
+    assert 'href="/inventory/hosts" aria-current="page"' in page and 'data-list="hosts"' in page
+    assert '<a class="mono" href="/inventory/hosts/web1">web1</a>' in page
+    detail = c.get("/inventory/hosts/web1").text
+    assert '<nav class="crumbs" aria-label="Breadcrumb">' in detail and 'href="/inventory/hosts">Hosts</a>' in detail
+    assert 'data-list=' not in detail and 'class="sidebar"' not in detail
+    assert 'rel="next"' in detail or 'rel="prev"' in detail
+    group = c.get("/inventory/groups/web").text
+    assert 'href="/inventory/groups">Groups</a>' in group and '<span class="mono" aria-current="page">web</span>' in group
     assert "data-rail-toggle" in page

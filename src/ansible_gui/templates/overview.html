@@ -1,10 +1,70 @@
 {% extends "inventory_base.html" %}
 {% block main %}
-<header class="subject">
-  <p class="eyebrow">Inventory</p>
-  <h1 class="identity">Where every value comes from</h1>
-  <p class="subject-meta">Pick a host to see each variable it gets, the file that set it, and what that file overrode.</p>
+{% set noun = "group" if listing == "groups" else "host" %}
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Inventory</p>
+    <h1 class="identity">{{ "Groups" if listing == "groups" else "Hosts" }}</h1>
+    <p class="subject-meta">{% if listing == "groups" %}Each group, inside its parents, with how many hosts it holds. Pick one for the variables it sets.{% else %}Pick a host to see each variable it gets, the file that set it, and what that file overrode.{% endif %}</p>
+  </div>
 </header>
+
+<div class="list-tools">
+  <label class="visually-hidden" for="find">Find a {{ noun }}</label>
+  <input id="find" class="input input-medium" type="search" placeholder="Find a {{ noun }}{{ ' by name, address, group or OS' if noun == 'host' }}" autocomplete="off" enterkeyhint="search" data-find>
+</div>
+
+<div class="inventory-list">
+{% if listing == "groups" %}
+  {% for inv_repo, data in loaded %}
+  {% if multi_inv %}<h2 class="section-title">{{ inv_repo.name }}</h2>{% endif %}
+  <ul class="group-tree" data-list="groups">
+    {% for level, g in data.tree() %}
+      <li data-name="{{ g.name }} {{ inv_repo.name }}" style="--level: {{ level }}">
+        <a href="/inventory/groups/{{ g.name }}">
+          <span class="mono group-tree-name">{{ g.name }}</span>
+          <span class="help tabular">{{ g.all_hosts | length }} host{{ "s" if g.all_hosts | length != 1 }}{% if g.children %} · {{ g.children | length }} group{{ "s" if g.children | length != 1 }}{% endif %}</span>
+        </a>
+      </li>
+    {% endfor %}
+  </ul>
+  {% endfor %}
+{% else %}
+<div class="table-region">
+<table class="history host-list">
+  <thead><tr>
+    <th scope="col">Host</th><th scope="col" class="col-wide">Address</th><th scope="col" class="col-wide">Groups</th>
+    <th scope="col" class="col-wide">OS</th><th scope="col">Last run</th>
+  </tr></thead>
+  <tbody data-list="hosts">
+  {% for name, found_in in merged_hosts %}
+    {% set inv_repo, h = found_in[0] %}
+    {% set addr = h.var("ansible_host") %}
+    {% set shown_addr = addr.value if addr and not addr.vaulted and addr.value != name else "" %}
+    {% set last = last_result(inv_repo, name) if found_in | length == 1 else None %}
+    {% set os = os_of(name) %}
+    <tr data-name="{{ name }} {{ shown_addr }} {{ h.groups | join(' ') }} {{ os }} {% for i, _ in found_in %}{{ i.name }} {% endfor %}">
+      <th scope="row"><a class="mono" href="/inventory/hosts/{{ name }}">{{ name }}</a>
+        {% if found_in | length > 1 %}<span class="badge badge-changed" title="In {{ found_in | map(attribute=0) | map(attribute='name') | join(' and ') }}">in {{ found_in | length }}</span>
+        {% elif multi_inv %}<span class="help">{{ inv_repo.name }}</span>{% endif %}
+        {% if h.mismatches and found_in | length == 1 %}<span class="badge badge-changed" title="Source differs from Ansible for {{ h.mismatches | length }} variable(s)">{{ h.mismatches | length }} ≠</span>{% endif %}
+        {% if shown_addr %}<span class="phone-only help mono">{{ shown_addr }}</span>{% endif %}
+      </th>
+      <td class="mono col-wide">{{ shown_addr or "—" }}</td>
+      <td class="col-wide">{% for g in h.groups[:3] %}<a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a> {% endfor %}{% if h.groups | length > 3 %}<span class="help">+{{ h.groups | length - 3 }}</span>{% endif %}{% if not h.groups %}<span class="help">—</span>{% endif %}</td>
+      <td class="col-wide">{{ os or "—" }}</td>
+      <td>{% if last %}<a class="badge-link" href="/runs/{{ last[1] }}"><span class="badge badge-{{ last[0] }}">{{ last[0] }}</span></a>{% else %}<span class="help">never</span>{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+<div class="navempty" data-empty hidden>
+  <p>Nothing matches “<span data-term></span>”.</p>
+  <button type="button" class="btn btn-quiet" data-clear>Clear search</button>
+</div>
+</div>
 
 {% if duplicates %}
 <section class="section" aria-labelledby="dup-h">
@@ -18,7 +78,7 @@
 
 {% for inv_repo, inv in loaded %}
 <section class="section" aria-labelledby="sum-{{ loop.index }}">
-  {% if multi_inv %}<h2 id="sum-{{ loop.index }}" class="section-title">{{ inv_repo.name }}</h2>{% endif %}
+  <h2 id="sum-{{ loop.index }}" class="section-title">{% if multi_inv %}{{ inv_repo.name }}{% else %}Inventory{% endif %}</h2>
   {% if not inv.hosts %}
     <p class="empty">This inventory has no hosts. Check its inventory files (<span class="mono">{{ inv_repo.sources | join(", ") }}</span>), then reload.</p>
   {% else %}

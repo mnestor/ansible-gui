@@ -290,6 +290,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             hit = results.get((None, host))  # runs from before there could be several inventories
         return hit
 
+    def group_trail(inv_repo, name: str) -> list[str]:
+        """The group's parents, outermost first, following the first parent each time (all left out)."""
+        state = invs.get(inv_repo.id)[1] if inv_repo else None
+        inv = state.inventory if state else None
+        if inv is None:
+            return []
+        out, seen = [], {name}
+        g = inv.groups.get(name)
+        while g and g.parents:
+            parent = next((p for p in g.parents if p != "all" and p not in seen), None)
+            if not parent:
+                break
+            out.insert(0, parent)
+            seen.add(parent)
+            g = inv.groups.get(parent)
+        return out
+
     def inventory_page(request: Request, template: str, status: int = 200, listing: str = "hosts",
                        **ctx: Any) -> HTMLResponse:
         entries = invs.entries()
@@ -303,6 +320,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             merged_hosts=invs.hosts(), merged_groups=invs.groups(), duplicates=invs.duplicate_hosts(),
             reloaded=request.query_params.get("reloaded"),
             last_result=lambda inv, host: last_result(results, inv, host),
+            os_of=lambda host: (facts.get(host).os if facts.get(host) else ""),
+            trail=group_trail,
             **ctx,
         )
 
@@ -353,7 +372,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         found = invs.find_host(name)
         if not found and invs.loaded():
             return inventory_page(request, "missing.html", status=404, kind="host", name=name, selected=None)
+        names = [n for n, _ in invs.hosts()]
+        at = names.index(name) if name in names else -1
+        neighbours = (names[at - 1] if at > 0 else None, names[at + 1] if 0 <= at < len(names) - 1 else None)
         return inventory_page(request, "host.html", name=name, found=found, selected=("host", name),
+                              neighbours=neighbours, position=(at + 1, len(names)),
                               facts=facts.get(name), can_gather=bool(ws.playbook_repos()))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
@@ -508,7 +531,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """For each prompt, and for ansible_user (Connect as): what the inventory already sets on the targeted
         hosts. Returns (every name, so a redraw can clear a note; notes by name)."""
         names = [p.name for p in prompts if p.name != "ansible_user"] + ["ansible_user"]
-        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        state = invs.get(inv_repo.id)[1] if inv_repo else None
+        inv = state.inventory if state else None
         if not inv or not hosts:
             return names, {}
 
@@ -547,7 +571,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         login, _ = login_for(form)
         if login:
             sets["ansible_user"] = sets["ansible_ssh_user"] = login
-        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        state = invs.get(inv_repo.id)[1] if inv_repo else None
+        inv = state.inventory if state else None
         out = []
         for h in hosts[:first]:
             host = inv.hosts.get(h) if inv else None
@@ -643,7 +668,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             form["playbook"] = keys[0] if len(keys) == 1 else ""
         inv_repo = chosen_inventory(form)
         pv = preview_for(form["playbook"], form["target"], inv_repo)
-        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        state = invs.get(inv_repo.id)[1] if inv_repo else None
+        inv = state.inventory if state else None
         template, changes = template_changes(form)
         prompts, bare_roles = prompts_for(form["playbook"])
         form["answers"] = form_answers(form, prompts)
@@ -833,7 +859,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def command_page(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
         pv = command_hosts(form)
         inv_repo = ws.inventory_repo(int(form["inventory"])) if form["inventory"].isdigit() else None
-        inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        state = invs.get(inv_repo.id)[1] if inv_repo else None
+        inv = state.inventory if state else None
         return render(request, "run_command.html", status, section="runs", form=form, form_error=form_error,
                       preview=pv, inventories=ws.inventory_repos(), modules=COMMON_MODULES,
                       cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,

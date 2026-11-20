@@ -1,7 +1,14 @@
 {% extends "inventory_base.html" %}
 {% block title %}{{ name }}{% endblock %}
 {% block main %}
-<a class="backlink" href="/inventory/hosts">← All hosts</a>
+<nav class="crumbs" aria-label="Breadcrumb">
+  <a href="/inventory/hosts">Hosts</a> <span aria-hidden="true">/</span> <span class="mono" aria-current="page">{{ name }}</span>
+  {% if neighbours %}<span class="pager">
+    {% if neighbours[0] %}<a class="btn btn-quiet" href="/inventory/hosts/{{ neighbours[0] }}" rel="prev" aria-label="Previous host, {{ neighbours[0] }}">← <span class="mono">{{ neighbours[0] }}</span></a>{% endif %}
+    <span class="help tabular">{{ position[0] }} of {{ position[1] }}</span>
+    {% if neighbours[1] %}<a class="btn btn-quiet" href="/inventory/hosts/{{ neighbours[1] }}" rel="next" aria-label="Next host, {{ neighbours[1] }}"><span class="mono">{{ neighbours[1] }}</span> →</a>{% endif %}
+  </span>{% endif %}
+</nav>
 <header class="subject">
   <p class="eyebrow">Host{% if found | length == 1 and multi_inv %} · from {{ found[0][0].name }}{% endif %}</p>
   <h1 class="identity mono">{{ name }}</h1>

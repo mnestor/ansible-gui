@@ -1,7 +1,11 @@
 {% extends "inventory_base.html" %}
 {% block title %}{{ name }}{% endblock %}
 {% block main %}
-<a class="backlink" href="/inventory/groups">← All groups</a>
+<nav class="crumbs" aria-label="Breadcrumb">
+  <a href="/inventory/groups">Groups</a> <span aria-hidden="true">/</span>
+  {% if found %}{% for p in trail(found[0][0], name) %}<a class="mono" href="/inventory/groups/{{ p }}">{{ p }}</a> <span aria-hidden="true">/</span> {% endfor %}{% endif %}
+  <span class="mono" aria-current="page">{{ name }}</span>
+</nav>
 <header class="subject">
   <p class="eyebrow">Group{% if found | length == 1 and multi_inv %} · from {{ found[0][0].name }}{% endif %}</p>
   <h1 class="identity mono">{{ name }}</h1>

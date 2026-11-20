@@ -776,3 +776,24 @@ table.repos th[scope=row] { white-space: normal; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* Inventory lists: full width, a search above; groups as an indented tree. */
+.list-tools { display: flex; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s4); }
+.group-tree { list-style: none; margin: 0 0 var(--s6); padding: var(--s1); max-width: 720px; background: var(--well);
+  border: 1px solid var(--rule); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
+.group-tree li { padding-left: calc(var(--level, 0) * var(--s5)); }
+.group-tree li[hidden] { display: none; }
+.group-tree a { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); padding: var(--s2) var(--s3);
+  min-height: 40px; border-radius: var(--radius-control); text-decoration: none; color: var(--ink); }
+.group-tree a:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.group-tree a:hover .group-tree-name { color: var(--accent-ink); }
+.group-tree li:not([style*="--level: 0"]) .group-tree-name::before { content: "└ "; color: var(--rule-strong); }
+.group-tree-name { font-weight: 600; }
+.host-list tr[hidden] { display: none; }
+.inventory-list { margin-bottom: var(--s10); }
+/* Detail pages: where you are, and the next host without going back. */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin-bottom: var(--s4); font-size: var(--fs-sm); color: var(--ink-muted); }
+.crumbs a { color: var(--ink-muted); }
+.crumbs a:hover { color: var(--accent-ink); }
+.crumbs [aria-current] { color: var(--ink); font-weight: 600; }
+.pager { margin-left: auto; display: flex; gap: var(--s1); align-items: center; }

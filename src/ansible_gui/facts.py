@@ -36,6 +36,13 @@ class Facts:
     gathered_at: datetime
     run_id: int | None
 
+    @property
+    def os(self) -> str:
+        """Short: "Debian 12", for a list."""
+        f = self.facts
+        return " ".join(str(f[k]) for k in ("ansible_distribution", "ansible_distribution_version")
+                        if f.get(k) not in (None, "", "NA", "N/A"))
+
     def summary(self) -> list[tuple[str, str]]:
         """The handful worth reading first, as (label, value)."""
         f = self.facts
