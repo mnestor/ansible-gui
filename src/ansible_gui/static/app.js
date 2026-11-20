@@ -249,6 +249,14 @@
     if (e.detail.verb === "get" && e.detail.elt.matches?.("form.launcher")) e.detail.errors = [];
   });
 
+  // The Variables section is redrawn only when the playbook changes: a redraw on every change would close
+  // "more optional variables" while someone fills it in.
+  document.addEventListener("change", (e) => {
+    if (e.target.name !== "playbook") return;
+    const vars = e.target.form && e.target.form.querySelector("#run-vars");
+    if (vars && window.htmx) htmx.trigger(vars, "playbook-changed");
+  });
+
   // Rail width: one choice for every page, remembered in this browser.
   function railState() {
     const icon = document.documentElement.dataset.rail === "icon";

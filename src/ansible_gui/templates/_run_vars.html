@@ -55,7 +55,7 @@
   </div>
 {% endmacro %}
 <section id="run-vars" class="form-section" aria-labelledby="sec-vars"
-         hx-get="/runs/vars" hx-trigger="change[target.name=='playbook'] from:closest form" hx-target="this"
+         hx-get="/runs/vars" hx-trigger="playbook-changed" hx-target="this"
          hx-swap="outerHTML" hx-include="closest form" hx-push-url="false">
   <input type="hidden" name="kept_from" value="{{ kept_from }}">
   <div class="form-section-head">

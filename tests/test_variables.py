@@ -154,6 +154,8 @@ def test_the_launcher_draws_a_field_per_option(c):
     assert 'type="password" name="var.build_token"' in page and 'value="nfs"' in page
     assert "Not set here" in page and 'name="extra_vars"' in page
     assert 'name="var.' not in c.get("/runs/new", params={"playbook": "site.yml"}).text
+    # Redrawn only when the playbook changes (app.js), never on every change: that closed the optional ones.
+    assert 'hx-trigger="playbook-changed"' in page
     part = c.get("/runs/vars", params={"playbook": "build.yml", "var.build_host": "keep-me"}).text
     assert 'value="keep-me"' in part and part.lstrip().startswith("{#") is False
 
