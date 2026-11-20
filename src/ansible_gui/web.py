@@ -26,6 +26,8 @@ from .credentials import ssh as sshtools
 from .facts import FactStore
 from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
+
+ACCOUNT_SIDE = ("account", "become_password")  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
 from .repos import forge
 from .keys import Keys
@@ -234,7 +236,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return text if len(text) <= 60 else text[:59] + "…"
         return ws.label(x.repo_id, x.playbook)
     env.globals.update(
-        cred_list=lambda kind: "/credentials" if kind == "account" else "/credentials/secrets",
+        cred_list=lambda kind: "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets",
+        account_side=ACCOUNT_SIDE,
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
         commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
@@ -1058,19 +1061,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def credentials_page(request: Request, view: str = "accounts") -> HTMLResponse:
         q = request.query_params
         everything = creds.all()
+        # A become password belongs to whoever signs in, so it lives with accounts; ones saved on their own
+        # (from before accounts) are listed there to be moved into one.
+        loose = [c for c in everything if c.kind == "become_password"]
         if view == "accounts":
             items = [c for c in everything if c.kind == "account"]
         else:
             order = list(KINDS)
-            items = sorted((c for c in everything if c.kind != "account"),
+            items = sorted((c for c in everything if c.kind not in ACCOUNT_SIDE),
                            key=lambda c: (order.index(c.kind), c.name.lower()))
+        users = {}
+        for owner in [*schedules.all(), *run_templates.all()]:
+            for cid in owner.credentials.values():
+                users[cid] = users.get(cid, 0) + 1
         used_by_repo: dict[int, list] = {}
         for r in repos.all():
             if r.ssh_key_id:
                 used_by_repo.setdefault(r.ssh_key_id, []).append(r)
         return render(request, "credentials.html", section="credentials", view=view, items=items, kinds=KINDS,
                       token_repos=used_by_repo, saved=q.get("saved"), deleted=q.get("deleted"),
-                      key_file=keys.generated_at,
+                      key_file=keys.generated_at, loose=loose, users=users,
                       legacy=any(c.kind in ("ssh_key", "become_password") for c in everything))
 
     def ssh_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
@@ -1113,9 +1123,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       other_creds={k: creds.by_kind(k) for k in ("ssh_key", "become_password")})
 
     @app.get("/credentials/new", response_class=HTMLResponse)
-    def new_credential(request: Request, kind: str = "ssh_key"):
-        return cred_form(request, kind if kind in KINDS else "ssh_key",
-                         values={"is_default": not creds.by_kind(kind)})
+    def new_credential(request: Request, kind: str = "ssh_key", copy_key_from: str = "", copy_become_from: str = ""):
+        if kind == "become_password":
+            kind = "account"  # a new become password goes in an account
+        kind = kind if kind in KINDS else "ssh_key"
+        values = {"is_default": not creds.by_kind(kind), "copy_key_from": copy_key_from,
+                  "copy_become_from": copy_become_from}
+        src = creds.get(int(copy_become_from)) if copy_become_from.isdigit() else None
+        if kind == "account" and src and src.kind == "become_password":
+            values["name"] = src.name  # moving one in: keep the name it's known by
+        return cred_form(request, kind, values=values)
 
     @app.get("/credentials/{cred_id}", response_class=HTMLResponse)
     def edit_credential(request: Request, cred_id: int):
@@ -1127,7 +1144,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                                                            "username": cred.meta.get("username", "")})
 
     def list_for(kind: str) -> str:
-        return "/credentials" if kind == "account" else "/credentials/secrets"
+        return "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets"
 
     def copy_into_account(values: dict) -> None:
         """An account can start from a saved SSH key and become password: their values, decrypted here, unless

@@ -115,7 +115,7 @@ def test_secret_values_never_render(app, keypair):
     c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw-visible?"})
     page = c.get("/credentials/secrets").text
     assert "PRIVATE KEY" not in page and "pw-visible?" not in page and "SHA256:" in page
-    assert '<td>Become password</td>' in page and '<td>SSH key</td>' in page
+    assert '<td>SSH key</td>' in page and "sudo" not in page  # a become password is an account matter
     cred = app.state.creds.by_kind("become_password")[0]
     assert "pw-visible?" not in c.get(f"/credentials/{cred.id}").text
     bad = c.post("/credentials", data={"kind": "become_password", "name": "bad name!", "password": "pw-again"})
@@ -365,3 +365,25 @@ def test_accounts_secrets_and_ssh_settings_are_separate_pages(app):
     assert '<a class="crumb" href="/credentials">← Accounts</a>' in form
     assert '<a class="rail-item rail-sub" href="/credentials" aria-current="page">' in form
     assert "Known hosts" in c.get("/credentials/ssh").text
+
+
+def test_a_loose_become_password_is_listed_under_accounts_to_move_into_one(app):
+    c = TestClient(app)
+    c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw-old"})
+    old = app.state.creds.by_kind("become_password")[0]
+    accounts = c.get("/credentials").text
+    assert "Become passwords not in an account" in accounts and f">sudo</a>" in accounts
+    move = f'href="/credentials/new?kind=account&amp;copy_become_from={old.id}"'
+    assert move in accounts
+    assert ">sudo</a>" not in c.get("/credentials/secrets").text
+    form = c.get(f"/credentials/new?kind=account&copy_become_from={old.id}").text
+    assert f'<option value="{old.id}" selected>sudo</option>' in form and 'value="sudo"' in form
+    assert 'aria-label="Kind of secret"' not in form
+    # No new loose ones: asking for one opens the account form.
+    assert "Add account" in c.get("/credentials/new?kind=become_password").text
+    edit = c.get(f"/credentials/{old.id}").text
+    assert '<a class="crumb" href="/credentials">← Accounts</a>' in edit
+    r = c.post("/credentials", data={"kind": "account", "name": "sudo-acct", "username": "deploy",
+                                     "copy_become_from": str(old.id)}, follow_redirects=False)
+    assert r.status_code == 303
+    assert app.state.creds.secret(app.state.creds.by_kind("account")[0])["become_password"] == "pw-old"

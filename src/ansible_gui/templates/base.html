@@ -28,7 +28,7 @@
   {% set sub_here = run_subs | selectattr(0, "in", [sub_path, sub_path.rsplit("/", 1)[0]]) | list %}
   {# A credential's own page belongs to its list: accounts or secrets. #}
   {% set cred_here = cred_subs | selectattr(0, "equalto", path) | list if path in ("/credentials", "/credentials/secrets", "/credentials/ssh") else
-     ([cred_subs[0]] if (kind is defined and kind == "account") else [cred_subs[1]]) if path.startswith("/credentials/") else [] %}
+     ([cred_subs[0]] if (kind is defined and kind in account_side) else [cred_subs[1]]) if path.startswith("/credentials/") else [] %}
   <nav class="navrail" aria-label="Sections">
     {% for key, href, label in items %}
       {% set here = section == key or (key == "runs" and (sub_here or section == "schedules")) %}
