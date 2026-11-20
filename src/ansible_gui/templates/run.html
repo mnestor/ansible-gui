@@ -29,6 +29,7 @@
       {% endif %}
       {% if run.schedule_id %}<a class="btn btn-quiet" href="/schedules/{{ run.schedule_id }}">Open its schedule</a>
       {% else %}<a class="btn btn-quiet" href="{{ rerun_url(run, 'check' if run.check_mode else 'apply') | replace('/runs/new', '/schedules/new') }}">Schedule this…</a>{% endif %}
+      <a class="btn btn-quiet" href="{{ rerun_url(run, 'check' if run.check_mode else 'apply') | replace('/runs/new', '/runs/templates/new') }}">Save as template…</a>
     {% endif %}
   </div>
 </header>

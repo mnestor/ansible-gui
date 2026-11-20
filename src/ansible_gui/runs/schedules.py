@@ -95,6 +95,8 @@ class Schedule:
     notify: str = "problems"
     repo_id: int = 0
     inventory_id: int | None = None
+    remote_user: str = ""
+    template_name: str = ""  # the template it was copied from; editing that template doesn't change it
     last_run: object | None = field(default=None)
 
     @property
@@ -114,6 +116,10 @@ class ScheduleStore:
             self._db.execute("alter table schedules add column repo_id integer not null default 0")
         if "inventory_id" not in have:
             self._db.execute("alter table schedules add column inventory_id integer")
+        if "remote_user" not in have:
+            self._db.execute("alter table schedules add column remote_user text not null default ''")
+        if "template_name" not in have:
+            self._db.execute("alter table schedules add column template_name text not null default ''")
 
     def _row(self, r) -> Schedule:
         return Schedule(id=r["id"], name=r["name"], cron=r["cron"], enabled=bool(r["enabled"]), playbook=r["playbook"],
@@ -121,7 +127,8 @@ class ScheduleStore:
                         diff=bool(r["diff"]), verbosity=r["verbosity"], credentials=json.loads(r["credentials"]),
                         next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
                         updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
-                        notify=r["notify"], repo_id=r["repo_id"], inventory_id=r["inventory_id"])
+                        notify=r["notify"], repo_id=r["repo_id"], inventory_id=r["inventory_id"],
+                        remote_user=r["remote_user"], template_name=r["template_name"])
 
     def all(self) -> list[Schedule]:
         return [self._row(r) for r in self._db.execute("select * from schedules order by lower(name)")]
@@ -150,16 +157,18 @@ class ScheduleStore:
         notify = form.get("notify") if form.get("notify") in ("problems", "always", "never") else "problems"
         values = (name, cron, int(enabled), form.get("playbook_path", form.get("playbook")), form["target"], form["tags"], form["skip_tags"],
                   int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, notify,
-                  form.get("repo_id", 0), form.get("inventory_id"), now(), user)
+                  form.get("repo_id", 0), form.get("inventory_id"), form.get("remote_user", ""),
+                  form.get("template_name", ""), now(), user)
         with self._lock:
             if sid:
                 self._db.execute("update schedules set name=?, cron=?, enabled=?, playbook=?, target=?, tags=?, skip_tags=?,"
-                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, repo_id=?, inventory_id=?, updated_at=?, updated_by=?"
+                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, repo_id=?, inventory_id=?, remote_user=?, template_name=?, updated_at=?, updated_by=?"
                                  " where id=?", (*values, sid))
             else:
                 cur = self._db.execute("insert into schedules (name, cron, enabled, playbook, target, tags, skip_tags,"
                                        " check_mode, diff, verbosity, credentials, next_run_at, notify, repo_id, inventory_id,"
-                                       " updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
+                                       " remote_user, template_name, updated_at, updated_by, created_at)"
+                                       " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values, now()))
                 sid = cur.lastrowid
             self._db.commit()
         return self.get(sid)
@@ -232,7 +241,7 @@ class Scheduler:
         run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity, expected_hosts=[],
                                trigger=trigger or f"schedule {s.name}", schedule_id=s.id, repo_id=s.repo_id,
-                               inventory_id=s.inventory_id)
+                               inventory_id=s.inventory_id, remote_user=s.remote_user)
         self.runs.update(run.id, status=status, finished_at=now(), error=error)
         self.on_finish(run.id)
         return self.runs.get(run.id)
@@ -256,7 +265,7 @@ class Scheduler:
             run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                    check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity,
                                    expected_hosts=[], trigger=trigger, credentials=chosen, schedule_id=s.id,
-                                   repo_id=s.repo_id, inventory_id=s.inventory_id)
+                                   repo_id=s.repo_id, inventory_id=s.inventory_id, remote_user=s.remote_user)
         self.executor.submit(run.id)
         return run
 

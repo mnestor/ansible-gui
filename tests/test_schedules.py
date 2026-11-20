@@ -141,3 +141,14 @@ def test_apply_schedule_run_now_needs_confirming_and_deleted_cred_is_kept_visibl
     r = c.post(f"/schedules/{sched.id}", data={"name": "nightly", "cron": "0 3 * * *", "playbook": "site.yml",
                                                "target": "box1", "mode": "apply", "become_password": str(cred.id)})
     assert r.status_code == 400 and "no longer exists" in r.text
+
+
+def test_connect_as_is_saved_and_used_by_every_run(app, c):
+    assert make(c, remote_user="deploy").status_code == 303
+    sched = app.state.schedules.all()[0]
+    assert sched.remote_user == "deploy"
+    assert 'value="deploy"' in c.get(f"/schedules/{sched.id}").text
+    run = wait(app, app.state.scheduler.fire(sched).id)
+    assert run.remote_user == "deploy"
+    assert '"ansible_user": "deploy"' in app.state.store.log_path(run.id).read_text()
+    assert make(c, name="bad", remote_user="{{ x }}").status_code == 400

@@ -52,9 +52,14 @@
 
   {% set picked = [] %}
   {% for kind, items in cred_choices.items() %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = picked.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
-  <details class="more">
-    <summary>Credentials <span class="summary-note">· {{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
+  <details class="more" {% if form.remote_user %}open{% endif %}>
+    <summary>Sign-in <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
     <div class="more-body">
+      <div class="field">
+        <label class="label" for="remote_user">Connect as <span class="optional">(optional)</span></label>
+        <input id="remote_user" class="input input-small mono" name="remote_user" value="{{ form.remote_user }}" autocomplete="off" spellcheck="false" autocapitalize="off" pattern="[A-Za-z0-9_][A-Za-z0-9_.@\-]{0,63}" maxlength="64" placeholder="inventory’s user" aria-describedby="remote_user-help">
+        <p class="help" id="remote_user-help">The SSH user for this run. It overrides <span class="mono">ansible_user</span> wherever it is set, in the inventory or the playbook. Leave empty to use those.</p>
+      </div>
       <div class="cred-grid">
       {% for kind, items in cred_choices.items() %}
         <label class="cred-pick"><span class="help">{{ kinds[kind] }}</span>

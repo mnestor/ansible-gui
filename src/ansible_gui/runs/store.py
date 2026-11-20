@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import sqlite3
 import threading
@@ -14,6 +15,9 @@ from ..db import Database
 from ..wipe import wipe_tree
 
 log = logging.getLogger(__name__)
+
+# What a "Connect as" user may be: it goes into extra vars, which Ansible templates, so no braces or spaces.
+REMOTE_USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.@-]{0,63}$")
 
 FINISHED = {"successful", "failed", "canceled", "error", "interrupted", "skipped"}
 
@@ -52,6 +56,10 @@ MIGRATIONS = {
     "module": "alter table runs add column module text not null default ''",
     "module_args": "alter table runs add column module_args text not null default ''",
     "become": "alter table runs add column become integer not null default 0",
+    "remote_user": "alter table runs add column remote_user text not null default ''",
+    "template_id": "alter table runs add column template_id integer",
+    "template_name": "alter table runs add column template_name text not null default ''",
+    "template_changes": "alter table runs add column template_changes text not null default '[]'",
 }
 
 
@@ -90,6 +98,10 @@ class Run:
     module: str = ""  # command runs only
     module_args: str = ""
     become: bool = False
+    remote_user: str = ""  # "Connect as": passed as extra vars, so it beats the inventory's ansible_user
+    template_id: int | None = None  # the template the launcher started from; the name stays if it is deleted
+    template_name: str = ""
+    template_changes: list[str] = field(default_factory=list)  # "Skip tags: none → nginx"
 
     @property
     def finished(self) -> bool:
@@ -145,6 +157,10 @@ def _row(r: sqlite3.Row) -> Run:
         module=r["module"],
         module_args=r["module_args"],
         become=bool(r["become"]),
+        remote_user=r["remote_user"],
+        template_id=r["template_id"],
+        template_name=r["template_name"],
+        template_changes=json.loads(r["template_changes"]),
     )
 
 
@@ -184,16 +200,18 @@ class RunStore:
                diff: bool, verbosity: int, expected_hosts: list[str], trigger: str,
                credentials: dict | None = None, schedule_id: int | None = None, repo_id: int = 0,
                inventory_id: int | None = None, kind: str = "playbook", module: str = "", module_args: str = "",
-               become: bool = False) -> Run:
+               become: bool = False, remote_user: str = "", template_id: int | None = None,
+               template_name: str = "", template_changes: list[str] | None = None) -> Run:
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
                 " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind,"
-                " module, module_args, become)"
-                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " module, module_args, become, remote_user, template_id, template_name, template_changes)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
                  json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
-                 inventory_id, kind, module, module_args, int(become)),
+                 inventory_id, kind, module, module_args, int(become), remote_user, template_id, template_name,
+                 json.dumps(template_changes or [])),
             )
             self._db.commit()
             return self.get(cur.lastrowid)

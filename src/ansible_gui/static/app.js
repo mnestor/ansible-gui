@@ -140,6 +140,81 @@
     const tagList = root.querySelector("#tag-suggestions");
     if (tagOptions && tagList) tagList.replaceChildren(tagOptions.content.cloneNode(true));
 
+    // Tag fields: a chip per tag, and a box that suggests the playbook's tags one at a time (a datalist on
+    // the comma list itself only completes the first). The comma list stays in the original input, which is
+    // what the form sends; without script that input is all there is.
+    root.querySelectorAll("input[data-tag-field]").forEach((input) => {
+      if (!once(input, "Tags")) return;
+      const box = document.createElement("div");
+      box.className = "tag-field input input-medium";
+      const chips = document.createElement("ul");
+      chips.className = "chips";
+      const entry = document.createElement("input");
+      entry.className = "tag-entry";
+      entry.id = input.id;
+      input.id = input.id + "-value";
+      for (const attr of ["list", "aria-describedby"]) {
+        if (input.hasAttribute(attr)) entry.setAttribute(attr, input.getAttribute(attr));
+      }
+      input.removeAttribute("list");
+      Object.assign(entry, { autocomplete: "off", spellcheck: false, placeholder: "Type or pick a tag" });
+      entry.setAttribute("autocapitalize", "off");
+      entry.setAttribute("enterkeyhint", "done");
+      input.hidden = true; // hidden, still submitted
+      box.append(chips, entry);
+      input.after(box);
+
+      let tags = input.value.split(",").map((t) => t.trim()).filter(Boolean);
+      function sync(changed) {
+        chips.replaceChildren(...tags.map((t) => {
+          const li = document.createElement("li");
+          const chip = document.createElement("span");
+          chip.className = "chip mono";
+          chip.textContent = t;
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "chip-remove";
+          remove.textContent = "×";
+          remove.setAttribute("aria-label", `Remove ${t}`);
+          remove.addEventListener("click", () => {
+            tags = tags.filter((x) => x !== t);
+            sync(true);
+            entry.focus();
+          });
+          chip.append(remove);
+          li.append(chip);
+          return li;
+        }));
+        input.value = tags.join(",");
+        // The preview listens for change on the form: it refreshes per tag, not per keystroke.
+        if (changed) input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      function add(text) {
+        for (const t of text.split(",").map((s) => s.trim()).filter(Boolean)) if (!tags.includes(t)) tags.push(t);
+        entry.value = "";
+        sync(true);
+      }
+      entry.addEventListener("keydown", (e) => {
+        if ((e.key === "Enter" || e.key === ",") && entry.value.trim()) {
+          e.preventDefault();
+          add(entry.value);
+        } else if (e.key === "Enter") {
+          e.preventDefault(); // Enter in the tag box never starts a run
+        } else if (e.key === "Backspace" && !entry.value && tags.length) {
+          tags.pop();
+          sync(true);
+        }
+      });
+      // A pick from the suggestions arrives as an input event with no inputType (Firefox) or a replacement.
+      entry.addEventListener("input", (e) => {
+        if (!e.inputType || e.inputType === "insertReplacementText" || entry.value.includes(",")) add(entry.value);
+      });
+      entry.addEventListener("change", (e) => e.stopPropagation());
+      entry.addEventListener("blur", () => { if (entry.value.trim()) add(entry.value); });
+      box.addEventListener("click", (e) => { if (e.target === box || e.target === chips) entry.focus(); });
+      sync(false);
+    });
+
     // Show/hide a password field.
     root.querySelectorAll("[data-reveal]").forEach((btn) => {
       if (!once(btn, "Reveal")) return;

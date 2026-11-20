@@ -4,6 +4,8 @@
 <header class="subject">
   <p class="eyebrow">New run</p>
   <h1 class="identity">Run a playbook</h1>
+  {% if from_template %}<p class="subject-meta">From template <a class="mono" href="/runs/templates/{{ from_template.id }}">{{ from_template.name }}</a>{% if from_template.note %}: {{ from_template.note }}{% endif %}. Change anything below; the run records what you changed.</p>
+  {% else %}<p class="subject-meta">Or start from a <a href="/runs/templates">template</a>.</p>{% endif %}
 </header>
 
 {% if not playbooks %}
@@ -12,11 +14,13 @@
 <form class="launcher" method="post" action="/runs" hx-boost="false"
       hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
 
+  <input type="hidden" name="template" value="{{ form.template }}">
   {% include "_run_fields.html" %}
 
   <div id="preview" class="preview" aria-live="polite">
     {% include "_run_preview.html" %}
   </div>
+  <button class="btn btn-quiet" type="submit" formaction="/runs/templates/new" formmethod="get" formnovalidate>Save as template…</button>
 </form>
 {% endif %}
 {% endblock %}

@@ -63,8 +63,8 @@
   {% set missing = [] %}
   {% for kind, items in cred_choices.items() %}{% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}{% set _ = missing.append(kinds[kind] | lcfirst) %}{% endif %}{% endfor %}
   {% if missing %}<p class="banner banner-warn" role="alert">The {{ missing | join(" and ") }} picked here was deleted. Pick another under More options, or None.</p>{% endif %}
-  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or missing %}open{% endif %}>
-    <summary>More options <span class="summary-note">· {{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
+  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or form.remote_user or missing %}open{% endif %}>
+    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "signs in with " ~ picked | join(", ") if picked else "no stored credentials" }}</span></summary>
     <div class="more-body">
       <fieldset class="field">
         <legend class="label">Credentials</legend>
@@ -82,13 +82,18 @@
         <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}<a href="/credentials">Manage credentials</a></p>
       </fieldset>
       <div class="field">
+        <label class="label" for="remote_user">Connect as <span class="optional">(optional)</span></label>
+        <input id="remote_user" class="input input-small mono" name="remote_user" value="{{ form.remote_user }}" autocomplete="off" spellcheck="false" autocapitalize="off" pattern="[A-Za-z0-9_][A-Za-z0-9_.@\-]{0,63}" maxlength="64" placeholder="inventory’s user" aria-describedby="remote_user-help">
+        <p class="help" id="remote_user-help">The SSH user for this run. It overrides <span class="mono">ansible_user</span> wherever it is set, in the inventory or the playbook. Leave empty to use those.</p>
+      </div>
+      <div class="field">
         <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
-        <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
-        <p class="help" id="tags-help">Comma-separated. Runs only tasks with these tags.</p>
+        <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
+        <p class="help" id="tags-help">Runs only tasks with these tags. Pick from the playbook’s tags, or type one and press Enter.</p>
       </div>
       <div class="field">
         <label class="label" for="skip_tags">Skip tags <span class="optional">(optional)</span></label>
-        <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" autocomplete="off" spellcheck="false" list="tag-suggestions">
+        <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions">
       </div>
       <datalist id="tag-suggestions"></datalist>
       <fieldset class="field">

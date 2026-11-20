@@ -38,7 +38,8 @@ from .runs import playbooks
 from .runs.executor import Executor
 from .runs.schedules import Invalid as ScheduleInvalid
 from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
-from .runs.store import Retention, Run, RunStore, host_result
+from .runs.templates import FIELDS as TEMPLATE_FIELDS, Invalid as TemplateInvalid, TemplateStore, changed_fields
+from .runs.store import REMOTE_USER, Retention, Run, RunStore, host_result
 from .headers import SecurityHeaders
 from .sessions import SessionStore
 
@@ -120,6 +121,8 @@ def status_label(run: Run) -> str:
     return STATUS.get(run.status, ("neutral", run.status))[1]
 
 
+BAD_REMOTE_USER = ("Connect as takes a user name: letters, digits, dots, dashes, underscores or @, up to 64. "
+                   "Leave it empty to use the inventory’s.")
 MODULE_NAME = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*){0,2}$")
 COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.builtin.ping", "ansible.builtin.setup",
                   "ansible.builtin.package", "ansible.builtin.service", "ansible.builtin.systemd_service",
@@ -128,7 +131,7 @@ COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.b
 
 def command_url(run: Run) -> str:
     q = {"target": run.target, "module": run.module, "args": run.module_args, "become": "1" if run.become else "",
-         "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
+         "remote_user": run.remote_user, "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
     return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
@@ -138,7 +141,8 @@ def rerun_url(run: Run, mode: str) -> str:
     q = {"playbook": f"{run.repo_id}:{run.playbook}", "target": run.target, "mode": mode,
          "inventory": "" if run.inventory_id is None else str(run.inventory_id),
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
-         "verbosity": str(run.verbosity)}
+         "verbosity": str(run.verbosity), "remote_user": run.remote_user,
+         "template": "" if run.template_id is None else str(run.template_id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
     return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
@@ -176,6 +180,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(SecurityHeaders, hsts=https)
     app.state.creds = creds
     schedules = ScheduleStore(settings.data_dir)
+    run_templates = TemplateStore(settings.data_dir)
+    app.state.templates = run_templates
     notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
     executor.on_finish = notifier.run_finished
     scheduler = Scheduler(schedules, store, executor, creds, on_finish=notifier.run_finished)
@@ -393,9 +399,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "tags": (src.get("tags") or "").strip(),
             "skip_tags": (src.get("skip_tags") or "").strip(),
             "verbosity": verbosity,
+            "remote_user": (src.get("remote_user") or "").strip(),
+            "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
         }
+
+    def shown(key: str, value) -> str:
+        """A launcher field's value, as the template changes list shows it."""
+        if key == "playbook":
+            return str(value).split(":", 1)[-1] or "none"
+        if key == "inventory":
+            return ws.inventory_repo(int(value)).name if str(value).isdigit() and ws.inventory_repo(int(value)) else "none"
+        if key == "mode":
+            return "Apply" if value == "apply" else "Dry run"
+        if key == "diff":
+            return "on" if value else "off"
+        if key == "verbosity":
+            return "-" + "v" * int(value) if value else "default"
+        if key in PER_RUN:
+            cred = creds.get(int(value)) if str(value).isdigit() else None
+            return cred.name if cred else "none"
+        if key == "target":
+            return value or "playbook’s hosts"
+        if key == "remote_user":
+            return value or "inventory’s user"
+        return value or "none"
+
+    def template_changes(form: dict) -> tuple[Any, list[dict]]:
+        """The template the form started from, and each field changed from it: {label, was, now}."""
+        t = run_templates.get(int(form["template"])) if form.get("template") else None
+        if not t:
+            return None, []
+        base = t.as_form()
+        base["playbook"] = ws.canonical(base["playbook"])
+        labels = dict(TEMPLATE_FIELDS)
+        return t, [{"label": labels[k] or KINDS[k], "was": shown(k, base.get(k)), "now": shown(k, form.get(k))}
+                   for k in changed_fields(form, base)]
 
     def form_context(form: dict) -> dict:
         """What the launcher and the schedule form both need: playbooks, live host preview, credentials."""
@@ -407,7 +447,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv_repo = chosen_inventory(form)
         pv = preview_for(form["playbook"], form["target"], inv_repo)
         inv = invs.get(inv_repo.id)[1].inventory if inv_repo else None
+        template, changes = template_changes(form)
         return dict(
+            from_template=template, changes=changes,
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
             playbook_repos=ws.playbook_repos(), inventory_repo=inv_repo, inventories=ws.inventory_repos(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
@@ -445,10 +487,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):
-        form = read_form(request.query_params)
-        if "diff" not in request.query_params:
+        q = request.query_params
+        form = read_form(q)
+        t = run_templates.get(int(form["template"])) if form["template"] else None
+        if t:
+            given = {k for k in q if k != "template"}
+            form = {**t.as_form(), **{k: v for k, v in form.items() if k in given}, "template": str(t.id)}
+            if "diff" in given:
+                form["diff"] = q.get("diff") == "1"
+            return launcher(request, form)
+        form["template"] = ""
+        if "diff" not in q:
             form["diff"] = True
-        default_credentials(form, request.query_params)
+        default_credentials(form, q)
         return launcher(request, form)
 
     @app.get("/runs/preview", response_class=HTMLResponse)
@@ -459,7 +510,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if form["playbook"] not in known_playbooks():
             form["playbook"] = ""
         pv = preview_for(form["playbook"], form["target"], chosen_inventory(form))
+        template, changes = template_changes(form)
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
+                      from_template=template, changes=changes,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
 
@@ -471,6 +524,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return launcher(request, form, "Choose one of the playbooks listed.", status=400)
+        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
+            return launcher(request, form, BAD_REMOTE_USER, status=400)
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return launcher(request, form, "Choose the inventory to run against.", status=400)
@@ -487,12 +542,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         chosen, problem = pick_credentials(form)
         if problem:
             return launcher(request, form, problem, 400)
+        template, changes = template_changes(form)
         run = store.create(
             playbook=ws.find(form["playbook"]).path, repo_id=ws.find(form["playbook"]).repo.id,
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
-            inventory_id=inv_repo.id,
+            inventory_id=inv_repo.id, remote_user=form["remote_user"],
+            template_id=template.id if template else None, template_name=template.name if template else "",
+            template_changes=[f"{c['label']}: {c['was']} → {c['now']}" for c in changes],
         )
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
@@ -502,6 +560,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"target": (src.get("target") or "").strip(),
                 "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
                 "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
+                "remote_user": (src.get("remote_user") or "").strip(),
                 "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
 
     def command_hosts(form: dict) -> playbooks.Preview:
@@ -547,6 +606,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_command(data)
         if not MODULE_NAME.match(form["module"]):
             return command_page(request, form, "Name a module, like ansible.builtin.shell or ansible.builtin.ping.", 400)
+        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
+            return command_page(request, form, BAD_REMOTE_USER, 400)
         if len(form["args"]) > 4000:
             return command_page(request, form, "The arguments are over 4000 characters. Put that in a playbook.", 400)
         pv = command_hosts(form)
@@ -562,9 +623,82 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            become=form["become"], repo_id=ws.playbook_repos()[0].id, target=form["target"], tags="",
                            skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=pv.hosts,
                            trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
-                           inventory_id=int(form["inventory"]))
+                           inventory_id=int(form["inventory"]), remote_user=form["remote_user"])
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
+
+    # --- run templates ---------------------------------------------------------
+    def template_page(request: Request, form: dict, tmpl=None, errors: dict | None = None,
+                      form_error: str | None = None, flash: str | None = None, status: int = 200) -> HTMLResponse:
+        form["template"] = ""  # the form edits the template; nothing to compare it with
+        return render(request, "template_form.html", status, section="runs", tmpl=tmpl, errors=errors or {},
+                      form_error=form_error, flash=flash, purpose="template", editing=bool(tmpl),
+                      **form_context(form))
+
+    @app.get("/runs/templates", response_class=HTMLResponse)
+    def template_list(request: Request):
+        return render(request, "templates.html", section="runs", templates_=run_templates.all(),
+                      deleted=request.query_params.get("deleted"))
+
+    @app.get("/runs/templates/new", response_class=HTMLResponse)
+    def new_template(request: Request):
+        q = request.query_params
+        form = read_form(q)
+        if "diff" not in q:
+            form["diff"] = True
+        if "playbook" not in q:  # a blank form; one saved from the launcher keeps its own picks, None included
+            default_credentials(form, q)
+        form["name"], form["note"] = q.get("name", ""), q.get("note", "")
+        return template_page(request, form)
+
+    @app.get("/runs/templates/{tid}", response_class=HTMLResponse)
+    def show_template(request: Request, tid: int):
+        t = run_templates.get(tid)
+        if not t:
+            return RedirectResponse("/runs/templates", status_code=303)
+        form = {**t.as_form(), "name": t.name, "note": t.note}
+        return template_page(request, form, t, flash="Saved." if request.query_params.get("saved") else None)
+
+    async def save_template(request: Request, tid: int | None):
+        data = await request.form()
+        form = read_form(data)
+        form["diff"] = data.get("diff") == "1"
+        form["name"], form["note"] = str(data.get("name") or ""), str(data.get("note") or "")
+        tmpl = run_templates.get(tid) if tid else None
+        if tid and not tmpl:
+            return RedirectResponse("/runs/templates", status_code=303)
+        form["playbook"] = ws.canonical(form["playbook"])
+        if form["playbook"] not in known_playbooks():
+            return template_page(request, form, tmpl, form_error="Choose one of the playbooks listed.", status=400)
+        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
+            return template_page(request, form, tmpl, form_error=BAD_REMOTE_USER, status=400)
+        if problem := pick_credentials(form)[1]:
+            return template_page(request, form, tmpl, form_error=problem, status=400)
+        inv_repo = chosen_inventory(form)
+        if inv_repo is None:
+            return template_page(request, form, tmpl, form_error="Choose the inventory to run against.", status=400)
+        pb = ws.find(form["playbook"])
+        form.update(playbook_path=pb.path, repo_id=pb.repo.id, inventory_id=inv_repo.id)
+        try:
+            saved = run_templates.save(form, auth.display_name(auth.current_user(request)), tid)
+        except TemplateInvalid as e:
+            return template_page(request, form, tmpl, errors=e.errors, status=400)
+        return RedirectResponse(f"/runs/templates/{saved.id}?saved=1", status_code=303)
+
+    @app.post("/runs/templates")
+    async def create_template(request: Request):
+        return await save_template(request, None)
+
+    @app.post("/runs/templates/{tid}")
+    async def update_template(request: Request, tid: int):
+        return await save_template(request, tid)
+
+    @app.post("/runs/templates/{tid}/delete")
+    def delete_template(tid: int):
+        t = run_templates.get(tid)
+        if t:
+            run_templates.delete(tid)
+        return RedirectResponse(f"/runs/templates?{urlencode({'deleted': t.name if t else ''})}", status_code=303)
 
     def run_context(run: Run, offset: int) -> dict:
         live = executor.live_stats(run.id)
@@ -833,6 +967,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "target": sched.target,
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
                 "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify,
+                "remote_user": sched.remote_user, "template_name": sched.template_name,
                 "inventory": "" if sched.inventory_id is None else str(sched.inventory_id)}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
         return form
@@ -861,10 +996,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         q = request.query_params
         form = read_form(q)
         form["diff"] = q.get("diff", "1") == "1"
+        t = run_templates.get(int(form["template"])) if form["template"] else None
+        if t:  # the template, then whatever the link says (Schedule this… on a run that changed it)
+            given = {k for k in q if k != "template"}
+            form = {**t.as_form(), **{k: v for k, v in form.items() if k in given}}
+            form["diff"] = q.get("diff") == "1" if "diff" in given else t.diff
+        else:
+            default_credentials(form, q)
+        form["template"] = ""
+        form["template_name"] = t.name if t else ""
         form["name"] = q.get("name", "")
         form["cron"] = q.get("cron", "0 3 * * *")
         form["notify"] = "problems"
-        default_credentials(form, q)
         return schedule_page(request, form)
 
     @app.get("/schedules/when", response_class=HTMLResponse)
@@ -878,12 +1021,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["name"] = data.get("name", "")
         form["cron"] = data.get("cron", "")
         form["notify"] = data.get("notify", "problems")
+        form["template_name"] = str(data.get("template_name") or "")[:64]
         sched = schedules.get(sid) if sid else None
         if sid and not sched:
             return RedirectResponse("/schedules", status_code=303)
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
+        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
+            return schedule_page(request, form, sched, form_error=BAD_REMOTE_USER, status=400)
         for kind in PER_RUN:
             if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
                 return schedule_page(request, form, sched, status=400,

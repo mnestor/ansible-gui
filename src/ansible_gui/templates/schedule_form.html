@@ -4,7 +4,7 @@
 <a class="crumb" href="/schedules">← Schedules</a>
 <header class="subject subject-row">
   <div>
-    <p class="eyebrow">Schedule{% if sched %} · {{ "on" if sched.enabled else "paused" }}{% endif %}</p>
+    <p class="eyebrow">Schedule{% if sched %} · {{ "on" if sched.enabled else "paused" }}{% endif %}{% if form.template_name %} · copied from template {{ form.template_name }}{% endif %}</p>
     <h1 class="identity {% if sched %}mono{% endif %}">{{ sched.name if sched else "New schedule" }}</h1>
   </div>
   {% if sched %}
@@ -32,6 +32,7 @@
 <form class="launcher" method="post" action="/schedules{% if sched %}/{{ sched.id }}{% endif %}" hx-boost="false"
       hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
   <input type="hidden" name="purpose" value="schedule">
+  <input type="hidden" name="template_name" value="{{ form.template_name }}">
   {% if sched %}<input type="hidden" name="editing" value="1">{% endif %}
   <div class="field">
     <label class="label" for="name">Name</label>

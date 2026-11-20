@@ -9,6 +9,8 @@
     {% if run.commit_sha %}<div><dt>Playbook commit</dt><dd class="mono">{{ run.commit_sha }}</dd></div>{% endif %}
     {% if run.inventory_id is not none %}<div><dt>Inventory</dt><dd>{{ inv_label(run.inventory_id) }}</dd></div>{% endif %}
     {% if run.inventory_commit %}<div><dt>Inventory commit</dt><dd class="mono">{{ run.inventory_commit }}</dd></div>{% endif %}
+    {% if run.template_name %}<div><dt>Template</dt><dd>{% if run.template_id %}<a class="mono" href="/runs/templates/{{ run.template_id }}">{{ run.template_name }}</a>{% else %}<span class="mono">{{ run.template_name }}</span>{% endif %}{% if run.template_changes %}, changed: {{ run.template_changes | join("; ") }}{% else %}, unchanged{% endif %}</dd></div>{% endif %}
+    {% if run.remote_user %}<div><dt>Connected as</dt><dd class="mono">{{ run.remote_user }}</dd></div>{% endif %}
     <div><dt>By</dt><dd>{% if run.schedule_id %}<a href="/schedules/{{ run.schedule_id }}">{{ run.trigger }}</a>{% else %}{{ run.trigger }}{% endif %}</dd></div>
     {% set c = run.credentials %}
     {% if c %}<div><dt>Signed in with</dt><dd class="mono">{% for k in ("ssh_key", "vault_password", "become_password") %}{% if c[k] %}{{ c[k].name }} {% endif %}{% endfor %}{% for e in c.env_secret or [] %}${{ e.env }} {% endfor %}{% if not (c.ssh_key or c.vault_password or c.become_password or c.env_secret) %}nothing stored{% endif %}</dd></div>{% endif %}

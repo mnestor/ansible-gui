@@ -1,0 +1,60 @@
+{% extends "runs_base.html" %}
+{% block title %}{{ tmpl.name if tmpl else "New template" }}{% endblock %}
+{% block main %}
+<a class="crumb" href="/runs/templates">← Templates</a>
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Run template{% if tmpl %} · saved by {{ tmpl.updated_by or "someone" }} {{ tmpl.updated_at | when }}{% endif %}</p>
+    <h1 class="identity {% if tmpl %}mono{% endif %}">{{ tmpl.name if tmpl else "New template" }}</h1>
+  </div>
+  {% if tmpl %}
+  <div class="run-actions">
+    <a class="btn btn-secondary" href="/runs/new?template={{ tmpl.id }}">Run from it…</a>
+    <a class="btn btn-quiet" href="/schedules/new?template={{ tmpl.id }}">Schedule it…</a>
+  </div>
+  {% endif %}
+</header>
+
+{% if flash %}<p class="banner banner-ok" role="status">{{ flash }} Schedules made from it before keep their own copy.</p>{% endif %}
+{% if errors %}<p class="field-error" role="alert">Not saved. {{ errors | length }} thing{{ "s" if errors | length != 1 }} to fix below.</p>{% endif %}
+
+{% if not playbooks %}
+  <p class="empty">No playbooks found, so there is nothing to template. See <a href="/runs/new">Run a playbook</a> for where ansible-gui looks.</p>
+{% else %}
+<form class="launcher" method="post" action="/runs/templates{% if tmpl %}/{{ tmpl.id }}{% endif %}" hx-boost="false"
+      hx-get="/runs/preview" hx-trigger="change, input from:#target delay:400ms" hx-target="#preview" hx-swap="innerHTML" hx-include="this" hx-push-url="false">
+  <input type="hidden" name="purpose" value="template">
+  {% if tmpl %}<input type="hidden" name="editing" value="1">{% endif %}
+  <div class="field">
+    <label class="label" for="name">Name</label>
+    <input id="name" class="input input-small mono" name="name" value="{{ form.name }}" required maxlength="64" spellcheck="false"
+           autocapitalize="off" autocomplete="off" enterkeyhint="next" placeholder="cloud-base"
+           {% if errors.name %}aria-invalid="true" aria-describedby="name-err"{% endif %}>
+    {% if errors.name %}<p class="field-error" id="name-err">{{ errors.name }}</p>{% endif %}
+  </div>
+  <div class="field">
+    <label class="label" for="note">When to use it <span class="optional">(optional)</span></label>
+    <input id="note" class="input input-medium" name="note" value="{{ form.note }}" maxlength="200" autocomplete="off" enterkeyhint="next"
+           aria-describedby="note-help{% if errors.note %} note-err{% endif %}" {% if errors.note %}aria-invalid="true"{% endif %}>
+    <p class="help" id="note-help">One line, shown to whoever runs it, like “New cloud images: base, ssh and users only”.</p>
+    {% if errors.note %}<p class="field-error" id="note-err">{{ errors.note }}</p>{% endif %}
+  </div>
+
+  {% include "_run_fields.html" %}
+
+  <div id="preview" class="preview" aria-live="polite">
+    {% include "_run_preview.html" %}
+  </div>
+</form>
+{% endif %}
+
+{% if tmpl %}
+<section class="section danger-zone" aria-labelledby="del-h">
+  <h2 id="del-h" class="section-title">Delete</h2>
+  <p class="help-block">Runs and schedules made from it keep their settings and still name it.</p>
+  <form method="post" action="/runs/templates/{{ tmpl.id }}/delete" data-confirm-twice hx-boost="false">
+    <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to delete {{ tmpl.name }}" data-busy-label="Deleting…">Delete {{ tmpl.name }}</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

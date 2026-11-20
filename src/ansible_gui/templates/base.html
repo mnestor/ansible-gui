@@ -6,7 +6,7 @@
   <title>{% block title %}Inventory{% endblock %} · ansible-gui</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Red+Hat+Display:wght@700&family=Red+Hat+Mono:wght@400;600&family=Red+Hat+Text:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Red+Hat+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/early.js"></script>
   {#- No eval or inline script (the CSP forbids both), no injected indicator styles, and no copies of pages
@@ -33,13 +33,21 @@
 {% macro nav_links() %}
   {% set items = [("home", "/", "Overview"), ("hosts", "/inventory/hosts", "Hosts"), ("groups", "/inventory/groups", "Groups"), ("runs", "/runs", "Runs"),
                   ("schedules", "/schedules", "Schedules"), ("repos", "/repos", "Repositories"), ("credentials", "/credentials", "Credentials")] %}
+  {% set path = request.url.path if request is defined else "" %}
+  {% set run_subs = [("/runs/new", "Run playbook"), ("/runs/command", "Run command"), ("/runs/templates", "Templates")] %}
+  {% set sub_here = run_subs | selectattr(0, "in", [path, path.rsplit("/", 1)[0]]) | list %}
   <nav class="navrail" aria-label="Sections">
     {% for key, href, label in items %}
-      <a class="rail-item" href="{{ href }}" {% if section == key %}aria-current="page"{% endif %}>
+      <a class="rail-item" href="{{ href }}" {% if section == key %}aria-current="{{ 'true' if key == 'runs' and sub_here else 'page' }}"{% endif %}>
         {{ icon(key) }}<span class="rail-label">{{ label }}</span>
         {% if key == "runs" and active_runs %}<span class="visually-hidden">, {{ active_runs }} running</span><span class="badge badge-neutral rail-count tabular" aria-hidden="true">{{ "99+" if active_runs > 99 else active_runs }}</span>{% endif %}
         <span class="rail-tip" aria-hidden="true">{{ label }}</span>
       </a>
+      {% if key == "runs" %}
+        {% for sub_href, sub_label in run_subs %}
+          <a class="rail-item rail-sub" href="{{ sub_href }}" {% if sub_here and sub_here[0][0] == sub_href %}aria-current="page"{% endif %}><span class="rail-label">{{ sub_label }}</span></a>
+        {% endfor %}
+      {% endif %}
     {% endfor %}
   </nav>
 {% endmacro %}

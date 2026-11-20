@@ -1,26 +1,36 @@
 {# The matched hosts and the Run button, re-rendered on every change to the form. #}
 {% set apply = form.mode == "apply" %}
-{% set scheduling = purpose == "schedule" %}
-{% set save_label = "Save changes" if editing else "Save schedule" %}
+{% set saving = purpose in ("schedule", "template") %}
+{% set save_label = "Save changes" if editing else ("Save template" if purpose == "template" else "Save schedule") %}
 {% if form_error %}
   <p class="field-error" role="alert">{{ form_error }}</p>
 {% endif %}
+{% if from_template and purpose == "run" %}
+  {% if changes %}
+  <div class="preview-hosts">
+    <p class="preview-note"><strong>Changed from {{ from_template.name }}:</strong> the run records this.</p>
+    <ul class="chips">{% for c in changes %}<li><span class="chip">{{ c.label }}: <s class="mono">{{ c.was }}</s> → <span class="mono">{{ c.now }}</span></span></li>{% endfor %}</ul>
+  </div>
+  {% else %}
+  <p class="preview-note">As template <strong>{{ from_template.name }}</strong> sets it.</p>
+  {% endif %}
+{% endif %}
 {% if not form.playbook %}
   <p class="preview-note">Choose a playbook to see which hosts it would run on.</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
     <span class="help">Choose a playbook first.</span></div>
 {% elif not form.inventory %}
   <p class="preview-note">Choose an inventory to see which hosts it would run on.</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
     <span class="help">Choose an inventory first.</span></div>
 {% elif preview.error %}
   <p class="field-error" role="alert">Ansible couldn’t work out the targets: <span class="mono">{{ preview.error }}</span></p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
     <span class="help">Fix the target pattern or the playbook, then try again.</span></div>
 {% elif not preview.hosts %}
   <p class="preview-note"><strong>No hosts match.</strong>
     {% if form.target %}<span class="mono">{{ form.target }}</span> doesn’t overlap the hosts in <span class="mono">{{ form.playbook.split(":", 1)[-1] }}</span>.{% else %}The playbook’s plays target no hosts in this inventory.{% endif %}</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if scheduling else "Run" }}</button>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
     <span class="help">Change the targets to run.</span></div>
 {% else %}
   <div class="preview-hosts">
@@ -28,7 +38,10 @@
       {% if preview.plays > 1 %}across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}, listed below.</p>
   </div>
   <div class="actions">
-    {% if scheduling %}
+    {% if purpose == "template" %}
+    <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
+    <span class="help">Starts runs as {{ "Apply" if apply else "a dry run" }} on the hosts that match then: {{ preview.hosts | length }} today. Whoever runs it can change any field.</span>
+    {% elif saving %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
     <span class="help">{% if apply %}Each run applies changes to the hosts that match at that time{% else %}Each run is a dry run on the hosts that match at that time{% endif %}: {{ preview.hosts | length }} today.</span>
     {% else %}
@@ -41,6 +54,6 @@
   <div class="preview-hosts">
     <ul class="chips">{% for h in preview.hosts[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if preview.hosts | length > 24 %}<li class="help">and {{ preview.hosts | length - 24 }} more</li>{% endif %}</ul>
   </div>
-  {% if not scheduling %}{% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}{% endif %}
+  {% if not saving %}{% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}{% endif %}
 {% endif %}
 <template id="tag-options">{% for t in preview.tags %}<option value="{{ t }}">{% endfor %}</template>

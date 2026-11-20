@@ -1,0 +1,41 @@
+{% extends "runs_base.html" %}
+{% block title %}Run templates{% endblock %}
+{% block main %}
+<a class="crumb" href="/runs">← All runs</a>
+<header class="subject subject-row">
+  <div>
+    <p class="eyebrow">Runs</p>
+    <h1 class="identity">Templates</h1>
+    <p class="subject-meta">How each playbook is meant to be run. Open one to start a run from it; you can still change any field.</p>
+  </div>
+  <a class="btn btn-secondary" href="/runs/templates/new">New template</a>
+</header>
+{% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }}. Runs and schedules made from it keep their settings.</p>{% endif %}
+
+{% if not templates_ %}
+  <p class="empty">No templates yet. A template saves a playbook’s targets, tags, mode, user and credentials under a name, so the next person runs it the way you meant. Make one with New template, or with Save as template… on the launcher or a finished run.</p>
+{% else %}
+<div class="table-region">
+<table class="history">
+  <thead><tr>
+    <th scope="col">Template</th><th scope="col" class="col-wide">Playbook</th><th scope="col" class="col-wide">Targets</th>
+    <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">Connect as</th><th scope="col"><span class="visually-hidden">Actions</span></th>
+  </tr></thead>
+  <tbody>
+  {% for t in templates_ %}
+    <tr>
+      <th scope="row"><a class="mono" href="/runs/new?template={{ t.id }}">{{ t.name }}</a>
+        {% if t.note %}<span class="help wrap">{{ t.note }}</span>{% endif %}
+        <span class="phone-only help">{{ pb_label(t) }} · {{ t.mode }}</span></th>
+      <td class="mono col-wide">{{ pb_label(t) }}</td>
+      <td class="mono col-wide">{{ t.target or "playbook’s hosts" }}</td>
+      <td class="col-wide">{{ t.mode }}{% if t.tags %} · <span class="mono">{{ t.tags }}</span>{% endif %}</td>
+      <td class="mono col-wide">{{ t.remote_user or "—" }}</td>
+      <td><a class="btn btn-quiet" href="/runs/templates/{{ t.id }}" aria-label="Edit {{ t.name }}">Edit</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}

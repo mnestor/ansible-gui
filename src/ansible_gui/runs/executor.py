@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import queue
@@ -241,6 +242,9 @@ class Executor:
         if run.diff:
             cmdline.append("--diff")
         cmdline += prepared.cmdline
+        if run.remote_user:
+            # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
+            cmdline += ["-e", json.dumps({"ansible_user": run.remote_user, "ansible_ssh_user": run.remote_user})]
 
         if adhoc:
             # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to

@@ -93,3 +93,34 @@ def test_a_command_needs_a_module_name_and_targets(client):
     assert c.post("/runs/command", data={"target": "", "module": "ping"}).status_code == 400
     assert c.post("/runs/command", data={"target": "--help", "module": "ping"}).status_code == 400
     assert app.state.store.recent() == []
+
+
+@needs_ansible
+def test_connect_as_beats_ansible_user_and_ansible_ssh_user_from_the_inventory(client, tmp_path):
+    """The bootstrap case: the inventory names the everyday user, one run connects as another."""
+    app, c = client
+    hv = tmp_path / "proj" / "playbooks" / "host_vars"
+    hv.mkdir()
+    (hv / "box1.yml").write_text("ansible_user: daily\nansible_ssh_user: daily-ssh\n")
+    say = {"target": "box1", "module": "ansible.builtin.debug",
+           "args": "msg=user={{ ansible_user }}/{{ ansible_ssh_user }}", "expected": ["box1"]}
+
+    run = finish(app, c.post("/runs/command", data=say, follow_redirects=False))
+    assert "user=daily/daily-ssh" in app.state.store.log_path(run.id).read_text()
+
+    run = finish(app, c.post("/runs/command", data={**say, "remote_user": " root "}, follow_redirects=False))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful" and run.remote_user == "root", log
+    assert "user=root/root" in log and '"ansible_user": "root"' in log.splitlines()[0]
+    page = c.get(f"/runs/{run.id}").text
+    assert "Connected as" in page and "remote_user=root" in page  # shown, and kept by Run again
+
+
+def test_connect_as_refuses_anything_but_a_user_name(client):
+    app, c = client
+    for bad in ("{{ lookup('pipe', 'id') }}", "root -e x=1", "-u", "a" * 65):
+        r = c.post("/runs/command", data={"target": "box1", "module": "ping", "remote_user": bad})
+        assert r.status_code == 400 and "Connect as takes a user name" in r.text, bad
+        r = c.post("/runs", data={"playbook": "0:playbooks/site.yml", "target": "box1", "remote_user": bad})
+        assert r.status_code == 400 and "Connect as takes a user name" in r.text, bad
+    assert app.state.store.recent() == []
