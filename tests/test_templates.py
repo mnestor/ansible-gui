@@ -130,3 +130,11 @@ def test_the_rail_lists_runs_pages_and_marks_the_one_open(c):
     assert '<a class="rail-item" href="/runs" aria-current="true">' in page
     runs = c.get("/runs").text
     assert '<a class="rail-item" href="/runs" aria-current="page">' in runs and 'rail-sub" href="/runs/new" aria-current' not in runs
+
+
+def test_schedules_sit_under_runs_in_the_rail(c):
+    page = c.get("/schedules").text
+    assert '<a class="rail-item rail-sub" href="/schedules" aria-current="page">' in page
+    assert '<a class="rail-item" href="/runs" aria-current="true">' in page
+    assert '<a class="rail-item" href="/schedules"' not in page  # no longer a section of its own
+    assert 'href="/schedules">Schedules</a>' in c.get("/runs").text  # reachable when the rail is icons only

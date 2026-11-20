@@ -604,6 +604,9 @@ table.repos th[scope=row] { white-space: normal; }
 @media (min-width: 640px) {
   [data-rail="icon"] .rail .rail-label, [data-rail="icon"] .rail .account-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   [data-rail="icon"] .rail .rail-sub { display: none; }
+  [data-rail="icon"] .rail .rail-item[aria-current="true"] { background: color-mix(in oklab, var(--nav-violet) 24%, var(--nav-bg)); font-weight: 600; }
+  [data-rail="icon"] .rail .rail-item[aria-current="true"]::before { content: ""; position: absolute; left: calc(-1 * var(--s2)); top: 8px; bottom: 8px; width: 3px;
+    border-radius: 0 3px 3px 0; background: linear-gradient(180deg, var(--nav-violet-light), var(--nav-violet)); }
   [data-rail="icon"] .rail .rail-brand { padding: var(--s1) 0; justify-content: center; }
   [data-rail="icon"] .rail .rail-item { justify-content: center; padding: var(--s3) 0; min-height: 44px; }
   [data-rail="icon"] .rail .rail-count { position: absolute; top: 2px; right: 2px; margin: 0; min-width: 16px; height: 16px;
@@ -617,6 +620,9 @@ table.repos th[scope=row] { white-space: normal; }
 @media (min-width: 640px) and (max-width: 899px) {
   .rail .rail-label, .rail .account-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .rail .rail-sub { display: none; }
+  .rail .rail-item[aria-current="true"] { background: color-mix(in oklab, var(--nav-violet) 24%, var(--nav-bg)); font-weight: 600; }
+  .rail .rail-item[aria-current="true"]::before { content: ""; position: absolute; left: calc(-1 * var(--s2)); top: 8px; bottom: 8px; width: 3px;
+    border-radius: 0 3px 3px 0; background: linear-gradient(180deg, var(--nav-violet-light), var(--nav-violet)); }
   .rail .rail-brand { padding: var(--s1) 0; justify-content: center; }
   .rail .rail-item { justify-content: center; padding: var(--s3) 0; min-height: 44px; }
   .rail .rail-count { position: absolute; top: 2px; right: 2px; margin: 0; min-width: 16px; height: 16px;
