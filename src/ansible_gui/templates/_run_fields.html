@@ -95,19 +95,18 @@
   </fieldset>
 
 
-  {% from "_signin.html" import account_field, other_credentials, legacy_user %}
+  {% from "_signin.html" import account_field, other_credentials %}
   {{ account_field(form, cred_choices, notes or {}) }}
   {% set missing = [] %}
   {% for kind, items in cred_choices.items() if kind != "account" %}{% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}{% set _ = missing.append(kinds[kind] | lcfirst) %}{% endif %}{% endfor %}
   {% if missing %}<p class="banner banner-warn" role="alert">The {{ missing | join(" and ") }} picked here was deleted. Pick another under More options, or None.</p>{% endif %}
   {% set others = [] %}
   {% for kind, items in cred_choices.items() if kind != "account" %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = others.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
-  <details class="more" {% if form.verbosity or form.remote_user or missing %}open{% endif %}>
-    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "also " ~ others | join(", ") if others else "vault password, verbosity" }}</span></summary>
+  <details class="more" {% if form.verbosity or missing %}open{% endif %}>
+    <summary>More options <span class="summary-note">· {{ "also " ~ others | join(", ") if others else "vault password, verbosity" }}</span></summary>
     <div class="more-body">
       {{ other_credentials(form, cred_choices, kinds, settings) }}
       {% if env_secrets %}<p class="help">Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}.</p>{% endif %}
-      {{ legacy_user(form) }}
       <fieldset class="field">
         <legend class="label">Verbosity</legend>
         <div class="segmented segmented-inline">

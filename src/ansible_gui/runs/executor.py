@@ -316,7 +316,7 @@ class Executor:
                             "saved. Enter it again and run again.")
             text = variables.vars_file_text(plain)
             cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "prompt-vars.yml", text))]
-        user = run.remote_user or prepared.user  # Connect as overrides the account's user
+        user = prepared.user
         if user:
             # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
             cmdline += ["-e", json.dumps({"ansible_user": user, "ansible_ssh_user": user})]
@@ -375,7 +375,7 @@ class Executor:
             p.runner_dir.mkdir()
             chosen = run.credentials or {}
             loaded = {}
-            for kind in ("account", "ssh_key", "vault_password", "become_password"):
+            for kind in ("account", "vault_password"):
                 ref = chosen.get(kind)
                 if not ref:
                     continue
@@ -387,12 +387,11 @@ class Executor:
                                             "since it was saved. Enter its value again on the Credentials page.")
                 loaded[kind] = (cred, self.creds.secret(cred))
             if "account" in loaded:
-                # The account stands in for a separate key and become password; one picked as well wins.
                 acct, secret = loaded.pop("account")
                 p.user = acct.meta.get("username") or ""
-                if secret.get("private_key") and "ssh_key" not in loaded:
+                if secret.get("private_key"):
                     loaded["ssh_key"] = (acct, secret)
-                if secret.get("become_password") and "become_password" not in loaded:
+                if secret.get("become_password"):
                     loaded["become_password"] = (acct, {"password": secret["become_password"]})
             envs = []
             for ref in chosen.get("env_secret", []):

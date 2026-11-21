@@ -48,9 +48,9 @@ def test_a_run_leaves_no_secret_on_disk(tmp_path, monkeypatch):
     c = TestClient(app)
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "env-secret-1"})
     c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "vault-pw-2", "is_default": "1"})
-    c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "become-pw-3",
+    c.post("/credentials", data={"kind": "account", "name": "sudo", "become_password": "become-pw-3",
                                  "is_default": "1"})
-    ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "become_password")}
+    ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "account")}
     # site.yml prints none of them, so any copy found is one ansible-gui or ansible-runner left behind.
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "apply", "expected": ["box1"], **ids},
                follow_redirects=False)

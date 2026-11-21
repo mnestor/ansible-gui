@@ -35,9 +35,16 @@ def wait(app, run_id):
     raise AssertionError("run did not finish")
 
 
+def account(c, name="cloud", user="cloud-user") -> str:
+    creds = c.app.state.creds
+    if not any(a.name == name for a in creds.by_kind("account")):
+        c.post("/credentials", data={"kind": "account", "name": name, "username": user})
+    return str(next(a.id for a in creds.by_kind("account") if a.name == name))
+
+
 def make(c, **over):
     data = {"name": "hello-only", "note": "Just the greeting", "playbook": "site.yml", "target": "box1",
-            "mode": "apply", "diff": "1", "verbosity": "0", "tags": "hello", "remote_user": "cloud-user",
+            "mode": "apply", "diff": "1", "verbosity": "0", "tags": "hello", "account": account(c),
             "purpose": "template", **over}
     return c.post("/runs/templates", data=data, follow_redirects=False)
 
@@ -59,14 +66,13 @@ def test_save_list_and_edit(app, c):
     r = make(c)
     assert r.status_code == 303, r.text
     t = app.state.templates.all()[0]
-    assert (t.name, t.tags, t.remote_user, t.check_mode, t.note) == ("hello-only", "hello", "cloud-user", False,
-                                                                     "Just the greeting")
+    assert (t.name, t.tags, str(t.credentials["account"]), t.check_mode, t.note) == (
+        "hello-only", "hello", account(c), False, "Just the greeting")
     listing = c.get("/runs/templates").text
-    assert "hello-only" in listing and "cloud-user" in listing and f"/runs/new?template={t.id}" in listing
+    assert "hello-only" in listing and "Signs in as" in listing and ">cloud</td>" in listing and f"/runs/new?template={t.id}" in listing
     page = c.get(r.headers["location"]).text
     assert "Saved." in page and 'value="hello-only"' in page and "Run from it…" in page
     assert make(c).status_code == 400  # the name is taken
-    assert make(c, name="x", remote_user="{{ y }}").status_code == 400
     assert make(c, name="bad name").status_code == 400
     assert len(app.state.templates.all()) == 1
 
@@ -77,15 +83,15 @@ def test_a_run_from_a_template_records_what_was_changed(app, c):
     t = app.state.templates.all()[0]
     page = c.get(f"/runs/new", params={"template": t.id}).text
     assert "From template" in page and "Just the greeting" in page
-    assert 'value="cloud-user"' in page and 'value="hello"' in page and f'name="template" value="{t.id}"' in page
+    assert f'value="{account(c)}" selected' in page and 'value="hello"' in page and f'name="template" value="{t.id}"' in page
     assert "As template <strong>hello-only</strong> sets it" in page
 
     preview = c.get("/runs/preview", params={**t.as_form(), "template": t.id, "skip_tags": "change",
-                                             "remote_user": "", "diff": "1"}).text
-    assert "Changed from hello-only" in preview and "Skip tags" in preview and "inventory’s user" in preview
+                                             "account": "", "diff": "1"}).text
+    assert "Changed from hello-only" in preview and "Skip tags" in preview and "Account" in preview
 
     form = {**t.as_form(), "template": str(t.id), "diff": "1", "skip_tags": "change", "mode": "check",
-            "remote_user": "cloud-user", "expected": ["box1"]}
+            "expected": ["box1"]}
     run = wait(app, int(c.post("/runs", data=form, follow_redirects=False).headers["location"].rsplit("/", 1)[1]))
     assert run.template_id == t.id and run.template_name == "hello-only"
     assert run.template_changes == ["Mode: Apply → Dry run", "Skip tags: none → change"]
@@ -103,23 +109,22 @@ def test_a_schedule_copies_the_template_and_editing_it_later_changes_nothing(app
     make(c)
     t = app.state.templates.all()[0]
     page = c.get("/schedules/new", params={"template": t.id}).text
-    assert "copied from template hello-only" in page and 'value="cloud-user"' in page
+    assert "copied from template hello-only" in page and f'value="{account(c)}" selected' in page
     data = {**t.as_form(), "name": "nightly", "cron": "0 3 * * *", "diff": "1", "template_name": "hello-only",
             "purpose": "schedule"}
     assert c.post("/schedules", data=data, follow_redirects=False).status_code == 303
-    make(c, tags="change", remote_user="other")
     c.post(f"/runs/templates/{t.id}", data={**t.as_form(), "name": "hello-only", "diff": "1", "tags": "change",
                                              "purpose": "template"})
     assert app.state.templates.get(t.id).tags == "change"
     sched = app.state.schedules.all()[0]
-    assert (sched.tags, sched.remote_user, sched.template_name) == ("hello", "cloud-user", "hello-only")
+    assert (sched.tags, str(sched.credentials["account"]), sched.template_name) == ("hello", account(c), "hello-only")
 
 
 @needs_ansible
 def test_save_as_template_from_the_launcher_keeps_the_picks(c):
     page = c.get("/runs/templates/new", params={"playbook": "site.yml", "target": "box2", "tags": "change",
-                                                "remote_user": "deploy", "mode": "apply"}).text
-    assert 'value="box2"' in page and 'value="change"' in page and 'value="deploy"' in page
+                                                "account": account(c, "dep", "deploy"), "mode": "apply"}).text
+    assert 'value="box2"' in page and 'value="change"' in page and f'value="{account(c, "dep")}" selected' in page
     assert "Save template" in page
 
 

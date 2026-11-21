@@ -27,7 +27,7 @@ from .facts import FactStore
 from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 
-ACCOUNT_SIDE = ("account", "become_password")  # listed under Accounts; the rest are Secrets
+ACCOUNT_SIDE = ("account",)  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
 from .repos import forge
 from .keys import Keys
@@ -44,7 +44,7 @@ from .runs.executor import Executor
 from .runs.schedules import Invalid as ScheduleInvalid
 from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
 from .runs.templates import FIELDS as TEMPLATE_FIELDS, Invalid as TemplateInvalid, TemplateStore, changed_fields
-from .runs.store import REMOTE_USER, Retention, Run, RunStore, host_result
+from .runs.store import Retention, Run, RunStore, host_result
 from .headers import SecurityHeaders
 from .sessions import SessionStore
 
@@ -139,8 +139,6 @@ def status_label(run: Run) -> str:
     return STATUS.get(run.status, ("neutral", run.status))[1]
 
 
-BAD_REMOTE_USER = ("Connect as takes a user name: letters, digits, dots, dashes, underscores or @, up to 64. "
-                   "Leave it empty to use the inventory’s.")
 MODULE_NAME = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*){0,2}$")
 COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.builtin.ping", "ansible.builtin.setup",
                   "ansible.builtin.package", "ansible.builtin.service", "ansible.builtin.systemd_service",
@@ -149,7 +147,7 @@ COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.b
 
 def command_url(run: Run) -> str:
     q = {"target": run.target, "module": run.module, "args": run.module_args, "become": "1" if run.become else "",
-         "remote_user": run.remote_user, "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
+         "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
     return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
@@ -159,7 +157,7 @@ def rerun_url(run: Run, mode: str) -> str:
     q = {"playbook": f"{run.repo_id}:{run.playbook}", "target": run.target, "mode": mode,
          "inventory": "" if run.inventory_id is None else str(run.inventory_id),
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
-         "verbosity": str(run.verbosity), "remote_user": run.remote_user,
+         "verbosity": str(run.verbosity),
          "template": "" if run.template_id is None else str(run.template_id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
@@ -238,6 +236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env.globals.update(
         cred_list=lambda kind: "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets",
         account_side=ACCOUNT_SIDE,
+        account_name=lambda cid: (lambda c: c.name if c else "")(creds.get(cid) if cid else None),
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
         commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
@@ -407,6 +406,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             cred = creds.default(kind)
             if cred:
                 chosen[kind] = {"id": cred.id, "name": cred.name}
+                if kind == "account":
+                    chosen[kind]["user"] = cred.meta.get("username", "")
         chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
                                 for c in creds.by_kind("env_secret")]
         run = store.create(kind="facts", playbook="", repo_id=books[0].id, target=target, tags="", skip_tags="",
@@ -465,7 +466,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "tags": (src.get("tags") or "").strip(),
             "skip_tags": (src.get("skip_tags") or "").strip(),
             "verbosity": verbosity,
-            "remote_user": (src.get("remote_user") or "").strip(),
             "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
@@ -622,9 +622,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return vals, None
 
     def login_for(form: dict) -> tuple[str, str]:
-        """The user the run signs in as, and what sets it: Connect as, else the account's user."""
-        if form.get("remote_user"):
-            return form["remote_user"], "Connect as"
+        """The user the run signs in as, from its account, and which account."""
         acct = creds.get(int(form["account"])) if str(form.get("account") or "").isdigit() else None
         if acct and acct.kind == "account" and acct.meta.get("username"):
             return acct.meta["username"], f"the account {acct.name}"
@@ -647,8 +645,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return cred.name if cred else "none"
         if key == "target":
             return value or "playbook’s hosts"
-        if key == "remote_user":
-            return value or "inventory’s user"
         if key == "extra_vars":
             text = " ".join(str(value or "").split())
             return (text[:40] + "…" if len(text) > 41 else text) or "none"
@@ -714,6 +710,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not cred or cred.kind != kind:
                 return {}, f"That {KINDS[kind].lower()} no longer exists. Choose another."
             chosen[kind] = {"id": cred.id, "name": cred.name}
+            if kind == "account":
+                chosen[kind]["user"] = cred.meta.get("username", "")
         chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
                                 for c in creds.by_kind("env_secret")]
         return chosen, None
@@ -814,8 +812,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return launcher(request, form, "Choose one of the playbooks listed.", status=400)
-        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
-            return launcher(request, form, BAD_REMOTE_USER, status=400)
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return launcher(request, form, "Choose the inventory to run against.", status=400)
@@ -842,7 +838,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
-            inventory_id=inv_repo.id, remote_user=form["remote_user"],
+            inventory_id=inv_repo.id,
             template_id=template.id if template else None, template_name=template.name if template else "",
             template_changes=[f"{c['label']}: {c['was']} → {c['now']}" for c in changes],
             prompt_vars=prompt_vals, extra_vars=form["extra_vars"],
@@ -855,7 +851,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"target": (src.get("target") or "").strip(),
                 "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
                 "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
-                "remote_user": (src.get("remote_user") or "").strip(),
                 "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
 
     def command_hosts(form: dict) -> playbooks.Preview:
@@ -902,8 +897,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form = read_command(data)
         if not MODULE_NAME.match(form["module"]):
             return command_page(request, form, "Name a module, like ansible.builtin.shell or ansible.builtin.ping.", 400)
-        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
-            return command_page(request, form, BAD_REMOTE_USER, 400)
         if len(form["args"]) > 4000:
             return command_page(request, form, "The arguments are over 4000 characters. Put that in a playbook.", 400)
         pv = command_hosts(form)
@@ -919,7 +912,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            become=form["become"], repo_id=ws.playbook_repos()[0].id, target=form["target"], tags="",
                            skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=pv.hosts,
                            trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
-                           inventory_id=int(form["inventory"]), remote_user=form["remote_user"])
+                           inventory_id=int(form["inventory"]))
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
@@ -966,8 +959,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["playbook"] = ws.canonical(form["playbook"])
         if form["playbook"] not in known_playbooks():
             return template_page(request, form, tmpl, form_error="Choose one of the playbooks listed.", status=400)
-        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
-            return template_page(request, form, tmpl, form_error=BAD_REMOTE_USER, status=400)
         if problem := pick_credentials(form)[1]:
             return template_page(request, form, tmpl, form_error=problem, status=400)
         inv_repo = chosen_inventory(form)
@@ -1075,9 +1066,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def credentials_page(request: Request, view: str = "accounts") -> HTMLResponse:
         q = request.query_params
         everything = creds.all()
-        # A become password belongs to whoever signs in, so it lives with accounts; ones saved on their own
-        # (from before accounts) are listed there to be moved into one.
-        loose = [c for c in everything if c.kind == "become_password"]
         if view == "accounts":
             items = [c for c in everything if c.kind == "account"]
         else:
@@ -1094,8 +1082,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 used_by_repo.setdefault(r.ssh_key_id, []).append(r)
         return render(request, "credentials.html", section="credentials", view=view, items=items, kinds=KINDS,
                       token_repos=used_by_repo, saved=q.get("saved"), deleted=q.get("deleted"),
-                      key_file=keys.generated_at, loose=loose, users=users,
-                      legacy=any(c.kind in ("ssh_key", "become_password") for c in everything))
+                      key_file=keys.generated_at, users=users)
 
     def ssh_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
                  status: int = 200) -> HTMLResponse:
@@ -1134,18 +1121,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
                       cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
                       used_by_repos=used_by_repos,
-                      other_creds={k: creds.by_kind(k) for k in ("ssh_key", "become_password")})
+                      ssh_keys=creds.by_kind("ssh_key"))
 
     @app.get("/credentials/new", response_class=HTMLResponse)
-    def new_credential(request: Request, kind: str = "ssh_key", copy_key_from: str = "", copy_become_from: str = ""):
-        if kind == "become_password":
-            kind = "account"  # a new become password goes in an account
+    def new_credential(request: Request, kind: str = "ssh_key", copy_key_from: str = ""):
         kind = kind if kind in KINDS else "ssh_key"
-        values = {"is_default": not creds.by_kind(kind), "copy_key_from": copy_key_from,
-                  "copy_become_from": copy_become_from}
-        src = creds.get(int(copy_become_from)) if copy_become_from.isdigit() else None
-        if kind == "account" and src and src.kind == "become_password":
-            values["name"] = src.name  # moving one in: keep the name it's known by
+        values = {"is_default": not creds.by_kind(kind), "copy_key_from": copy_key_from}
         return cred_form(request, kind, values=values)
 
     @app.get("/credentials/{cred_id}", response_class=HTMLResponse)
@@ -1161,24 +1142,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets"
 
     def copy_into_account(values: dict) -> None:
-        """An account can start from a saved SSH key and become password: their values, decrypted here, unless
-        something was typed in their place."""
-        for field, kind in (("copy_key_from", "ssh_key"), ("copy_become_from", "become_password")):
-            src = creds.get(int(values[field])) if str(values[field]).isdigit() else None
-            if not src or src.kind != kind or not src.readable:
-                continue
-            secret = creds.secret(src)
-            if kind == "ssh_key" and not values["private_key"].strip():
-                values["private_key"] = secret["private_key"]
-                values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
-            elif kind == "become_password" and not values["become_password"]:
-                values["become_password"] = secret["password"]
+        """An account can use a key already saved (a repository's deploy key, say): its value, decrypted here,
+        unless one was pasted in its place."""
+        src = creds.get(int(values["copy_key_from"])) if str(values["copy_key_from"]).isdigit() else None
+        if src and src.kind == "ssh_key" and src.readable and not values["private_key"].strip():
+            values["private_key"] = creds.secret(src)["private_key"]
+            values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
 
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
         values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token",
-                                                "become_password", "copy_key_from", "copy_become_from")}
+                                                "become_password", "copy_key_from")}
         for flag in ("remove_certificate", "remove_key", "remove_become"):
             values[flag] = data.get(flag) == "1"
         if kind == "account":
@@ -1191,7 +1166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Secrets are never echoed back into the page; the form asks for them again.
             keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
                     "certificate": values["certificate"] if not values["copy_key_from"] else "",
-                    "copy_key_from": values["copy_key_from"], "copy_become_from": values["copy_become_from"]}
+                    "copy_key_from": values["copy_key_from"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
         return RedirectResponse(f"{list_for(cred.kind)}?saved={cred.id}", status_code=303)
@@ -1329,7 +1304,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "target": sched.target,
                 "mode": "check" if sched.check_mode else "apply", "diff": sched.diff, "tags": sched.tags,
                 "skip_tags": sched.skip_tags, "verbosity": sched.verbosity, "notify": sched.notify,
-                "remote_user": sched.remote_user, "template_name": sched.template_name,
+                "template_name": sched.template_name,
                 "inventory": "" if sched.inventory_id is None else str(sched.inventory_id),
                 "prompt_vars": sched.prompt_vars, "extra_vars": sched.extra_vars, "kept": sched.prompt_vars}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
@@ -1400,8 +1375,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["kept"] = kept_secrets(form, source)
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
-        if form["remote_user"] and not REMOTE_USER.match(form["remote_user"]):
-            return schedule_page(request, form, sched, form_error=BAD_REMOTE_USER, status=400)
         for kind in PER_RUN:
             if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
                 return schedule_page(request, form, sched, status=400,

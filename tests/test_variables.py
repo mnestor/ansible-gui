@@ -190,8 +190,10 @@ def test_bad_variables_are_refused_with_the_reason(c):
     assert r.status_code == 400 and "build_count takes a whole number" in r.text
     r = c.post("/runs", data={**base, "var.build_host": "a", "extra_vars": "build_host: b"})
     assert r.status_code == 400 and "build_host is set in its own field and in Extra variables" in r.text
-    r = c.post("/runs", data={**base, "remote_user": "deploy", "extra_vars": "ansible_user: x"})
-    assert r.status_code == 400 and "Connect as" in r.text
+    c.post("/credentials", data={"kind": "account", "name": "dep", "username": "deploy"})
+    acct = c.app.state.creds.by_kind("account")[0]
+    r = c.post("/runs", data={**base, "account": str(acct.id), "extra_vars": "ansible_user: x"})
+    assert r.status_code == 400 and "so does the account dep" in r.text
     assert app_runs(c) == 0
 
 
@@ -279,8 +281,10 @@ def test_each_field_says_what_the_inventory_already_sets_on_the_targets(c):
 
 
 def test_the_preview_lists_the_inventory_values_the_run_overrides(c):
+    c.post("/credentials", data={"kind": "account", "name": "dep", "username": "deploy"})
+    acct = c.app.state.creds.by_kind("account")[0]
     page = c.get("/runs/new", params={"playbook": "build.yml", "target": "lab", "var.build_count": "5",
-                                      "remote_user": "deploy"}).text
+                                      "account": str(acct.id)}).text
     side = page.split('class="launcher-side"')[1]
     assert "Inventory values this run overrides" in side
     box1 = side.split('target-host">box1</span>')[1].split("</li>\n      \n")[0]

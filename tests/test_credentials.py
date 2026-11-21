@@ -76,7 +76,7 @@ def test_env_names_are_checked(store):
 
 def test_changed_master_key_is_reported(tmp_path):
     s1 = CredentialStore(tmp_path, Keys.load("a" * 40, tmp_path).fernet)
-    s1.save(kind="become_password", name="sudo", values={"password": "pw"}, is_default=False, user="")
+    s1.save(kind="vault_password", name="v", values={"password": "pw"}, is_default=False, user="")
     s2 = CredentialStore(tmp_path, Keys.load("b" * 40, tmp_path).fernet)
     assert s2.all()[0].readable is False
 
@@ -112,29 +112,30 @@ def test_secret_values_never_render(app, keypair):
     r = c.post("/credentials", data={"kind": "ssh_key", "name": "lab", "private_key": key, "is_default": "1"},
                follow_redirects=False)
     assert r.status_code == 303
-    c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw-visible?"})
+    c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "pw-visible?"})
     page = c.get("/credentials/secrets").text
     assert "PRIVATE KEY" not in page and "pw-visible?" not in page and "SHA256:" in page
-    assert '<td>SSH key</td>' in page and "sudo" not in page  # a become password is an account matter
-    cred = app.state.creds.by_kind("become_password")[0]
+    assert '<td>SSH key</td>' in page and '<td>Vault password</td>' in page
+    cred = app.state.creds.by_kind("vault_password")[0]
     assert "pw-visible?" not in c.get(f"/credentials/{cred.id}").text
-    bad = c.post("/credentials", data={"kind": "become_password", "name": "bad name!", "password": "pw-again"})
+    bad = c.post("/credentials", data={"kind": "vault_password", "name": "bad name!", "password": "pw-again"})
     assert bad.status_code == 400 and "pw-again" not in bad.text
+    assert c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "x"}).status_code == 400
     launcher = c.get("/runs/new").text
-    assert "also lab" in launcher and ">No account<" in launcher
+    assert ">No account<" in launcher and 'name="ssh_key"' not in launcher  # a run's key comes from its account
 
 
 @needs_ansible
 def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     c = TestClient(app)
     key, cert = keypair
-    c.post("/credentials", data={"kind": "ssh_key", "name": "lab", "private_key": key, "certificate": cert,
+    c.post("/credentials", data={"kind": "account", "name": "lab", "private_key": key, "certificate": cert,
                                  "is_default": "1"})
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})
     c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "fixture-password",
                                  "is_default": "1"})
     creds = app.state.creds
-    ids = {k: str(creds.by_kind(k)[0].id) for k in ("ssh_key", "vault_password")}
+    ids = {k: str(creds.by_kind(k)[0].id) for k in ("account", "vault_password")}
 
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               **ids}, follow_redirects=False)
@@ -147,7 +148,7 @@ def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     assert "-F " in log and str(app.state.store.data_dir / "ssh" / "ssh_config") in log
     agent_dir = log.split("agent=")[1].split("/agent.sock")[0]
     assert not Path(agent_dir).exists()  # keys and passwords removed after the run
-    assert run.credentials["ssh_key"]["name"] == "lab" and run.credentials["env_secret"][0]["env"] == "TEST_TOKEN"
+    assert run.credentials["account"]["name"] == "lab" and run.credentials["env_secret"][0]["env"] == "TEST_TOKEN"
 
     r = c.post("/runs", data={"playbook": "vault.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               **ids}, follow_redirects=False)
@@ -158,11 +159,11 @@ def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
 @needs_ansible
 def test_deleted_credential_stops_queued_run(app):
     c = TestClient(app)
-    c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw"})
-    cred = app.state.creds.by_kind("become_password")[0]
+    c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "pw"})
+    cred = app.state.creds.by_kind("vault_password")[0]
     run = app.state.store.create(playbook="site.yml", target="box1", tags="", skip_tags="", check_mode=True,
                                  diff=False, verbosity=0, expected_hosts=["box1"], trigger="t",
-                                 credentials={"become_password": {"id": cred.id, "name": "sudo"}})
+                                 credentials={"vault_password": {"id": cred.id, "name": "v"}})
     app.state.creds.delete(cred.id)
     app.state.executor.submit(run.id)
     done = wait(app, run.id)
@@ -218,15 +219,15 @@ def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
     settings = dict(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
                     ssh_config=FIXTURE / "ssh" / "config")
     first = TestClient(create_app(Settings(**settings, secret_key="a" * 40)))
-    assert first.post("/credentials", data={"kind": "ssh_key", "name": "lab", "private_key": keypair[0],
+    assert first.post("/credentials", data={"kind": "account", "name": "lab", "private_key": keypair[0],
                                             "is_default": "1"}, follow_redirects=False).status_code == 303
 
     app = create_app(Settings(**settings, secret_key="b" * 40))
     c = TestClient(app)
-    assert "can’t decrypt" in c.get("/credentials/secrets").text
-    cred = app.state.creds.by_kind("ssh_key")[0]
+    assert "can’t decrypt" in c.get("/credentials").text
+    cred = app.state.creds.by_kind("account")[0]
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "check", "expected": ["box1"],
-                              "ssh_key": str(cred.id)}, follow_redirects=False)
+                              "account": str(cred.id)}, follow_redirects=False)
     assert r.status_code == 303, r.text[-300:]
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert run.status == "error"
@@ -307,12 +308,11 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     c = TestClient(app)
     key, cert = keypair
     c.post("/credentials", data={"kind": "ssh_key", "name": "old-key", "private_key": key, "certificate": cert})
-    c.post("/credentials", data={"kind": "become_password", "name": "old-sudo", "password": "pw-copied"})
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})
     creds = app.state.creds
     r = c.post("/credentials", data={"kind": "account", "name": "admin", "username": "deploy", "is_default": "1",
                                      "copy_key_from": str(creds.by_kind("ssh_key")[0].id),
-                                     "copy_become_from": str(creds.by_kind("become_password")[0].id)},
+                                     "become_password": "pw-copied"},
                follow_redirects=False)
     assert r.status_code == 303, r.text
     acct = creds.by_kind("account")[0]
@@ -330,13 +330,13 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log
     assert "ED25519-CERT" in log and "user=deploy" in log and "pw-copied" not in log
-    assert run.credentials["account"]["name"] == "admin"
+    assert run.credentials["account"] == {"id": acct.id, "name": "admin", "user": "deploy"}
 
-    # Connect as still overrides the account's user.
+    # A Connect as from an old link is ignored: the account decides the user.
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               "account": str(acct.id), "remote_user": "other"}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
-    assert "user=other" in app.state.store.log_path(run.id).read_text()
+    assert "user=deploy" in app.state.store.log_path(run.id).read_text()
 
 
 def test_an_account_needs_something_and_a_certificate_needs_its_key(app, keypair):
@@ -367,28 +367,6 @@ def test_accounts_secrets_and_ssh_settings_are_separate_pages(app):
     assert "Known hosts" in c.get("/credentials/ssh").text
 
 
-def test_a_loose_become_password_is_listed_under_accounts_to_move_into_one(app):
-    c = TestClient(app)
-    c.post("/credentials", data={"kind": "become_password", "name": "sudo", "password": "pw-old"})
-    old = app.state.creds.by_kind("become_password")[0]
-    accounts = c.get("/credentials").text
-    assert "Become passwords not in an account" in accounts and f">sudo</a>" in accounts
-    move = f'href="/credentials/new?kind=account&amp;copy_become_from={old.id}"'
-    assert move in accounts
-    assert ">sudo</a>" not in c.get("/credentials/secrets").text
-    form = c.get(f"/credentials/new?kind=account&copy_become_from={old.id}").text
-    assert f'<option value="{old.id}" selected>sudo</option>' in form and 'value="sudo"' in form
-    assert 'aria-label="Kind of secret"' not in form
-    # No new loose ones: asking for one opens the account form.
-    assert "Add account" in c.get("/credentials/new?kind=become_password").text
-    edit = c.get(f"/credentials/{old.id}").text
-    assert '<a class="crumb" href="/credentials">← Accounts</a>' in edit
-    r = c.post("/credentials", data={"kind": "account", "name": "sudo-acct", "username": "deploy",
-                                     "copy_become_from": str(old.id)}, follow_redirects=False)
-    assert r.status_code == 303
-    assert app.state.creds.secret(app.state.creds.by_kind("account")[0])["become_password"] == "pw-old"
-
-
 def test_env_secret_names_are_capitalised_and_deletes_sit_in_a_danger_zone(app):
     c = TestClient(app)
     r = c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "enroll_token", "value": "v"},
@@ -409,11 +387,10 @@ def test_an_account_says_what_it_lacks(app):
     assert 'data-desc="user ansible · no SSH key · no become password">plain' in page
 
 
-def test_connect_as_shows_only_where_one_is_saved(app):
+def test_there_is_no_connect_as_field(app):
     c = TestClient(app)
+    for page in (c.get("/runs/new", params={"playbook": "site.yml", "target": "box1", "remote_user": "root"}).text,
+                 c.get("/runs/command").text):
+        assert 'name="remote_user"' not in page and 'name="account"' in page
     fresh = c.get("/runs/new", params={"playbook": "site.yml", "target": "box1"}).text
-    assert 'name="remote_user"' not in fresh and 'name="account"' in fresh
-    assert 'id="inv-ansible_user"' in fresh.split('name="account"')[1].split("</div>")[0] or 'id="inv-ansible_user"' in fresh
-    old = c.get("/runs/new", params={"playbook": "site.yml", "target": "box1", "remote_user": "root"}).text
-    assert 'name="remote_user" value="root"' in old and "saved before accounts" in old
-    assert 'name="remote_user"' not in c.get("/runs/command").text
+    assert 'id="inv-ansible_user"' in fresh  # the inventory's user, under Sign in as

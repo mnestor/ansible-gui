@@ -579,8 +579,6 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .btn-danger { background: var(--well); color: var(--danger); border-color: color-mix(in oklab, var(--danger) 55%, var(--rule-strong)); white-space: nowrap; }
 .btn-danger:hover, .btn-danger[data-armed] { background: var(--danger); color: var(--canvas); border-color: var(--danger); }
 .summary-note { font-weight: 400; }
-.cred-grid { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); }
-.cred-pick { display: flex; flex-direction: column; gap: var(--s1); min-width: 200px; }
 .page .banner { border-radius: var(--radius-control); margin-bottom: var(--s6); padding-inline: var(--s4); max-width: 960px; }
 .banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); }
 .page .section-head, .page .help-block { max-width: 960px; }

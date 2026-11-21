@@ -10,12 +10,12 @@
     {% if run.inventory_id is not none %}<div><dt>Inventory</dt><dd>{{ inv_label(run.inventory_id) }}</dd></div>{% endif %}
     {% if run.inventory_commit %}{% set u = commit_link(inventory_repo(run.inventory_id), run.inventory_commit) %}<div><dt>Inventory commit</dt><dd class="mono">{% if u %}<a href="{{ u }}" rel="noopener" target="_blank">{{ run.inventory_commit }}</a>{% else %}{{ run.inventory_commit }}{% endif %}</dd></div>{% endif %}
     {% if run.template_name %}<div><dt>Template</dt><dd>{% if run.template_id %}<a class="mono" href="/runs/templates/{{ run.template_id }}">{{ run.template_name }}</a>{% else %}<span class="mono">{{ run.template_name }}</span>{% endif %}{% if run.template_changes %}, changed: {{ run.template_changes | join("; ") }}{% else %}, unchanged{% endif %}</dd></div>{% endif %}
-    {% if run.remote_user %}<div><dt>Connected as</dt><dd class="mono">{{ run.remote_user }}</dd></div>{% endif %}
     {% if run.prompt_vars %}<div><dt>Variables</dt><dd class="mono">{% for k, v in shown_vars(run.prompt_vars) %}{{ k }}: {{ v }}{% if not loop.last %}, {% endif %}{% endfor %}</dd></div>{% endif %}
     {% if run.extra_vars.strip() %}<div><dt>Extra variables</dt><dd><details class="extra-vars"><summary>{{ run.extra_vars.strip().splitlines() | length }} line{{ "s" if run.extra_vars.strip().splitlines() | length != 1 }} of YAML</summary><pre class="well mono">{{ run.extra_vars }}</pre></details></dd></div>{% endif %}
     <div><dt>By</dt><dd>{% if run.schedule_id %}<a href="/schedules/{{ run.schedule_id }}">{{ run.trigger }}</a>{% else %}{{ run.trigger }}{% endif %}</dd></div>
     {% set c = run.credentials %}
-    {% if c %}<div><dt>Signed in with</dt><dd class="mono">{% for k in ("ssh_key", "vault_password", "become_password") %}{% if c[k] %}{{ c[k].name }} {% endif %}{% endfor %}{% for e in c.env_secret or [] %}${{ e.env }} {% endfor %}{% if not (c.ssh_key or c.vault_password or c.become_password or c.env_secret) %}nothing stored{% endif %}</dd></div>{% endif %}
+    {% if run.kind != "facts" or c.account %}<div><dt>Signed in as</dt><dd>{% if c.account %}<span class="mono">{{ c.account.name }}</span>{% if c.account.user %} · user <span class="mono">{{ c.account.user }}</span>{% endif %}{% else %}the inventory’s user{% endif %}</dd></div>{% endif %}
+    {% if c.vault_password or c.env_secret %}<div><dt>Secrets</dt><dd class="mono">{% if c.vault_password %}{{ c.vault_password.name }} {% endif %}{% for e in c.env_secret or [] %}${{ e.env }} {% endfor %}</dd></div>{% endif %}
     {% if run.notified %}<div><dt>Email</dt><dd {% if run.notified.startswith("Email failed") %}class="num-failed"{% endif %}>{{ run.notified }}</dd></div>{% endif %}
   </dl>
   {% if run.error %}<p class="field-error">{{ run.error }}</p>{% endif %}

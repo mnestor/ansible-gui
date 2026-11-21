@@ -50,15 +50,14 @@
 
   <label class="check"><input type="checkbox" name="become" value="1" {% if form.become %}checked{% endif %}> Run as root <span class="help mono">--become</span></label>
 
-  {% from "_signin.html" import account_field, other_credentials, legacy_user %}
+  {% from "_signin.html" import account_field, other_credentials %}
   {{ account_field(form, cred_choices) }}
   {% set others = [] %}
   {% for kind, items in cred_choices.items() if kind != "account" %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = others.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
-  <details class="more" {% if form.remote_user %}open{% endif %}>
-    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "also " ~ others | join(", ") if others else "vault password" }}</span></summary>
+  <details class="more">
+    <summary>More options <span class="summary-note">· {{ "also " ~ others | join(", ") if others else "vault password" }}</span></summary>
     <div class="more-body">
       {{ other_credentials(form, cred_choices, kinds, settings) }}
-      {{ legacy_user(form) }}
       <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.</p>
     </div>
   </details>

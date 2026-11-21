@@ -108,19 +108,20 @@ def test_connect_as_beats_ansible_user_and_ansible_ssh_user_from_the_inventory(c
     run = finish(app, c.post("/runs/command", data=say, follow_redirects=False))
     assert "user=daily/daily-ssh" in app.state.store.log_path(run.id).read_text()
 
-    run = finish(app, c.post("/runs/command", data={**say, "remote_user": " root "}, follow_redirects=False))
+    c.post("/credentials", data={"kind": "account", "name": "bootstrap", "username": "root"})
+    acct = app.state.creds.by_kind("account")[0]
+    run = finish(app, c.post("/runs/command", data={**say, "account": str(acct.id)}, follow_redirects=False))
     log = app.state.store.log_path(run.id).read_text()
-    assert run.status == "successful" and run.remote_user == "root", log
+    assert run.status == "successful", log
     assert "user=root/root" in log and '"ansible_user": "root"' in log.splitlines()[0]
     page = c.get(f"/runs/{run.id}").text
-    assert "Connected as" in page and "remote_user=root" in page  # shown, and kept by Run again
+    assert "Signed in as" in page and "user <span class=\"mono\">root</span>" in page
+    assert f"account={acct.id}" in page  # kept by Run again
 
 
-def test_connect_as_refuses_anything_but_a_user_name(client):
+def test_an_account_user_cant_carry_anything_but_a_user_name(client):
     app, c = client
     for bad in ("{{ lookup('pipe', 'id') }}", "root -e x=1", "-u", "a" * 65):
-        r = c.post("/runs/command", data={"target": "box1", "module": "ping", "remote_user": bad})
-        assert r.status_code == 400 and "Connect as takes a user name" in r.text, bad
-        r = c.post("/runs", data={"playbook": "0:playbooks/site.yml", "target": "box1", "remote_user": bad})
-        assert r.status_code == 400 and "Connect as takes a user name" in r.text, bad
-    assert app.state.store.recent() == []
+        r = c.post("/credentials", data={"kind": "account", "name": "bad", "username": bad})
+        assert r.status_code == 400, bad
+    assert app.state.creds.by_kind("account") == []

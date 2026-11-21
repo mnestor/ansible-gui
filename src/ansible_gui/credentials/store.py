@@ -20,14 +20,13 @@ KINDS = {
     "account": "Account",
     "ssh_key": "SSH key",
     "vault_password": "Vault password",
-    "become_password": "Become password",
     "env_secret": "Environment secret",
     "git_token": "Git token",
 }
 # Kinds a run picks one of. Environment secrets go to every run.
-PER_RUN = ("account", "ssh_key", "vault_password", "become_password")
-# An account is who a run signs in as: a user, an SSH key (and certificate), a become password. The separate
-# SSH key and become password kinds remain for deploy keys and for runs set up before accounts.
+PER_RUN = ("account", "vault_password")
+# An account is who a run signs in as: a user, an SSH key (and certificate), a become password. A separate
+# SSH key is a repository's deploy key; an account can copy one in.
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\$?$", re.I)
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -159,7 +158,7 @@ class CredentialStore:
             meta["has_become"] = "become_password" in secret
             if not (login or meta["has_key"] or meta["has_become"]) and not errors:
                 errors["username"] = "Give the account at least a user, a key or a become password."
-        elif kind in ("vault_password", "become_password"):
+        elif kind == "vault_password":
             pw = values.get("password", "")
             if pw:
                 secret["password"] = pw

@@ -29,7 +29,6 @@ create table if not exists templates (
   diff integer not null default 1,
   verbosity integer not null default 0,
   credentials text not null default '{}',
-  remote_user text not null default '',
   prompt_vars text not null default '{}',
   extra_vars text not null default '',
   created_at text not null,
@@ -59,8 +58,7 @@ class Template:
     check_mode: bool
     diff: bool
     verbosity: int
-    credentials: dict  # {"ssh_key": 3, ...}; a kind left out means None
-    remote_user: str
+    credentials: dict  # {"account": 3, ...}; a kind left out means None
     updated_at: datetime
     updated_by: str
     prompt_vars: dict = field(default_factory=dict)  # secrets sealed (variables.py)
@@ -74,7 +72,7 @@ class Template:
         """The launcher's form, filled in from this template."""
         return {"playbook": f"{self.repo_id}:{self.playbook}", "target": self.target,
                 "mode": "check" if self.check_mode else "apply", "diff": self.diff, "tags": self.tags,
-                "skip_tags": self.skip_tags, "verbosity": self.verbosity, "remote_user": self.remote_user,
+                "skip_tags": self.skip_tags, "verbosity": self.verbosity,
                 "inventory": "" if self.inventory_id is None else str(self.inventory_id),
                 "prompt_vars": dict(self.prompt_vars), "extra_vars": self.extra_vars,
                 **{k: str(self.credentials.get(k, "")) for k in PER_RUN}}
@@ -86,7 +84,7 @@ def _tags(text: str) -> list[str]:
 
 # The launcher fields a run can change from its template, in the order the launcher shows them.
 FIELDS = [("playbook", "Playbook"), ("inventory", "Inventory"), ("target", "Targets"), ("mode", "Mode"),
-          ("diff", "Show diffs"), ("remote_user", "Connect as"), *((k, None) for k in PER_RUN),
+          ("diff", "Show diffs"), *((k, None) for k in PER_RUN),
           ("tags", "Only tags"), ("skip_tags", "Skip tags"), ("verbosity", "Verbosity"),
           ("extra_vars", "Extra variables")]
 
@@ -122,7 +120,7 @@ class TemplateStore:
         return Template(id=r["id"], name=r["name"], note=r["note"], playbook=r["playbook"], repo_id=r["repo_id"],
                         inventory_id=r["inventory_id"], target=r["target"], tags=r["tags"], skip_tags=r["skip_tags"],
                         check_mode=bool(r["check_mode"]), diff=bool(r["diff"]), verbosity=r["verbosity"],
-                        credentials=json.loads(r["credentials"]), remote_user=r["remote_user"],
+                        credentials=json.loads(r["credentials"]),
                         updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
                         prompt_vars=json.loads(r["prompt_vars"]), extra_vars=r["extra_vars"])
 
@@ -151,18 +149,18 @@ class TemplateStore:
         creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
         values = (name, note, form["playbook_path"], form["repo_id"], form.get("inventory_id"), form["target"],
                   form["tags"], form["skip_tags"], int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"],
-                  json.dumps(creds), form.get("remote_user", ""), json.dumps(form.get("prompt_vars") or {}),
+                  json.dumps(creds), json.dumps(form.get("prompt_vars") or {}),
                   form.get("extra_vars", ""), now(), user)
         with self._lock:
             if tid:
                 self._db.execute("update templates set name=?, note=?, playbook=?, repo_id=?, inventory_id=?, target=?,"
-                                 " tags=?, skip_tags=?, check_mode=?, diff=?, verbosity=?, credentials=?, remote_user=?,"
+                                 " tags=?, skip_tags=?, check_mode=?, diff=?, verbosity=?, credentials=?,"
                                  " prompt_vars=?, extra_vars=?, updated_at=?, updated_by=? where id=?", (*values, tid))
             else:
                 cur = self._db.execute("insert into templates (name, note, playbook, repo_id, inventory_id, target, tags,"
-                                       " skip_tags, check_mode, diff, verbosity, credentials, remote_user, prompt_vars,"
+                                       " skip_tags, check_mode, diff, verbosity, credentials, prompt_vars,"
                                        " extra_vars, updated_at, updated_by, created_at)"
-                                       " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                       " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                        (*values, now()))
                 tid = cur.lastrowid
             self._db.commit()

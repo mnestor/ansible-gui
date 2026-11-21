@@ -20,7 +20,7 @@
 <table class="history">
   <thead><tr>
     <th scope="col">Template</th><th scope="col" class="col-wide">Playbook</th><th scope="col" class="col-wide">Targets</th>
-    <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">Connect as</th><th scope="col"><span class="visually-hidden">Actions</span></th>
+    <th scope="col" class="col-wide">Mode</th><th scope="col" class="col-wide">Signs in as</th><th scope="col"><span class="visually-hidden">Actions</span></th>
   </tr></thead>
   <tbody>
   {% for t in templates_ %}
@@ -31,7 +31,7 @@
       <td class="mono col-wide">{{ pb_label(t) }}</td>
       <td class="mono col-wide">{{ t.target or "playbook’s hosts" }}</td>
       <td class="col-wide">{{ t.mode }}{% if t.tags %} · <span class="mono">{{ t.tags }}</span>{% endif %}</td>
-      <td class="mono col-wide">{{ t.remote_user or "—" }}</td>
+      <td class="mono col-wide">{{ account_name(t.credentials.get("account")) or "—" }}</td>
       <td><div class="row-actions">
         {{ icon_link("/runs/new?template=" ~ t.id, "play", "Run " ~ t.name ~ "…", "secondary") }}
         {{ icon_link("/schedules/new?template=" ~ t.id, "schedule", "Schedule " ~ t.name ~ "…") }}

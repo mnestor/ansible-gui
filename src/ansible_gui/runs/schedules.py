@@ -88,14 +88,13 @@ class Schedule:
     check_mode: bool
     diff: bool
     verbosity: int
-    credentials: dict  # {"ssh_key": 3, ...}
+    credentials: dict  # {"account": 3, ...}
     next_run_at: datetime | None
     updated_at: datetime
     updated_by: str
     notify: str = "problems"
     repo_id: int = 0
     inventory_id: int | None = None
-    remote_user: str = ""
     template_name: str = ""  # the template it was copied from; editing that template doesn't change it
     prompt_vars: dict = field(default_factory=dict)  # secrets sealed (variables.py)
     extra_vars: str = ""
@@ -118,8 +117,6 @@ class ScheduleStore:
             self._db.execute("alter table schedules add column repo_id integer not null default 0")
         if "inventory_id" not in have:
             self._db.execute("alter table schedules add column inventory_id integer")
-        if "remote_user" not in have:
-            self._db.execute("alter table schedules add column remote_user text not null default ''")
         if "template_name" not in have:
             self._db.execute("alter table schedules add column template_name text not null default ''")
         if "prompt_vars" not in have:
@@ -134,7 +131,7 @@ class ScheduleStore:
                         next_run_at=datetime.fromisoformat(r["next_run_at"]) if r["next_run_at"] else None,
                         updated_at=datetime.fromisoformat(r["updated_at"]), updated_by=r["updated_by"],
                         notify=r["notify"], repo_id=r["repo_id"], inventory_id=r["inventory_id"],
-                        remote_user=r["remote_user"], template_name=r["template_name"],
+                        template_name=r["template_name"],
                         prompt_vars=json.loads(r["prompt_vars"]), extra_vars=r["extra_vars"])
 
     def all(self) -> list[Schedule]:
@@ -164,19 +161,19 @@ class ScheduleStore:
         notify = form.get("notify") if form.get("notify") in ("problems", "always", "never") else "problems"
         values = (name, cron, int(enabled), form.get("playbook_path", form.get("playbook")), form["target"], form["tags"], form["skip_tags"],
                   int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, notify,
-                  form.get("repo_id", 0), form.get("inventory_id"), form.get("remote_user", ""),
+                  form.get("repo_id", 0), form.get("inventory_id"),
                   form.get("template_name", ""), json.dumps(form.get("prompt_vars") or {}), form.get("extra_vars", ""),
                   now(), user)
         with self._lock:
             if sid:
                 self._db.execute("update schedules set name=?, cron=?, enabled=?, playbook=?, target=?, tags=?, skip_tags=?,"
-                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, repo_id=?, inventory_id=?, remote_user=?, template_name=?, prompt_vars=?, extra_vars=?, updated_at=?, updated_by=?"
+                                 " check_mode=?, diff=?, verbosity=?, credentials=?, next_run_at=?, notify=?, repo_id=?, inventory_id=?, template_name=?, prompt_vars=?, extra_vars=?, updated_at=?, updated_by=?"
                                  " where id=?", (*values, sid))
             else:
                 cur = self._db.execute("insert into schedules (name, cron, enabled, playbook, target, tags, skip_tags,"
                                        " check_mode, diff, verbosity, credentials, next_run_at, notify, repo_id, inventory_id,"
-                                       " remote_user, template_name, prompt_vars, extra_vars, updated_at, updated_by,"
-                                       " created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                       " template_name, prompt_vars, extra_vars, updated_at, updated_by,"
+                                       " created_at) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                        (*values, now()))
                 sid = cur.lastrowid
             self._db.commit()
@@ -250,7 +247,7 @@ class Scheduler:
         run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity, expected_hosts=[],
                                trigger=trigger or f"schedule {s.name}", schedule_id=s.id, repo_id=s.repo_id,
-                               inventory_id=s.inventory_id, remote_user=s.remote_user,
+                               inventory_id=s.inventory_id,
                                prompt_vars=s.prompt_vars, extra_vars=s.extra_vars)
         self.runs.update(run.id, status=status, finished_at=now(), error=error)
         self.on_finish(run.id)
@@ -270,12 +267,14 @@ class Scheduler:
                     return self._record(s, "error", "Didn’t start: a credential this schedule uses was deleted. "
                                                     "Edit the schedule to pick another.", trigger)
                 chosen[kind] = {"id": cred.id, "name": cred.name}
+                if kind == "account":
+                    chosen[kind]["user"] = cred.meta.get("username", "")
             chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
                                     for c in self.creds.by_kind("env_secret")]
             run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                    check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity,
                                    expected_hosts=[], trigger=trigger, credentials=chosen, schedule_id=s.id,
-                                   repo_id=s.repo_id, inventory_id=s.inventory_id, remote_user=s.remote_user,
+                                   repo_id=s.repo_id, inventory_id=s.inventory_id,
                                    prompt_vars=s.prompt_vars, extra_vars=s.extra_vars)
         self.executor.submit(run.id)
         return run
