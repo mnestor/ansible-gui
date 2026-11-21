@@ -56,7 +56,8 @@ The image is Alpine with ansible-gui, ansible-core 2.21.4, git and OpenSSH. It r
 listens on 8080 with data in `/data`. The same image runs the workers: `ansible-gui worker --jobs fetcher|runner
 --socket PATH --allow-uid 10001` takes the app's jobs on a Unix socket and accepts a connection from uid 10001 only
 (the kernel reports who is on the other end). `deploy/docker-compose.yml` runs the app, a fetcher (uid 10002, the
-only container that can write the repositories) and a runner (uid 10003, with the repositories mounted read-only). It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
+only container that can write the repositories) and a runner (uid 10003, with the repositories mounted
+read-only). It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
 (or `ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). It also refuses without
 `ANSIBLE_GUI_PUBLIC_URL`, the one name besides `localhost` it answers to. `GET /healthz` backs the healthcheck and
 answers under any name.
@@ -67,14 +68,15 @@ and the NIS client with the Kerberos libraries it brought along). `deploy/smoke-
 
 Tasks a playbook runs on the controller (`delegate_to: localhost`, `connection: local`) run in this image: it has
 bash and GNU tar for them, and otherwise BusyBox's tools and musl rather than glibc. A playbook that calls a
-program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it. `deploy/` has a compose file and an env template for docker01. The compose file runs all three with
+program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it.
+
+`deploy/` has a compose file and an env template for docker01. The compose file runs all three with
 a read-only root filesystem, every capability dropped and `no-new-privileges`; `deploy/smoke-test.sh` runs a
 playbook in the runner under exactly that, and checks it can't reach the key, the database, the app's environment,
 the repositories or the fetcher's socket.
 
-Upgrading from a single container: the repositories move from `data/repos/` to the `repos` volume. On its first
-start the app removes `data/repos/` and `data/collections/`, and the fetcher pulls each repository's current
-commit again.
+There is no upgrade path from the single-container layout: start the three containers with a fresh `data/`.
+[docs/runner-split.md](docs/runner-split.md) explains the layout, the jobs and what it does and doesn't protect.
 
 ## Git repositories
 
@@ -270,9 +272,11 @@ own credentials: the run's account, become and vault passwords, its environment 
 key, the other credentials, the OIDC and SMTP secrets or the database, can't sign a session, and can't change the
 commit directories and collections later runs read (the runner mounts them read-only). What it still can: use the
 run's credentials on the hosts they reach, and stay alive in the runner to watch later jobs arrive until the
-container restarts. The fetcher writes the repositories and is meant never to run them. That rests on git (a fetch into a
-bare clone, then `read-tree` and `checkout-index`) and `ansible-galaxy collection install` not executing what they
-fetch, which hasn't been audited: the fetcher holds a deploy key or token only for the length of a pull. Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
+container restarts. The fetcher writes the repositories and is meant never to run them. That rests on git (a
+fetch into a bare clone, then `read-tree` and `checkout-index`) and `ansible-galaxy collection install` not
+executing what they fetch, which hasn't been audited: the fetcher holds a deploy key or token only for the length
+of a pull. [docs/runner-split.md](docs/runner-split.md) has the full table of what a hostile playbook gets.
+Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
 access to a repository is admin access to this server. Either way: protect the branches ansible-gui pulls, give it
 read-only deploy keys or tokens, and don't add a repository you wouldn't trust with those credentials.
 
