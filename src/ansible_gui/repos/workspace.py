@@ -383,8 +383,8 @@ class Workspace:
             self._prune_collections()
 
     def restore(self) -> None:
-        """Write out each repository's current commit if its directory is missing: after an upgrade that
-        moved the repositories, or a repositories volume that was recreated. Fetches if it has to."""
+        """Write out each repository's current commit if its directory is missing: the repositories volume
+        was recreated while data/ (which records the commits) was kept. Fetches if it has to."""
         for repo in self.repos.all():
             if repo.last_commit and not repo.path.is_dir():
                 error, _ = self.ensure_commit(repo, repo.last_commit)

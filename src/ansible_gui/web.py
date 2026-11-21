@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import threading
 
 from contextlib import asynccontextmanager
@@ -190,12 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = RunStore(settings.data_dir)
     keys = Keys.load(settings.secret_key, settings.data_dir)
     creds = CredentialStore(settings.data_dir, keys.fernet)
-    for old in (settings.data_dir / "collections", settings.data_dir / "repos"):
-        # Working copies and collections from before commit directories, or from before the repositories
-        # moved to their own volume. Rebuilt from git: the current commits are written out again below.
-        if old.is_dir() and old != settings.repos and settings.repos not in old.parents:
-            shutil.rmtree(old, ignore_errors=True)
-    repos = RepoStore(settings.data_dir, settings.repos)
+    repos =RepoStore(settings.data_dir, settings.repos)
     fetcher = SocketWorker(settings.fetcher_socket, "fetcher") if settings.fetcher_socket else None
     runner = SocketWorker(settings.runner_socket, "runner") if settings.runner_socket else None
     ws = Workspace(settings, repos, creds, fetcher, runner)
