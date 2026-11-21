@@ -443,6 +443,22 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .picker-change { display: inline-flex; align-items: center; gap: var(--s1); color: var(--accent-ink); font: 600 var(--fs-sm)/1 var(--font-text); white-space: nowrap; }
 .picker-change .icon { width: 16px; height: 16px; transition: transform var(--ease); }
 .picker[open] .picker-change .icon { transform: rotate(180deg); }
+/* The same look over a native <select> (select.js); on touch screens the native picker stays. */
+.picker-select .picker-current { width: 100%; min-height: 38px; padding: var(--s2) var(--s3); font: inherit; color: var(--ink); text-align: left; }
+.picker-small { max-width: 280px; }
+.picker-title { font-weight: 500; overflow-wrap: anywhere; }
+.picker-select .picker-about { font-size: var(--fs-xs); }
+.picker-chevron { display: inline-flex; color: var(--ink-muted); }
+.picker-chevron .icon { width: 16px; height: 16px; transition: transform var(--ease); }
+.picker-select.is-open .picker-chevron .icon { transform: rotate(180deg); }
+.picker-select .picker-list { list-style: none; margin: 0; min-width: 100%; right: auto; width: max-content; max-width: min(480px, 90vw); }
+.picker-select .picker-list:focus { outline: none; }
+.picker-select .picker-option.is-active { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.picker-select .picker-option[aria-selected="true"] { background: color-mix(in oklab, var(--accent) 14%, transparent); }
+.picker-select .picker-option[aria-selected="true"] .picker-title { color: var(--accent-ink); font-weight: 600; }
+.picker-select .picker-option.is-active[aria-selected="true"] { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent); }
+.picker-select .picker-option[aria-disabled="true"] { opacity: .5; cursor: default; }
+.picker-group { padding: var(--s2) var(--s3) var(--s1); font: 600 var(--fs-2xs)/1.2 var(--font-text); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
 .picker-list { position: absolute; top: calc(100% + var(--s1)); left: 0; right: 0; z-index: 40; max-height: min(420px, 60dvh); overflow-y: auto;
   display: flex; flex-direction: column; padding: var(--s1); background: var(--well); border: 1px solid var(--rule);
   border-radius: var(--radius-card); box-shadow: var(--shadow-pop); }
@@ -811,3 +827,8 @@ table.repos th[scope=row] { white-space: normal; }
 .repo-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s4);
   padding: var(--s3) var(--s4); margin-bottom: var(--s3); background: var(--well); border: 1px solid var(--rule); border-radius: var(--radius-card); }
 .repo-strip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); min-width: 0; overflow-wrap: anywhere; }
+
+/* In forms, fields span their card: one clean right edge rather than a ragged one. */
+.launcher .input-small, .launcher .input-medium, .launcher .picker-small { max-width: none; }
+.launcher .reveal .input { flex: 1 1 auto; }
+.launcher .picker-select .picker-list { right: 0; width: auto; max-width: none; }

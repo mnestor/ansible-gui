@@ -38,14 +38,14 @@
   <div class="field">
     <label class="label" for="ssh_key_id">Sign in with</label>
     <select id="ssh_key_id" class="input input-small" name="ssh_key_id" aria-describedby="key-help{% if errors.ssh_key_id %} key-err{% endif %}" {% if errors.ssh_key_id %}aria-invalid="true"{% endif %}>
-      <option value="">Nothing: a public repository</option>
+      <option value="" data-desc="A public repository">Nothing</option>
       <optgroup label="Git tokens, for HTTPS URLs">
-        {% for k in git_tokens %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.username }}</option>
-        {% else %}<option disabled>None yet: add one under Credentials</option>{% endfor %}
+        {% for k in git_tokens %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %} data-desc="Git token · user {{ k.meta.username }}">{{ k.name }}</option>
+        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}
       </optgroup>
       <optgroup label="SSH keys, for SSH URLs">
-        {% for k in ssh_keys %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %}>{{ k.name }} · {{ k.meta.fingerprint }}</option>
-        {% else %}<option disabled>None yet: add one under Credentials</option>{% endfor %}
+        {% for k in ssh_keys %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %} data-desc="SSH key · {{ k.meta.type }} {{ k.meta.fingerprint }}">{{ k.name }}</option>
+        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}
       </optgroup>
       {% if repo and repo.ssh_key_id and repo.ssh_key_id not in (ssh_keys + git_tokens) | map(attribute="id") | list %}<option value="{{ repo.ssh_key_id }}" selected>Deleted: pick another</option>{% endif %}
     </select>
@@ -63,7 +63,8 @@
   <div class="field">
     <label class="label" for="forge">Git host, for “Open in git” links</label>
     <select id="forge" class="input input-small" name="forge" aria-describedby="forge-help">
-      {% for k, label in forges.items() %}<option value="{{ k }}" {% if (values.forge or "") == k %}selected{% endif %}>{{ label }}{% if k == "" and found %} ({{ forges[found] }}){% endif %}</option>{% endfor %}
+      {% set forge_desc = {"": ("Found: " ~ forges[found]) if found else "github.com, gitlab.com, codeberg.org and bitbucket.org", "gitea": "/src/branch/… links", "gitlab": "/-/blob/… links", "github": "/blob/… links", "bitbucket": "/src/… links", "none": "No Open in git links for this repository"} %}
+      {% for k, label in forges.items() %}<option value="{{ k }}" {% if (values.forge or "") == k %}selected{% endif %} data-desc="{{ forge_desc[k] }}">{{ label }}</option>{% endfor %}
     </select>
     <p class="help" id="forge-help">Links to files and commits are made from the address: github.com, gitlab.com, codeberg.org and bitbucket.org are recognised. For your own server, say which software it runs. Links point at the commit last pulled, which is what runs use.</p>
   </div>

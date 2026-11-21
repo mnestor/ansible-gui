@@ -18,13 +18,13 @@
     <label class="label" for="{{ id }}">{{ p.label }} <span class="mono prompt-name">{{ p.name }}</span>{{ req }}</label>
     {% if p.kind == "bool" %}
       <select id="{{ id }}" class="input input-small" name="{{ p.field }}" aria-describedby="inv-{{ p.name }} {{ id }}-help">
-        <option value="">Not set here</option>
+        <option value=""{% if p.has_default %} data-desc="Role default: {{ p.default_text }}"{% endif %}>Not set here</option>
         <option value="true" {% if a == "true" %}selected{% endif %}>Yes</option>
         <option value="false" {% if a == "false" %}selected{% endif %}>No</option>
       </select>
     {% elif p.kind == "choice" %}
       <select id="{{ id }}" class="input input-small mono" name="{{ p.field }}" aria-describedby="inv-{{ p.name }} {{ id }}-help">
-        <option value="">Not set here</option>
+        <option value=""{% if p.has_default %} data-desc="Role default: {{ p.default_text }}"{% endif %}>Not set here</option>
         {% for c in p.choices %}<option value="{{ c }}" {% if a == c | string %}selected{% endif %}>{{ c }}</option>{% endfor %}
       </select>
     {% elif p.kind in ("list", "dict", "multiline") %}

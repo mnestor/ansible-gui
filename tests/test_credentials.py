@@ -322,7 +322,7 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     assert "pw-copied" not in listing and "PRIVATE KEY" not in listing and "become password" in listing
 
     launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
-    assert f'<option value="{acct.id}" selected>admin (deploy · certificate · become password), default' in launcher
+    assert f'<option value="{acct.id}" selected data-desc="deploy · certificate · become password">admin (default)</option>' in launcher
 
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               "account": str(acct.id)}, follow_redirects=False)

@@ -14,8 +14,8 @@
   <div class="field">
     <label class="label" for="account">Sign in as</label>
     <select id="account" class="input input-small" name="account" aria-describedby="account-help">
-      <option value="">No account</option>
-      {% for c in accounts %}<option value="{{ c.id }}" {% if form.account == c.id|string %}selected{% endif %}>{{ c.name }} ({{ account_summary(c) }}){% if c.is_default %}, default{% endif %}</option>{% endfor %}
+      <option value="" data-desc="The inventory’s user; the SSH config decides how to sign in">No account</option>
+      {% for c in accounts %}<option value="{{ c.id }}" {% if form.account == c.id|string %}selected{% endif %} data-desc="{{ account_summary(c) }}">{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
       {% if form.account and form.account not in ids %}<option value="{{ form.account }}" selected>Deleted: pick another</option>{% endif %}
     </select>
     <p class="help" id="account-help">{% if accounts %}The user, SSH key and become password the run uses. <a href="/credentials">Accounts</a>{% else %}No accounts yet, so runs use the inventory’s user and the SSH config. <a href="/credentials/new?kind=account">Add an account</a>: a user, its SSH key and its become password, picked together.{% endif %}</p>
@@ -33,7 +33,7 @@
       <label class="cred-pick"><span class="help">{{ kinds[kind] }}{% if kind in ("ssh_key", "become_password") %}, instead of the account’s{% endif %}</span>
         <select class="input input-small" name="{{ kind }}" {% if rest == ["vault_password"] %}aria-label="Vault password"{% endif %}>
           <option value="">{% if kind == "vault_password" and settings.vault_password_file %}Server’s vault password file{% else %}None{% endif %}</option>
-          {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
+          {% for c in items %}<option value="{{ c.id }}" {% if form[kind] == c.id|string %}selected{% endif %}{% if c.meta.fingerprint %} data-desc="{{ c.meta.type }} {{ c.meta.fingerprint }}"{% endif %}>{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
           {% if form[kind] and form[kind] not in (items | map(attribute="id") | map("string") | list) %}<option value="{{ form[kind] }}" selected>Deleted: pick another</option>{% endif %}
         </select>
       </label>
