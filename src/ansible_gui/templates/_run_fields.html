@@ -62,6 +62,23 @@
   {% if form.rerun %}<input type="hidden" name="rerun" value="{{ form.rerun }}">{% endif %}
   {% include "_run_vars.html" %}
 
+<section class="form-section" aria-labelledby="sec-tags">
+  <div class="form-section-head">
+    <h2 class="form-section-title" id="sec-tags">Tags</h2>
+    <p class="help">Which of the playbook’s tasks run.</p>
+  </div>
+  <div class="field">
+    <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
+    <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
+    <p class="help" id="tags-help">Runs only tasks with these tags. Pick from the playbook’s tags, or type one and press Enter. Empty runs every task.</p>
+  </div>
+  <div class="field">
+    <label class="label" for="skip_tags">Skip tags <span class="optional">(optional)</span></label>
+    <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions">
+  </div>
+  <datalist id="tag-suggestions"></datalist>
+</section>
+
 <section class="form-section" aria-labelledby="sec-how">
   <div class="form-section-head">
     <h2 class="form-section-title" id="sec-how">How to run</h2>
@@ -85,22 +102,12 @@
   {% if missing %}<p class="banner banner-warn" role="alert">The {{ missing | join(" and ") }} picked here was deleted. Pick another under More options, or None.</p>{% endif %}
   {% set others = [] %}
   {% for kind, items in cred_choices.items() if kind != "account" %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = others.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
-  <details class="more" {% if form.tags or form.skip_tags or form.verbosity or form.remote_user or missing %}open{% endif %}>
-    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "also " ~ others | join(", ") if others else "vault, tags, verbosity" }}</span></summary>
+  <details class="more" {% if form.verbosity or form.remote_user or missing %}open{% endif %}>
+    <summary>More options <span class="summary-note">· {% if form.remote_user %}as <span class="mono">{{ form.remote_user }}</span>, {% endif %}{{ "also " ~ others | join(", ") if others else "vault password, verbosity" }}</span></summary>
     <div class="more-body">
       {{ other_credentials(form, cred_choices, kinds, settings) }}
       {% if env_secrets %}<p class="help">Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}.</p>{% endif %}
       {{ legacy_user(form) }}
-      <div class="field">
-        <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
-        <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
-        <p class="help" id="tags-help">Runs only tasks with these tags. Pick from the playbook’s tags, or type one and press Enter.</p>
-      </div>
-      <div class="field">
-        <label class="label" for="skip_tags">Skip tags <span class="optional">(optional)</span></label>
-        <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions">
-      </div>
-      <datalist id="tag-suggestions"></datalist>
       <fieldset class="field">
         <legend class="label">Verbosity</legend>
         <div class="segmented segmented-inline">
