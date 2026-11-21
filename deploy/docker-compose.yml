@@ -87,7 +87,7 @@ services:
       interval: 30s
       timeout: 5s
     networks:
-      - edge                                               # the git server and Galaxy
+      - fetch                                              # the git server and Galaxy
 
   runner:
     <<: *hardened
@@ -114,7 +114,7 @@ services:
       interval: 30s
       timeout: 5s
     networks:
-      - edge                                               # SSH to the managed hosts
+      - hosts                                              # SSH to the managed hosts, and any jump host
 
 volumes:
   repos:                                                   # rebuilt from git if lost: nothing to back up
@@ -129,7 +129,21 @@ volumes:
       device: tmpfs
       o: "uid=10003,gid=10011,mode=0750"
 
+# Each container on its own network, so a firewall can tell them apart by address: the app needs Traefik,
+# Pocket ID and mail; the fetcher the git server and Galaxy; the runner the managed hosts. Nothing here narrows
+# what each may reach yet: that is a rule on docker01 or OPNsense per subnet, once the playbooks' needs (lookups,
+# APIs a local task calls) are listed. Subnets: the next free in 172.28.0.0/16 on docker01 (2026-11-20).
 networks:
   edge:
-    name: ansible-gui_edge
+    name: ansible-gui_edge                                 # 172.28.15.0/24, defined in ~/traefik
     external: true
+  fetch:
+    name: ansible-gui_fetch
+    ipam:
+      config:
+        - subnet: 172.28.16.0/24
+  hosts:
+    name: ansible-gui_hosts
+    ipam:
+      config:
+        - subnet: 172.28.17.0/24

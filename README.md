@@ -224,12 +224,15 @@ aren't cached by the browser.
 
 Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
 
-- SSH reads only `data/ssh/ssh_config` (passed as `--ssh-common-args -F …`), which includes
-  `ANSIBLE_GUI_SSH_CONFIG` first, then falls back to `data/ssh/known_hosts` with `StrictHostKeyChecking` set to
-  `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING` (`accept-new` unless changed). Your file wins wherever it sets an option. An
+- SSH reads only the ssh_config each run and pull writes into its own temp directory (passed as
+  `--ssh-common-args -F …`). It includes the text of `ANSIBLE_GUI_SSH_CONFIG` first, then falls back to a copy of
+  the known hosts with `StrictHostKeyChecking` set to `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING` (`accept-new` unless
+  changed). The file's text travels with each job, so the workers need no mount for it; a file it `Include`s
+  doesn't. Your file wins wherever it sets an option. An
   inventory `ansible_ssh_common_args` replaces the `-F`; the Credentials page lists hosts that do this.
 - With the default `accept-new`, a new host's key is recorded under **Known hosts** on the Credentials page
-  on its first connection, and a different key is refused after that. Whoever answers that first connection
+  on its first connection (the worker reports it, the app checks and keeps it), and a different key is refused
+  after that. Whoever answers that first connection
   is trusted, impostor or not. When a host is rebuilt with a new key, delete its line there.
 - With `yes`, a run or SSH pull reaches only hosts whose key is already listed. Paste `ssh-keyscan` output
   from a machine you trust, lines from your own `known_hosts`, or one `@cert-authority` line if your hosts
@@ -241,6 +244,16 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
   vault passwords, become passwords, and environment secrets, which every run gets as `$NAME` and
   `$NAME_FILE`. They are written to a 0700 temp dir for the run and wiped after it. Values are never shown
   back in the UI.
+- Hosts on another network are reached through a jump host: a `ProxyJump` line in `ANSIBLE_GUI_SSH_CONFIG`.
+  The jump host is offered the run's own key or certificate, and carries an encrypted stream: it never holds the
+  key, the become password or the vault password. In the compose layout the runner, on its own network
+  (`ansible-gui_hosts`), needs to reach the jump host, and the fetcher (`ansible-gui_fetch`) does too if a git
+  server sits behind one.
+
+  ```
+  Host *.lab.example
+    ProxyJump ansible@jump.lab.example
+  ```
 
 ## Security model
 
