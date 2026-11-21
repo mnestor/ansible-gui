@@ -8,6 +8,23 @@
   <p class="subject-meta">Pick one to fill in its run. Each says what it does from the comment at the top of the file, or else from its roles’ <span class="mono">meta/main.yml</span> description.</p>
 </header>
 
+{% if git_repos %}
+<div class="repo-strip">
+  <ul class="repo-strip-list">
+    {% for r in git_repos %}
+    <li><span class="mono">{{ r.name }}</span> at {% if r.short %}<span class="mono">{{ r.short }}</span>{% else %}<span class="help">not cloned</span>{% endif %}
+      {% if r.last_fetch_at %}<span class="help">· pulled <time datetime="{{ r.last_fetch_at | stamp }}">{{ r.last_fetch_at | when }}</time></span>{% endif %}
+      {% if r.last_error %}<span class="field-error">· last pull failed: {{ r.last_error }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/runs/playbooks/pull" hx-boost="false">
+    <button class="btn btn-secondary" type="submit" data-busy-label="Pulling…">Pull now</button>
+  </form>
+</div>
+{% if pulled %}<p class="banner {{ 'banner-warn' if git_repos | selectattr('last_error') | list else 'banner-ok' }}" role="status">{% if git_repos | selectattr('last_error') | list %}Pulled at {{ pulled }}, but {{ git_repos | selectattr('last_error') | map(attribute='name') | join(', ') }} failed: the list shows the last good pull.{% else %}Pulled at {{ pulled }}: the list and descriptions are from these commits.{% endif %}</p>{% endif %}
+<p class="help-block">The list, descriptions and variables come from the last pull. Every run pulls again before it starts.</p>
+{% endif %}
+
 {% if not playbooks %}
   <p class="empty"><span>No playbooks found in <span class="mono">{{ settings.playbook_dir }}</span> under <span class="mono">{{ settings.project_dir }}</span>. A playbook is a YAML file whose top level is a list of plays with <span class="mono">hosts:</span>. Set <span class="mono">ANSIBLE_GUI_PLAYBOOK_DIR</span> if they live elsewhere.</span> <a href="/repos">Add a repository</a></p>
 {% else %}

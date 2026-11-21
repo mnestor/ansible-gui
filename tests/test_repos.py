@@ -466,3 +466,30 @@ def test_ssh_deploy_key_is_used_and_kept_private(app, c, remotes, tmp_path, monk
     # the key only exists for the length of the pull
     key_path = calls[0]["args"][calls[0]["args"].index("-i") + 1]
     assert not os.path.exists(key_path)
+
+
+def test_pull_now_on_the_pages_that_use_the_repositories(app, c, remotes):
+    setup_repos(c, remotes)
+    work = remotes["pb_work"]
+    (work / "patch.yml").write_text("# Patches the lab.\n- hosts: all\n  gather_facts: false\n  tasks: []\n")
+    git("add", "-A", cwd=work)
+    git("commit", "-qm", "patch", cwd=work)
+    git("push", "-q", "origin", "HEAD:main", cwd=work)
+    page = c.get("/runs/playbooks").text
+    assert "patch.yml" not in page and 'action="/runs/playbooks/pull"' in page
+    r = c.post("/runs/playbooks/pull", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"].startswith("/runs/playbooks?pulled=")
+    page = c.get(r.headers["location"]).text
+    assert "patch.yml" in page and "Patches the lab." in page and "Pulled at" in page
+
+    inv = remotes["inv_work"]
+    hosts = inv / "inventory" / "hosts.yml"
+    hosts.write_text(hosts.read_text().replace("box2:", "box2:\n        box3:", 1))
+    git("commit", "-qam", "box3", cwd=inv)
+    git("push", "-q", "origin", "HEAD:main", cwd=inv)
+    listing = c.get("/inventory/hosts").text
+    assert "Pull and reload" in listing and "/inventory/hosts/box3" not in listing
+    r = c.post("/inventory/reload", headers={"referer": "https://ansible.example.test/inventory/hosts"},
+               follow_redirects=False)
+    after = c.get(r.headers["location"]).text
+    assert "/inventory/hosts/box3" in after and "Pulled and reloaded at" in after

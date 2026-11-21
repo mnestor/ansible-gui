@@ -415,9 +415,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
+    def pull_all(role: str) -> list[tuple[Any, str | None]]:
+        """Pull every git repository with this role, now. Each pull is locked, so a run's own pull waits."""
+        found = ws.inventory_repos() if role == "inventory" else ws.playbook_repos()
+        return [(r, ws.sync(r)) for r in found if not r.local]
+
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:
-        failed = any(st.error for _, st in invs.reload())
+        """Pull the inventory repositories, then have Ansible parse them again."""
+        pulled = pull_all("inventory")
+        failed = any(st.error for _, st in invs.reload()) or any(err for _, err in pulled)
         # Only ever return to a page of this app, whatever the Referer says.
         back = urlsplit(request.headers.get("referer", "")).path
         if not back.startswith("/inventory"):
@@ -730,7 +737,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         by_book: dict[str, list] = {}
         for t in run_templates.all():
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
-        return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book)
+        q = request.query_params
+        return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
+                      git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"))
+
+    @app.post("/runs/playbooks/pull")
+    def pull_playbooks():
+        pull_all("playbooks")
+        return RedirectResponse(f"/runs/playbooks?pulled={datetime.now().strftime('%H:%M:%S')}", status_code=303)
 
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):

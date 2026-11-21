@@ -806,3 +806,8 @@ table.repos th[scope=row] { white-space: normal; }
 .crumbs a:hover { color: var(--accent-ink); }
 .crumbs [aria-current] { color: var(--ink); font-weight: 600; }
 .pager { margin-left: auto; display: flex; gap: var(--s1); align-items: center; }
+
+/* Where a page's data comes from, with a way to fetch it again. */
+.repo-strip { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s4);
+  padding: var(--s3) var(--s4); margin-bottom: var(--s3); background: var(--well); border: 1px solid var(--rule); border-radius: var(--radius-card); }
+.repo-strip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); min-width: 0; overflow-wrap: anywhere; }

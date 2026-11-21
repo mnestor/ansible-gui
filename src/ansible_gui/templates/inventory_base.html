@@ -25,8 +25,11 @@
     </div>
     {% endif %}
   {% endfor %}
+  {% for inv_repo, state in entries if not inv_repo.local and inv_repo.last_error %}
+    <div class="banner banner-warn" role="alert"><p><strong>The last pull of {{ inv_repo.name }} failed:</strong> {{ inv_repo.last_error }} Showing the clone at <span class="mono">{{ inv_repo.short or "nothing" }}</span>.</p></div>
+  {% endfor %}
   {% if reloaded and reloaded != "failed" %}
-    <div class="banner banner-ok" role="status"><p>Inventory reloaded at {{ reloaded }}.</p></div>
+    <div class="banner banner-ok" role="status"><p>{{ "Pulled and reloaded" if entries | map(attribute=0) | rejectattr("local") | list else "Inventory reloaded" }} at {{ reloaded }}.</p></div>
   {% endif %}
 
   {% if loaded %}
@@ -34,12 +37,14 @@
     <span class="status-strip-text">
       {% for inv_repo, data in loaded %}
         <span class="strip-line">{% if multi_inv %}<strong>{{ inv_repo.name }}</strong>: {% endif %}<span class="mono">{{ data.sources | join(", ") }}</span>
+        {% if not inv_repo.local %}· at <span class="mono">{{ inv_repo.short or "not cloned" }}</span>{% endif %}
         · <span class="tabular">{{ data.hosts | length }}</span> hosts
         · loaded <time class="tabular" datetime="{{ data.loaded_at | stamp }}">{{ data.loaded_at | clock }}</time></span>
       {% endfor %}
     </span>
     <form method="post" action="/inventory/reload" class="reload-form">
-      <button class="btn btn-secondary" type="submit" data-busy-label="Reloading…">Reload {{ "inventories" if multi_inv else "inventory" }}</button>
+      {% set git_inv = loaded | map(attribute=0) | rejectattr("local") | list %}
+      <button class="btn btn-secondary" type="submit" data-busy-label="{{ 'Pulling…' if git_inv else 'Reloading…' }}">{{ "Pull and reload" if git_inv else ("Reload inventories" if multi_inv else "Reload inventory") }}</button>
     </form>
   </div>
   {% endif %}
