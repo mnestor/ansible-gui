@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import logging
 import os
 import re
 
@@ -29,6 +30,7 @@ from .facts import FactStore
 from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 
+log = logging.getLogger(__name__)
 ACCOUNT_SIDE = ("account",)  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
 from .repos import forge
@@ -192,7 +194,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     invs = Inventories(ws)
     ws.on_inventory_changed = invs.reload
     facts = FactStore(settings.data_dir)
-    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config, facts=facts)
+    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config, facts=facts,
+                        run_timeout=settings.run_timeout_minutes * 60)
     sessions = SessionStore(settings.data_dir)
     if settings.run_retention_days:
         Retention(store, settings.run_retention_days)
@@ -332,7 +335,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             loaded=[(i, st.inventory) for i, st in entries if st.inventory],
             multi_inv=len(entries) > 1,
             merged_hosts=invs.hosts(), merged_groups=invs.groups(), duplicates=invs.duplicate_hosts(),
-            reloaded=request.query_params.get("reloaded"),
+            reloaded=request.query_params.get("reloaded"), busy_run=busy_run(request),
             last_result=lambda inv, host: last_result(results, inv, host),
             os_of=lambda host: (facts.get(host).os if facts.get(host) else ""),
             trail=group_trail,
@@ -428,22 +431,37 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
-    def pull_all(role: str) -> list[tuple[Any, str | None]]:
-        """Pull every git repository with this role, now. Each pull is locked, so a run's own pull waits."""
+    def busy_run(request: Request) -> int | None:
+        """The run a pull was queued behind, or that kept a delete from happening, from the query string."""
+        value = request.query_params.get("busy_run", "")
+        return int(value) if value.isdigit() else None
+
+    def pull_all(role: str) -> tuple[list[tuple[Any, str | None]], int | None]:
+        """Pull every git repository with this role, now. Each pull is locked, so a run's own pull waits.
+        Returns (repo, error) for each one pulled, and the run whose clones were queued for after it ends."""
         found = ws.inventory_repos() if role == "inventory" else ws.playbook_repos()
-        return [(r, ws.sync(r)) for r in found if not r.local]
+        pulled, busy = [], None
+        for r in found:
+            if r.local:
+                continue
+            try:
+                pulled.append((r, ws.sync(r)))
+            except gitsync.RepoBusy as e:
+                ws.queue_pull(r.id)
+                busy = e.run_id
+        return pulled, busy
 
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:
         """Pull the inventory repositories, then have Ansible parse them again."""
-        pulled = pull_all("inventory")
+        pulled, busy = pull_all("inventory")
         failed = any(st.error for _, st in invs.reload()) or any(err for _, err in pulled)
         # Only ever return to a page of this app, whatever the Referer says.
         back = urlsplit(request.headers.get("referer", "")).path
         if not back.startswith("/inventory"):
             back = "/inventory"
         flag = "failed" if failed else datetime.now().strftime("%H:%M:%S")
-        return RedirectResponse(f"{back}?reloaded={flag}", status_code=303)
+        return RedirectResponse(f"{back}?reloaded={flag}" + (f"&busy_run={busy}" if busy else ""), status_code=303)
 
     # --- runs ------------------------------------------------------------------
     def known_playbooks() -> list[str]:
@@ -749,12 +767,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
         q = request.query_params
         return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
-                      git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"))
+                      git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"),
+                      busy_run=busy_run(request))
 
     @app.post("/runs/playbooks/pull")
     def pull_playbooks():
-        pull_all("playbooks")
-        return RedirectResponse(f"/runs/playbooks?pulled={datetime.now().strftime('%H:%M:%S')}", status_code=303)
+        _, busy = pull_all("playbooks")
+        return RedirectResponse(f"/runs/playbooks?pulled={datetime.now().strftime('%H:%M:%S')}"
+                                + (f"&busy_run={busy}" if busy else ""), status_code=303)
 
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):
@@ -1212,7 +1232,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return render(request, "repos.html", section="repos", repos=repos.all(),
                       inventories=ws.inventory_repos(), playbook_repos=ws.playbook_repos(),
                       ssh_keys={c.id: c for c in creds.all()},
-                      saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"))
+                      saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"),
+                      kept=q.get("kept"), busy_run=busy_run(request),
+                      queued={rid: gitsync.user(rid) for rid in ws.queued_pulls()})
 
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
@@ -1264,7 +1286,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repo = repos.save(form, auth.display_name(auth.current_user(request)), rid)
         except RepoInvalid as e:
             return repo_form(request, repos.get(rid) if rid else None, form, e.errors, status=400)
-        ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
+        try:
+            ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
+        except gitsync.RepoBusy as e:
+            ws.queue_pull(repo.id)
+            return RedirectResponse(f"/repos?saved={repo.id}&busy_run={e.run_id}", status_code=303)
         if repo.role == "inventory":
             invs.reload(repo.id)
         return RedirectResponse(f"/repos?saved={repo.id}", status_code=303)
@@ -1281,7 +1307,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def pull_repo(rid: int):
         repo = repos.get(rid)
         if repo:
-            ws.sync(repo)
+            try:
+                ws.sync(repo)
+            except gitsync.RepoBusy as e:
+                ws.queue_pull(rid)
+                return RedirectResponse(f"/repos?pulled={rid}&busy_run={e.run_id}", status_code=303)
             if repo.role == "inventory":
                 invs.reload(repo.id)
         return RedirectResponse(f"/repos?pulled={rid}", status_code=303)
@@ -1289,9 +1319,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/repos/{rid}/delete")
     def delete_repo(rid: int):
         repo = repos.get(rid)
+        if repo and (busy := gitsync.user(rid)):
+            return RedirectResponse(f"/repos?kept={rid}&busy_run={busy}", status_code=303)
         if repo:
             repos.delete(rid)
-            gitsync.remove_clone(repo)
+            try:
+                gitsync.remove_clone(repo)
+            except gitsync.RepoBusy:  # a run claimed it a moment ago; its own checks stop it, the clone stays
+                log.warning("kept the clone of deleted repository %s: a run started using it", repo.name)
             if repo.role == "inventory":
                 invs.reload(repo.id)
         return RedirectResponse(f"/repos?deleted={repo.name if repo else ''}", status_code=303)

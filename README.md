@@ -25,6 +25,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, git clones. Made 0700 at start, and everything written in it is private to the server's user |
 | `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
 | `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING` | `accept-new` | `StrictHostKeyChecking` for runs and SSH pulls where the ssh_config doesn't set it: `accept-new` trusts a new host's first answer and refuses a changed key after that, `yes` reaches only hosts listed under Known hosts, `no` trusts any answer |
+| `ANSIBLE_GUI_RUN_TIMEOUT_MINUTES` | `120` | A run whose Ansible is still going after this long is stopped and marked failed, so one hung playbook can't hold up every run queued behind it. `0` for no limit |
 | `ANSIBLE_GUI_RUN_RETENTION_DAYS` | `90` | Finished runs older than this are deleted with their logs (each schedule keeps its latest). `0` keeps everything |
 | `ANSIBLE_GUI_SECRET_KEY` (or `_FILE`) | generated `data/secret.key` | Encrypts credentials and signs sessions. Set it so a copy of `data/` alone can't decrypt credentials |
 | `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |
@@ -119,6 +120,11 @@ Runs go through [ansible-runner](https://github.com/ansible/ansible-runner), one
 project directory as the working directory (so its `ansible.cfg` applies). The launcher asks
 `ansible-playbook --list-hosts` which hosts the playbook and `--limit` pattern match, and the run is
 refused if that list changed between the preview and the click. Dry run (`--check`) is the default.
+While a run is going, nothing else changes the clones it uses, so the playbook runs entirely from the commit its
+run names. A pull asked for in the meantime (Pull, Reload inventory, saving the repository) is queued and happens
+as soon as that run finishes, and the repository's row says so meanwhile; deleting one of its
+repositories is refused until then. A run whose own pull has to wait for one started from the web UI says so in
+its log.
 
 ansible-runner's own directory (where it writes the run's environment, the become password and every event) is
 inside the run's temp directory and wiped with the keys when the run ends; only `output.log` stays in

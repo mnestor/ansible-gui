@@ -19,7 +19,6 @@ from ..credentials import ssh
 from ..credentials.store import CredentialStore
 from ..facts import GATHER_ACTIONS
 from ..scratch import Scratch
-from ..wipe import wipe_tree
 from . import playbooks, variables
 from .store import Run, RunStore, host_result, now
 
@@ -87,10 +86,11 @@ def kill_tree(root: int) -> None:
 
 def command_line(pid: int) -> str:
     """The command a process was started with, or "" if there is no such process."""
-    try:
-        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
-    except OSError:  # gone, or no /proc (macOS)
-        pass
+    if Path("/proc/self").exists():  # Linux: no ps needed, and none in the image
+        try:
+            return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+        except OSError:  # gone
+            return ""
     try:
         return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
@@ -130,12 +130,12 @@ class Prepared:
     ansible-runner's own directory lives in here too (runner/): it writes the environment, the become
     password and every event to it, so it goes when the run ends, with the keys."""
     workdir: Path
+    scratch: Scratch  # where workdir is noted, so a later start can wipe it if this one can't
     env: dict[str, str] = field(default_factory=dict)
     cmdline: list[str] = field(default_factory=list)
     passwords: dict[str, str] = field(default_factory=dict)
     agent: ssh.Agent | None = None
     user: str = ""  # the account's login, if the run signs in with one
-    scratch: Scratch | None = None  # where workdir is noted, so a later start can wipe it if this one can't
 
     @property
     def runner_dir(self) -> Path:
@@ -144,10 +144,7 @@ class Prepared:
     def cleanup(self) -> None:
         if self.agent:
             self.agent.stop()
-        if self.scratch:
-            self.scratch.drop(self.workdir)
-        else:
-            wipe_tree(self.workdir)
+        self.scratch.drop(self.workdir)
 
 
 def _write_secret(path: Path, text: str) -> Path:
@@ -159,8 +156,10 @@ def _write_secret(path: Path, text: str) -> Path:
 
 class Executor:
     def __init__(self, store: RunStore, workspace, creds: CredentialStore | None = None,
-                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None, facts=None):
+                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None, facts=None,
+                 run_timeout: float = 0):
         self.on_finish = on_finish or (lambda run_id: None)
+        self.run_timeout = run_timeout  # seconds Ansible may run before it is stopped; 0 for no limit
         self.facts = facts  # FactStore: every gather_facts/setup result is saved there
         self.store = store
         self.workspace = workspace
@@ -243,6 +242,11 @@ class Executor:
             finally:
                 self._live.pop(run_id, None)
                 self._cancel.discard(run_id)
+                self.workspace.release_run(run_id)
+                try:
+                    self.workspace.pull_queued()  # pulls asked for from the web UI while this run held the clones
+                except Exception:
+                    log.exception("pulling the repositories queued behind run %s", run_id)
                 try:
                     run = self.store.get(run_id)
                     if run and run.finished:
@@ -271,7 +275,9 @@ class Executor:
         if inv_repo is None:
             return stop("Didn’t start: its inventory repository was removed, or there are several and the run "
                         "doesn’t say which. Pick one and run again.")
-        failed = self.workspace.sync_for_run(repo, inv_repo, lambda line: log_file.write(line + "\n"))
+        # Before its own pull, so no pull or delete from the web UI changes the clones under the playbook.
+        self.workspace.claim_for_run(run_id, repo, inv_repo)
+        failed = self.workspace.sync_for_run(repo, inv_repo, lambda line: log_file.write(line + "\n"), run_id)
         if failed:
             return stop(failed)
         repo = self.workspace.playbook_repo(run.repo_id)
@@ -318,9 +324,13 @@ class Executor:
             return stop(str(e))
 
         playbook_pid: list[int] = []  # the ansible process, from its first event
+        deadline: list[float] = []  # set as Ansible starts; ansible-runner calls cancel_requested at least every 5 s
+        timed_out = threading.Event()
 
         def cancel_requested() -> bool:
-            if run_id not in self._cancel and not self._stopping.is_set():
+            if deadline and time.monotonic() > deadline[0]:
+                timed_out.set()
+            if run_id not in self._cancel and not self._stopping.is_set() and not timed_out.is_set():
                 return False
             if playbook_pid:
                 kill_tree(playbook_pid.pop())
@@ -404,6 +414,8 @@ class Executor:
                         skip_tags=run.skip_tags or None)
             log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
         self._prepared = prepared
+        if self.run_timeout:
+            deadline.append(time.monotonic() + self.run_timeout)
         try:
             result = ansible_runner.run(
                 private_data_dir=str(prepared.runner_dir),
@@ -424,6 +436,8 @@ class Executor:
             stopped = self._stopping.is_set() and result.status != "successful"
             if stopped:
                 log_file.write("\n[ansible-gui] The server stopped: this run was interrupted.\n")
+            elif timed_out.is_set() and run_id not in self._cancel:
+                log_file.write(f"\n[ansible-gui] {self._timeout_message()}\n")
             elif result.status == "canceled":
                 log_file.write("\n[ansible-gui] Run canceled from the web UI.\n")
         finally:
@@ -435,12 +449,22 @@ class Executor:
             return  # still "running" in the store: the next start marks it interrupted and sends its email
 
         stats = final or live
+        if timed_out.is_set() and run_id not in self._cancel:
+            self.store.update(run_id, status="failed", finished_at=now(), rc=result.rc, host_stats=stats,
+                              error=self._timeout_message())
+            return
         status = result.status
         if status == "timeout":
             status = "failed"
         if status == "successful" and any(host_result(s) in ("failed", "unreachable") for s in stats.values()):
             status = "failed"
         self.store.update(run_id, status=status, finished_at=now(), rc=result.rc, host_stats=stats)
+
+    def _timeout_message(self) -> str:
+        minutes = self.run_timeout / 60
+        limit = f"{minutes:g} minute{'s' if minutes != 1 else ''}" if minutes >= 1 else f"{self.run_timeout:g} s"
+        return (f"Stopped after {limit}: the longest a run may take (ANSIBLE_GUI_RUN_TIMEOUT_MINUTES). "
+                "Ansible was stopped, with every SSH connection it had open.")
 
     def prepare(self, run: Run) -> Prepared:
         """Write this run's keys and passwords to a private temp dir and start its ssh-agent.

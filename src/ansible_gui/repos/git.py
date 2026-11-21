@@ -10,8 +10,8 @@ import os
 import shlex
 import shutil
 import subprocess
-import tempfile
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +20,10 @@ from .store import Repo
 
 _locks: dict[int, threading.Lock] = {}
 _locks_guard = threading.Lock()
+# Repo id -> the run whose Ansible is using that clone. A pull checks out over the clone and a delete removes
+# it, so neither may happen under a running playbook: its includes, roles and collections would come from
+# a commit the run doesn't name, or be gone.
+_in_use: dict[int, int] = {}
 
 
 def _lock(rid: int) -> threading.Lock:
@@ -29,6 +33,54 @@ def _lock(rid: int) -> threading.Lock:
 
 class GitError(Exception):
     pass
+
+
+class RepoBusy(GitError):
+    """The clone is in use by a run. Nothing was changed."""
+
+    def __init__(self, run_id: int):
+        super().__init__(f"run #{run_id} is using its clone")
+        self.run_id = run_id
+
+
+def claim(repo_ids, run_id: int) -> None:
+    """Mark these clones as in use by run_id, before its own pull, so no other pull or delete starts after it."""
+    with _locks_guard:
+        for rid in repo_ids:
+            _in_use[rid] = run_id
+
+
+def release(run_id: int) -> None:
+    with _locks_guard:
+        for rid in [rid for rid, owner in _in_use.items() if owner == run_id]:
+            del _in_use[rid]
+
+
+def user(repo_id: int) -> int | None:
+    """The run using this clone, if any."""
+    with _locks_guard:
+        return _in_use.get(repo_id)
+
+
+@contextmanager
+def _locked(repo_id: int, on_wait=None):
+    """Hold the repo's lock, calling on_wait() first if someone else holds it."""
+    lock = _lock(repo_id)
+    if not lock.acquire(blocking=False):
+        if on_wait:
+            on_wait()
+        lock.acquire()
+    try:
+        yield
+    finally:
+        lock.release()
+
+
+def _check_free(repo_id: int, for_run: int | None) -> None:
+    """Under the repo's lock: refuse if another run holds the clone. A run's own pull goes ahead."""
+    owner = user(repo_id)
+    if owner is not None and owner != for_run:
+        raise RepoBusy(owner)
 
 
 @dataclass
@@ -56,17 +108,21 @@ def is_https(url: str) -> bool:
 
 
 def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
-         token: tuple[str, str] | None = None, scratch: Scratch | None = None) -> Synced:
-    """Fetch the branch and check out its tip. Raises GitError with a one-line reason.
+         token: tuple[str, str] | None = None, *, scratch: Scratch, for_run: int | None = None,
+         on_wait=None) -> Synced:
+    """Fetch the branch and check out its tip. Raises GitError with a one-line reason, or RepoBusy if
+    a run other than for_run is using the clone. on_wait() is called first if another pull of this repo
+    is in progress and this one has to wait for it.
 
     private_key signs in over SSH; token is (user, token) for HTTPS, handed to git
     through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper.
-    With scratch, the temp directory holding the key is noted there, so that a server killed
+    The temp directory holding the key is noted in scratch, so that a server killed
     mid-pull has it wiped by the next start."""
     if token and not repo.url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
-    with _lock(repo.id):
-        workdir = scratch.make("git-") if scratch else Path(tempfile.mkdtemp(prefix="agui-git-"))
+    with _locked(repo.id, on_wait):
+        _check_free(repo.id, for_run)
+        workdir = scratch.make("git-")
         try:
             ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
             if private_key:
@@ -101,10 +157,7 @@ def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
             subject = _git(["log", "-1", "--format=%s"], path, env)
             return Synced(commit=commit, subject=subject, changed=commit != before)
         finally:
-            if scratch:
-                scratch.drop(workdir)
-            else:
-                shutil.rmtree(workdir, ignore_errors=True)
+            scratch.drop(workdir)
 
 
 _PLAIN = [
@@ -133,5 +186,7 @@ def _head(path: Path, env: dict) -> str | None:
 
 
 def remove_clone(repo: Repo) -> None:
+    """Delete the clone. Raises RepoBusy, leaving it in place, while a run is using it."""
     with _lock(repo.id):
+        _check_free(repo.id, None)
         shutil.rmtree(repo.path, ignore_errors=True)

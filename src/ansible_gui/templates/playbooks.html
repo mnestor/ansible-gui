@@ -21,7 +21,8 @@
     <button class="btn btn-secondary" type="submit" data-busy-label="Pulling…">Pull now</button>
   </form>
 </div>
-{% if pulled %}<p class="banner {{ 'banner-warn' if git_repos | selectattr('last_error') | list else 'banner-ok' }}" role="status">{% if git_repos | selectattr('last_error') | list %}Pulled at {{ pulled }}, but {{ git_repos | selectattr('last_error') | map(attribute='name') | join(', ') }} failed: the list shows the last good pull.{% else %}Pulled at {{ pulled }}: the list and descriptions are from these commits.{% endif %}</p>{% endif %}
+{% if pulled and not busy_run %}<p class="banner {{ 'banner-warn' if git_repos | selectattr('last_error') | list else 'banner-ok' }}" role="status">{% if git_repos | selectattr('last_error') | list %}Pulled at {{ pulled }}, but {{ git_repos | selectattr('last_error') | map(attribute='name') | join(', ') }} failed: the list shows the last good pull.{% else %}Pulled at {{ pulled }}: the list and descriptions are from these commits.{% endif %}</p>{% endif %}
+{% if pulled and busy_run %}<p class="banner banner-warn" role="status">Pulled at {{ pulled }}, except a repository run <a href="/runs/{{ busy_run }}">#{{ busy_run }}</a> is using: its pull is queued for when that run finishes.</p>{% endif %}
 <p class="help-block">The list, descriptions and variables come from the last pull. Every run pulls again before it starts.</p>
 {% endif %}
 

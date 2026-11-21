@@ -42,6 +42,7 @@ class Settings:
     # whose key is already in known_hosts; accept-new trusts a new host's first answer; no trusts any answer.
     ssh_host_key_checking: str = "accept-new"
     run_retention_days: int = 90  # finished runs older than this are deleted; 0 keeps them forever
+    run_timeout_minutes: int = 120  # a run still going after this long is stopped; 0 lets it run forever
 
     @property
     def auth_enabled(self) -> bool:
@@ -94,6 +95,9 @@ class Settings:
         retention = os.environ.get("ANSIBLE_GUI_RUN_RETENTION_DAYS", "90").strip()
         if not retention.isdigit():
             raise SystemExit("ANSIBLE_GUI_RUN_RETENTION_DAYS must be a whole number of days (0 keeps runs forever).")
+        run_timeout = os.environ.get("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES", "120").strip()
+        if not run_timeout.isdigit():
+            raise SystemExit("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES must be a whole number of minutes (0 for no limit).")
         return cls(
             project_dir=project_dir,
             inventory=inventory,
@@ -111,6 +115,7 @@ class Settings:
             smtp=SmtpSettings.from_env(),
             ssh_host_key_checking=host_keys,
             run_retention_days=int(retention),
+            run_timeout_minutes=int(run_timeout),
         )
 
 

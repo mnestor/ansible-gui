@@ -29,7 +29,11 @@
     <div class="banner banner-warn" role="alert"><p><strong>The last pull of {{ inv_repo.name }} failed:</strong> {{ inv_repo.last_error }} Showing the clone at <span class="mono">{{ inv_repo.short or "nothing" }}</span>.</p></div>
   {% endfor %}
   {% if reloaded and reloaded != "failed" %}
+    {% if busy_run %}
+    <div class="banner banner-warn" role="status"><p>Reloaded at {{ reloaded }} from the clone as it is: run <a href="/runs/{{ busy_run }}">#{{ busy_run }}</a> is using it. The pull is queued for when that run finishes, and the inventory reloads then if anything changed.</p></div>
+    {% else %}
     <div class="banner banner-ok" role="status"><p>{{ "Pulled and reloaded" if entries | map(attribute=0) | rejectattr("local") | list else "Inventory reloaded" }} at {{ reloaded }}.</p></div>
+    {% endif %}
   {% endif %}
 
   {% if loaded %}

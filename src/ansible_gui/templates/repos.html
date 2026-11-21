@@ -18,7 +18,8 @@
         <td class="wrap">{% if r.local %}<span class="help">read as it is on disk</span>
           {% elif r.short %}<span class="mono">{{ r.short }}</span> <span class="help">{{ r.last_subject }}</span>
           {% else %}<span class="help">not cloned yet</span>{% endif %}</td>
-        <td class="col-wide tabular">{% if r.last_fetch_at %}{{ r.last_fetch_at | when }}{% if r.last_error %} <span class="badge badge-failed">failed</span>{% endif %}{% else %}—{% endif %}</td>
+        <td class="col-wide tabular">{% if r.last_fetch_at %}{{ r.last_fetch_at | when }}{% if r.last_error %} <span class="badge badge-failed">failed</span>{% endif %}{% else %}—{% endif %}
+          {% if r.id in queued %}<span class="help">Pull queued{% if queued[r.id] %} behind run <a href="/runs/{{ queued[r.id] }}">#{{ queued[r.id] }}</a>{% endif %}</span>{% endif %}</td>
         <td class="num">{% if not r.local %}
           <form method="post" action="/repos/{{ r.id }}/pull" hx-boost="false">
             <button class="btn btn-secondary" type="submit" data-busy-label="Pulling…">Pull now</button>
@@ -39,11 +40,14 @@
 </header>
 
 {% set just = repos | selectattr("id", "equalto", (saved or pulled) | int) | first if (saved or pulled) else None %}
-{% if just %}
+{% if just and busy_run %}<p class="banner banner-warn" role="status">{{ "Saved " ~ just.name ~ ". Its pull is queued" if saved else "Pull of " ~ just.name ~ " queued" }}: run <a href="/runs/{{ busy_run }}">#{{ busy_run }}</a> is using its clone, so it pulls as soon as that run finishes.</p>
+{% elif just %}
   {% if just.last_error %}<p class="banner banner-warn" role="status">{{ "Saved, but the" if saved else "The" }} pull from {{ just.name }} failed: {{ just.last_error }}</p>
   {% else %}<p class="banner banner-ok" role="status">{{ "Saved and pulled" if saved else "Pulled" }} {{ just.name }}: now at <span class="mono">{{ just.short }}</span> {{ just.last_subject }}.</p>{% endif %}
 {% endif %}
 {% if deleted %}<p class="banner banner-ok" role="status">Deleted {{ deleted }} and its clone.</p>{% endif %}
+{% set kept_repo = repos | selectattr("id", "equalto", kept | int) | first if kept else None %}
+{% if kept_repo and busy_run %}<p class="banner banner-warn" role="status">Didn’t delete {{ kept_repo.name }}: run <a href="/runs/{{ busy_run }}">#{{ busy_run }}</a> is using its clone. Delete it once that run has finished.</p>{% endif %}
 
 <p class="help-block">Every run pulls its inventory repository and its playbook’s repository first. If a pull fails, the run is canceled, nothing touches a host, and an email goes out. ansible-gui owns these clones: local changes in them are thrown away on each pull.</p>
 

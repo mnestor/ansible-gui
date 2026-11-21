@@ -9,20 +9,24 @@ fail() { echo "FAIL: $*" >&2; docker logs "$name" 2>&1 | tail -20 >&2 || true; e
 trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
 # The hardening deploy/docker-compose.yml applies; the last check runs the image under it.
 HARDENED=(--read-only --tmpfs /tmp:size=512m --tmpfs /home/app:size=64m,uid=10001,gid=10001,mode=0700
-          --cap-drop ALL --security-opt no-new-privileges:true)
+          --cap-drop ALL --security-opt no-new-privileges:true --pids-limit 512 --memory 1536m --cpus 2)
+
+# refuses EXPECTED [docker run args...]: the image must exit, saying EXPECTED
+refuses() {
+  local expected=$1 out; shift
+  if out=$(docker run --rm "$@" "$image" 2>&1); then fail "started, but should have refused: $expected"; fi
+  grep -q "$expected" <<<"$out" || fail "unexpected refusal: $out"
+}
 
 echo "- refuses to listen without sign-in"
-if out=$(docker run --rm "$image" 2>&1); then fail "started with no sign-in configured"; fi
-grep -q "Refusing to listen on 0.0.0.0 without sign-in" <<<"$out" || fail "unexpected refusal: $out"
+refuses "Refusing to listen on 0.0.0.0 without sign-in"
 
 echo "- refuses OIDC without allowed groups"
-if out=$(docker run --rm -e ANSIBLE_GUI_OIDC_ISSUER=https://id.example.test -e ANSIBLE_GUI_OIDC_CLIENT_ID=x \
-         -e ANSIBLE_GUI_OIDC_CLIENT_SECRET=y "$image" 2>&1); then fail "started with no allowed groups"; fi
-grep -q "ANSIBLE_GUI_OIDC_GROUPS" <<<"$out" || fail "unexpected refusal: $out"
+refuses "ANSIBLE_GUI_OIDC_GROUPS" -e ANSIBLE_GUI_OIDC_ISSUER=https://id.example.test -e ANSIBLE_GUI_OIDC_CLIENT_ID=x \
+  -e ANSIBLE_GUI_OIDC_CLIENT_SECRET=y
 
 echo "- refuses to listen beyond loopback without the name people use"
-if out=$(docker run --rm -e ANSIBLE_GUI_INSECURE_NO_AUTH=1 "$image" 2>&1); then fail "started with no public URL"; fi
-grep -q "Refusing to listen on 0.0.0.0 without ANSIBLE_GUI_PUBLIC_URL" <<<"$out" || fail "unexpected refusal: $out"
+refuses "Refusing to listen on 0.0.0.0 without ANSIBLE_GUI_PUBLIC_URL" -e ANSIBLE_GUI_INSECURE_NO_AUTH=1
 
 echo "- starts and answers"
 RUN=(-e ANSIBLE_GUI_INSECURE_NO_AUTH=1 -e ANSIBLE_GUI_PUBLIC_URL=http://ansible.example.test
@@ -34,8 +38,11 @@ import urllib.request, urllib.error, sys
 req = urllib.request.Request('http://127.0.0.1:8080$1', headers={'Host': '${2:-127.0.0.1:8080}'})
 try: sys.stdout.write(str(urllib.request.urlopen(req, timeout=4).status))
 except urllib.error.HTTPError as e: sys.stdout.write(str(e.code))"; }
-for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && break; sleep 1; done
-[ "$(get /healthz)" = 200 ] || fail "/healthz never answered"
+wait_healthy() {
+  for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && return; sleep 1; done
+  fail "${1:-}/healthz never answered"
+}
+wait_healthy
 for page in / /inventory /runs /runs/new /schedules /repos /credentials /static/app.css /static/htmx.min.js; do
   [ "$(get "$page")" = 200 ] || fail "$page didn't return 200"
 done
@@ -84,12 +91,14 @@ docker exec "$name" python -c "import sqlite3, ssl, hashlib, ctypes, readline, c
   || fail "a Python module lost its library"
 docker exec "$name" python -c "import uvloop, httptools, cryptography.fernet, yaml" || fail "a compiled package doesn't load"
 
-echo "- runs hardened: read-only root, no capabilities, no new privileges"
+echo "- runs hardened: read-only root, no capabilities, no new privileges, limited processes and memory"
 docker rm -f "$name" >/dev/null
 docker run -d --name "$name" "${HARDENED[@]}" "${RUN[@]}" "$image" >/dev/null
-for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && break; sleep 1; done
+wait_healthy "hardened: "
 [ "$(get /credentials)" = 200 ] || fail "hardened: /credentials didn't return 200"
 docker exec "$name" grep -q "^CapEff:[[:space:]]*0000000000000000" /proc/1/status || fail "hardened: capabilities left"
+[ "$(docker exec "$name" cat /sys/fs/cgroup/pids.max)" = 512 ] || fail "hardened: no process limit"
+[ "$(docker exec "$name" cat /sys/fs/cgroup/memory.max)" = $((1536 * 1024 * 1024)) ] || fail "hardened: no memory limit"
 docker exec "$name" ansible localhost -c local -m setup -a filter=ansible_distribution \
   -e ansible_python_interpreter=/app/.venv/bin/python | grep '"Alpine"' >/dev/null || fail "hardened: a local Ansible task failed"
 docker exec "$name" ansible localhost -c local -m ansible.builtin.shell \

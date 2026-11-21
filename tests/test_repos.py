@@ -225,6 +225,80 @@ def test_delete_removes_clone(app, c, remotes):
     assert not extra.path.exists() and "extra /" not in c.get("/runs/new").text
 
 
+
+def test_a_running_playbooks_clones_are_left_alone(app, c, remotes, tmp_path):
+    """Pull, Reload inventory, saving or deleting a repository while a run uses its clone would change the
+    files under the playbook: a later include would come from a commit the run doesn't name, or be gone."""
+    slow, slow_work = make_remote(tmp_path, "slow", {"slow.yml": FIXTURE / "slow.yml"})
+    assert add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
+    assert add(c, name="lab", role="playbooks", url=f"file://{slow}").status_code == 303
+    lab = next(r for r in app.state.repos.all() if r.name == "lab")
+    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
+    r = c.post("/runs", data={"playbook": f"{lab.id}:slow.yml", "target": "box1", "mode": "apply", "verbosity": "0",
+                              "expected": ["box1"]}, follow_redirects=False)
+    run_id = int(r.headers["location"].rsplit("/", 1)[1])
+    log = app.state.store.log_path(run_id)
+    end = time.time() + 30
+    while "TASK [Wait]" not in (log.read_text() if log.exists() else ""):
+        assert time.time() < end, "the pause task never started"
+        time.sleep(0.2)
+    ran_from = app.state.repos.get(lab.id).last_commit
+    (slow_work / "slow.yml").write_text((slow_work / "slow.yml").read_text() + "\n# newer\n")
+    git("commit", "-qam", "newer", cwd=slow_work)
+    git("push", "-q", "origin", "HEAD:main", cwd=slow_work)
+
+    r = c.post(f"/repos/{lab.id}/pull", follow_redirects=False)
+    assert r.headers["location"] == f"/repos?pulled={lab.id}&busy_run={run_id}"
+    assert f"Pull of lab queued: run <a href=\"/runs/{run_id}\">#{run_id}</a> is using its clone" in c.get(r.headers["location"]).text
+    assert app.state.repos.get(lab.id).last_commit == ran_from and not app.state.repos.get(lab.id).last_error
+    assert f"Pull queued behind run <a href=\"/runs/{run_id}\">#{run_id}</a>" in c.get("/repos").text
+    assert "# newer" not in (lab.path / "slow.yml").read_text()
+
+    r = c.post(f"/repos/{lab.id}/delete", follow_redirects=False)
+    assert r.headers["location"] == f"/repos?kept={lab.id}&busy_run={run_id}"
+    assert "Didn’t delete lab" in c.get(r.headers["location"]).text
+    assert app.state.repos.get(lab.id) and lab.path.is_dir()
+
+    r = c.post("/inventory/reload", follow_redirects=False)
+    assert r.headers["location"].endswith(f"&busy_run={run_id}")
+    assert "The pull is queued for when that run finishes" in c.get(r.headers["location"]).text
+    r = c.post("/runs/playbooks/pull", follow_redirects=False)
+    assert "its pull is queued for when that run finishes" in c.get(r.headers["location"]).text
+    r = c.post(f"/repos/{hosts.id}", data={"name": "hosts", "role": "inventory", "url": f"file://{remotes['inv']}",
+                                           "branch": "main", "paths": "inventory/hosts.yml"}, follow_redirects=False)
+    assert "Saved hosts. Its pull is queued" in c.get(r.headers["location"]).text
+
+    c.post(f"/runs/{run_id}/cancel")
+    assert wait(app, run_id).status == "canceled"
+    app.state.executor.wait_idle()  # the queued pulls happen as the run ends, before the worker is idle
+    assert "# newer" in (lab.path / "slow.yml").read_text()
+    assert app.state.repos.get(lab.id).last_commit != ran_from
+    assert "Pull queued" not in c.get("/repos").text
+    assert c.post(f"/repos/{lab.id}/pull", follow_redirects=False).headers["location"] == f"/repos?pulled={lab.id}"
+
+
+
+def test_a_runs_pull_says_when_it_waits_for_one_from_the_web_ui(app, c, remotes):
+    from ansible_gui.repos import git as gitsync
+    setup_repos(c, remotes)
+    lab = next(r for r in app.state.repos.all() if r.name == "lab")
+    lock = gitsync._lock(lab.id)
+    lock.acquire()  # as a Pull now pressed a moment before the run would
+    try:
+        r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check",
+                                  "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
+        run_id = int(r.headers["location"].rsplit("/", 1)[1])
+        log = app.state.store.log_path(run_id)
+        end = time.time() + 20
+        while "Waiting for a pull of lab started from the web UI to finish" not in (log.read_text() if log.exists() else ""):
+            assert time.time() < end, "the run never said it was waiting"
+            time.sleep(0.1)
+        assert app.state.store.get(run_id).status == "running"
+    finally:
+        lock.release()
+    assert wait(app, run_id).status == "successful"
+
+
 # --- HTTPS with a token: a real smart-HTTP git server (git http-backend) behind basic auth ---
 import base64  # noqa: E402
 import threading  # noqa: E402

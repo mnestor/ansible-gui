@@ -40,6 +40,8 @@ def classify(run: Run) -> tuple[str, str]:
         return "interrupted", "Interrupted: the server stopped during the run."
     if run.status == "canceled":
         return "canceled", "Canceled."
+    if run.status == "failed" and run.error:  # stopped by ansible-gui, e.g. it ran too long
+        return "failed", run.error.split(":")[0]
     if run.status == "failed" and not bad:
         return "failed", "Failed before any host reported a result"
     if bad or run.status == "failed":

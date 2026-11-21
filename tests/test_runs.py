@@ -104,6 +104,38 @@ def test_cancel_running(app, c):
         time.sleep(0.2)
 
 
+
+def test_a_run_that_takes_too_long_is_stopped(app, c):
+    """Runs go one at a time, so a hung playbook would hold up every run queued behind it."""
+    from ansible_gui.notify import classify
+    app.state.executor.run_timeout = 3  # ANSIBLE_GUI_RUN_TIMEOUT_MINUTES, in seconds here
+    r = c.post("/runs", data={"playbook": "slow.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
+               follow_redirects=False)
+    run_id = int(r.headers["location"].rsplit("/", 1)[1])
+    started = time.time()
+    run = wait(app, run_id, timeout=30)
+    assert time.time() - started < 15  # not the playbook's 20 s pause
+    assert run.status == "failed" and run.error.startswith("Stopped after 3 s: the longest a run may take")
+    assert "[ansible-gui] Stopped after 3 s" in app.state.store.log_path(run_id).read_text()
+    assert classify(run) == ("failed", "Stopped after 3 s")
+    data_dir = str(app.state.store.data_dir)
+    end = time.time() + 5
+    while (left := subprocess.run(["pgrep", "-f", data_dir], capture_output=True, text=True).stdout.split()):
+        assert time.time() < end, f"still running after the timeout: {left}"
+        time.sleep(0.2)
+
+
+def test_run_timeout_comes_from_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES", "45")
+    assert Settings.from_env().run_timeout_minutes == 45
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
+                              run_timeout_minutes=45))
+    assert app.state.executor.run_timeout == 45 * 60
+    monkeypatch.setenv("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES", "2h")
+    with pytest.raises(SystemExit, match="whole number of minutes"):
+        Settings.from_env()
+
+
 def test_executor_wait_idle_covers_on_finish(app, c):
     """A run is marked finished before its on_finish (the email) runs; wait_idle waits for both."""
     calls = []

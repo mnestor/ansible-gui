@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,6 +49,8 @@ class Workspace:
         self.repos = repos
         self.creds = creds
         self.on_inventory_changed = lambda inv_id: None
+        self._queued: set[int] = set()  # repos to pull once no run is using their clone
+        self._queued_lock = threading.Lock()
 
     # --- which repos --------------------------------------------------------------
     def _local(self, role: str) -> Repo | None:
@@ -182,8 +185,9 @@ class Workspace:
         return f"{repo.name if repo else 'removed repo'} / {path}"
 
     # --- git ----------------------------------------------------------------------------
-    def sync(self, repo: Repo) -> str | None:
-        """Pull one repo. Returns None, or why it failed."""
+    def sync(self, repo: Repo, for_run: int | None = None, on_wait=None) -> str | None:
+        """Pull one repo. Returns None, or why it failed. Raises git.RepoBusy, recording nothing, while a run
+        other than for_run is using its clone. on_wait() is called if it has to wait for another pull."""
         if repo.local:
             return None
         key = token = None
@@ -203,7 +207,10 @@ class Workspace:
         config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config,
                                            self.settings.ssh_host_key_checking)
         try:
-            result = git.sync(repo, config, key, token, scratch=Scratch(self.settings.data_dir))
+            result = git.sync(repo, config, key, token, scratch=Scratch(self.settings.data_dir), for_run=for_run,
+                              on_wait=on_wait)
+        except git.RepoBusy:
+            raise
         except git.GitError as e:
             self.repos.record_fetch(repo.id, None, None, str(e))
             return str(e)
@@ -217,12 +224,48 @@ class Workspace:
             self.on_inventory_changed(repo.id)
         return None
 
-    def sync_for_run(self, repo: Repo, inv: Repo | None, log_line) -> str | None:
+    def claim_for_run(self, run_id: int, *repos: Repo | None) -> None:
+        """From now until release_run(run_id), no pull or delete but the run's own touches these clones."""
+        git.claim([r.id for r in repos if r and not r.local], run_id)
+
+    def release_run(self, run_id: int) -> None:
+        git.release(run_id)
+
+    def queue_pull(self, repo_id: int) -> None:
+        """Pull this repo as soon as no run is using its clone: the executor pulls queued repos as each run ends."""
+        with self._queued_lock:
+            self._queued.add(repo_id)
+        # Added before this check: if the run still held the clone here, its release comes later and the
+        # executor's pull_queued() sees the repo. If it had already let go, nothing else would.
+        if git.user(repo_id) is None:
+            self.pull_queued()
+
+    def queued_pulls(self) -> set[int]:
+        """Repos whose pull is waiting for a run to let go of their clone."""
+        with self._queued_lock:
+            return set(self._queued)
+
+    def pull_queued(self) -> None:
+        with self._queued_lock:
+            ids, self._queued = self._queued, set()
+        for rid in sorted(ids):
+            repo = self.repos.get(rid)
+            if not repo:  # deleted since
+                continue
+            try:
+                self.sync(repo)
+            except git.RepoBusy:  # the next run claimed it first: it pulls for itself, and so will this, after it
+                with self._queued_lock:
+                    self._queued.add(rid)
+
+    def sync_for_run(self, repo: Repo, inv: Repo | None, log_line, run_id: int | None = None) -> str | None:
         """Pull the run's inventory repo and playbook repo. None, or a message saying what failed."""
         targets = [r for r in (inv, repo) if r and not r.local]
         for r in dict((x.id, x) for x in targets).values():
             log_line(f"[ansible-gui] Pulling {r.name} ({r.branch}) from {r.url}")
-            error = self.sync(r)
+            # Only a pull from the web UI can hold the lock now: the executor does every other pull itself.
+            error = self.sync(r, for_run=run_id, on_wait=lambda r=r: log_line(
+                f"[ansible-gui] Waiting for a pull of {r.name} started from the web UI to finish"))
             if error:
                 log_line(f"[ansible-gui] Pull failed: {error}")
                 return f"{GIT_CANCELED} {r.name} from git: {error.rstrip('.')}. Nothing ran."

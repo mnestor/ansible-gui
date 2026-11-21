@@ -37,7 +37,7 @@ RUN apk upgrade --no-cache \
  && rm -rf site-packages/pip site-packages/pip-*.dist-info ensurepip idlelib tkinter turtledemo turtle.py lib2to3 \
            __pycache__/turtle.* lib-dynload/_tkinter.*.so lib-dynload/nis.*.so \
  && rm -f /usr/local/bin/pip* /usr/local/bin/idle* /usr/local/bin/2to3* \
- && find /usr/local -type f -executable -exec scanelf --needed --nobanner --format '%n#p' '{}' ';' \
+ && find /usr/local -type f -executable -exec scanelf --needed --nobanner --format '%n#p' '{}' + \
       | tr ',' '\n' | sort -u \
       | awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
       | xargs -rt apk add --no-network --virtual .ansible-gui-python-rundeps \
