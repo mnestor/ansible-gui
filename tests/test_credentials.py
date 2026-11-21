@@ -407,3 +407,13 @@ def test_an_account_says_what_it_lacks(app):
     c.post("/credentials", data={"kind": "account", "name": "plain", "username": "ansible"})
     page = c.get("/runs/new").text
     assert 'data-desc="user ansible · no SSH key · no become password">plain' in page
+
+
+def test_connect_as_shows_only_where_one_is_saved(app):
+    c = TestClient(app)
+    fresh = c.get("/runs/new", params={"playbook": "site.yml", "target": "box1"}).text
+    assert 'name="remote_user"' not in fresh and 'name="account"' in fresh
+    assert 'id="inv-ansible_user"' in fresh.split('name="account"')[1].split("</div>")[0] or 'id="inv-ansible_user"' in fresh
+    old = c.get("/runs/new", params={"playbook": "site.yml", "target": "box1", "remote_user": "root"}).text
+    assert 'name="remote_user" value="root"' in old and "saved before accounts" in old
+    assert 'name="remote_user"' not in c.get("/runs/command").text

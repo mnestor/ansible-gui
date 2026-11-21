@@ -7,16 +7,18 @@
   {{- " · " ~ ("become password" if c.meta.has_become else "no become password") -}}
 {%- endmacro %}
 
-{% macro account_field(form, cred_choices) %}
+{% from "_inv_note.html" import inv_note %}
+{% macro account_field(form, cred_choices, notes=None) %}
   {% set accounts = cred_choices.account %}
   {% set ids = accounts | map(attribute="id") | map("string") | list %}
   <div class="field">
     <label class="label" for="account">Sign in as</label>
-    <select id="account" class="input input-small" name="account" aria-describedby="account-help">
+    <select id="account" class="input input-small" name="account" aria-describedby="{% if notes is not none %}inv-ansible_user {% endif %}account-help">
       <option value="" data-desc="The inventory’s user; the SSH config decides how to sign in">No account</option>
       {% for c in accounts %}<option value="{{ c.id }}" {% if form.account == c.id|string %}selected{% endif %} data-desc="{{ account_summary(c) }}">{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
       {% if form.account and form.account not in ids %}<option value="{{ form.account }}" selected>Deleted: pick another</option>{% endif %}
     </select>
+    {% if notes is not none %}<p class="inv-note" id="inv-ansible_user">{{ inv_note(notes.get("ansible_user")) }}</p>{% endif %}
     <p class="help" id="account-help">{% if accounts %}The user, SSH key and become password the run uses. <a href="/credentials">Accounts</a>{% else %}No accounts yet, so runs use the inventory’s user and the SSH config. <a href="/credentials/new?kind=account">Add an account</a>: a user, its SSH key and its become password, picked together.{% endif %}</p>
   </div>
 {% endmacro %}
@@ -39,5 +41,17 @@
     {% endfor %}
     </div>
   </fieldset>
+  {% endif %}
+{% endmacro %}
+
+{# Before accounts, a run could name its user by hand. Kept only where one is saved, so editing an old template
+   or running an old run again doesn't silently drop it; emptying it hands the user back to the account. #}
+{% macro legacy_user(form) %}
+  {% if form.remote_user %}
+  <div class="field">
+    <label class="label" for="remote_user">Connect as <span class="optional">(saved before accounts)</span></label>
+    <input id="remote_user" class="input input-small mono" name="remote_user" value="{{ form.remote_user }}" autocomplete="off" spellcheck="false" autocapitalize="off" pattern="[A-Za-z0-9_][A-Za-z0-9_.@\-]{0,63}" maxlength="64" aria-describedby="remote_user-help">
+    <p class="help" id="remote_user-help">Overrides the account’s user. Put this user in an account instead, then empty this field: it won’t come back.</p>
+  </div>
   {% endif %}
 {% endmacro %}
