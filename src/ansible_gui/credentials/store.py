@@ -168,7 +168,7 @@ class CredentialStore:
             else:
                 errors["password"] = "Enter the password."
         elif kind == "env_secret":
-            env = values.get("env", "").strip()
+            env = values.get("env", "").strip().upper()  # the form capitalises as you type; this catches the rest
             if not ENV_RE.match(env):
                 errors["env"] = "Use capital letters, digits and underscores, like ENROLL_TOKEN."
             elif env in RESERVED_ENV or env.startswith(("ANSIBLE_", "RUNNER_")):

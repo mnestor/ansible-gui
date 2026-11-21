@@ -1,5 +1,6 @@
 {% extends "runs_base.html" %}
 {% block title %}{{ repo.name if repo else "Add repository" }}{% endblock %}
+{% from "_danger_zone.html" import danger_delete %}
 {% block main %}
 <a class="crumb" href="/repos">← Repositories</a>
 <header class="subject">
@@ -80,17 +81,12 @@
 </form>
 
 {% if repo %}
-<section class="section danger-zone" aria-labelledby="del-h">
-  <h2 id="del-h" class="section-title">Delete</h2>
+{% call danger_delete("/repos/" ~ repo.id ~ "/delete", "repository", repo.name, "Removes the clone from this server. The repository itself isn’t touched. Past runs keep their history.") %}
   {% if used_by %}
   <p class="banner banner-warn">Used by {{ used_by | length }} schedule{{ "s" if used_by | length != 1 }}: {% for sc in used_by %}<a class="mono" href="/schedules/{{ sc.id }}">{{ sc.name }}</a>{{ ", " if not loop.last }}{% endfor %}. {{ "They fail" if used_by | length != 1 else "It fails" }} at the next run.</p>
   {% elif repo.role == "inventory" %}
   <p class="banner banner-warn">Without an inventory repository, the inventory page is empty and runs have no hosts{% if settings.project_dir %}, unless they fall back to <span class="mono">ANSIBLE_GUI_PROJECT_DIR</span>{% endif %}.</p>
   {% endif %}
-  <p class="help-block">Removes the clone from this server. The repository itself isn’t touched. Past runs keep their history.</p>
-  <form method="post" action="/repos/{{ repo.id }}/delete" data-confirm-twice hx-boost="false">
-    <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to delete {{ repo.name }}" data-busy-label="Deleting…">Delete {{ repo.name }}</button>
-  </form>
-</section>
+{% endcall %}
 {% endif %}
 {% endblock %}

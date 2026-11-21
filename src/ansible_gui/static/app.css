@@ -552,7 +552,16 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .secret-area:focus { -webkit-text-security: none; }
 .reveal { display: flex; gap: var(--s2); align-items: center; }
 .input[aria-invalid="true"] { outline: 2px solid var(--danger); outline-offset: 0; }
-.danger-zone { max-width: 720px; }
+/* Danger zone: a red-bordered frame; each row says what deleting does, with its button on the right. */
+.danger-zone { max-width: 720px; display: flex; flex-direction: column; gap: var(--s4); padding: var(--s5);
+  border: 1px solid color-mix(in oklab, var(--danger) 55%, var(--rule)); border-radius: var(--radius-card); background: var(--well); }
+.danger-zone .banner { margin: 0; }
+.danger-section { margin-top: var(--s10); }
+.danger-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s3) var(--s6); }
+.danger-text { display: flex; flex-direction: column; gap: var(--s1); flex: 1 1 280px; min-width: 0; }
+.danger-title { font-weight: 600; margin: 0; }
+.btn-danger { background: var(--well); color: var(--danger); border-color: color-mix(in oklab, var(--danger) 55%, var(--rule-strong)); white-space: nowrap; }
+.btn-danger:hover, .btn-danger[data-armed] { background: var(--danger); color: var(--canvas); border-color: var(--danger); }
 .summary-note { font-weight: 400; }
 .cred-grid { display: flex; flex-wrap: wrap; gap: var(--s3) var(--s4); }
 .cred-pick { display: flex; flex-direction: column; gap: var(--s1); min-width: 200px; }

@@ -1,5 +1,6 @@
 {% extends "runs_base.html" %}
 {% block title %}{{ sched.name if sched else "New schedule" }}{% endblock %}
+{% from "_danger_zone.html" import danger_delete %}
 {% block main %}
 <a class="crumb" href="/schedules">← Schedules</a>
 <header class="subject subject-row">
@@ -102,12 +103,6 @@
   {% endif %}
 </section>
 
-<section class="section danger-zone" aria-labelledby="del-h">
-  <h2 id="del-h" class="section-title">Delete</h2>
-  <p class="help-block">Stops future runs. Past runs stay in the history.</p>
-  <form method="post" action="/schedules/{{ sched.id }}/delete" data-confirm-twice hx-boost="false">
-    <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to delete {{ sched.name }}" data-busy-label="Deleting…">Delete {{ sched.name }}</button>
-  </form>
-</section>
+{{ danger_delete("/schedules/" ~ sched.id ~ "/delete", "schedule", sched.name, "Stops future runs. Past runs stay in the history.") }}
 {% endif %}
 {% endblock %}

@@ -1,5 +1,6 @@
 {% extends "runs_base.html" %}
 {% block title %}{{ tmpl.name if tmpl else "New template" }}{% endblock %}
+{% from "_danger_zone.html" import danger_delete %}
 {% block main %}
 <a class="crumb" href="/runs/templates">← Templates</a>
 <header class="subject subject-row">
@@ -53,12 +54,6 @@
 {% endif %}
 
 {% if tmpl %}
-<section class="section danger-zone" aria-labelledby="del-h">
-  <h2 id="del-h" class="section-title">Delete</h2>
-  <p class="help-block">Runs and schedules made from it keep their settings and still name it.</p>
-  <form method="post" action="/runs/templates/{{ tmpl.id }}/delete" data-confirm-twice hx-boost="false">
-    <button class="btn btn-danger-quiet" type="submit" data-confirm-label="Click again to delete {{ tmpl.name }}" data-busy-label="Deleting…">Delete {{ tmpl.name }}</button>
-  </form>
-</section>
+{{ danger_delete("/runs/templates/" ~ tmpl.id ~ "/delete", "template", tmpl.name, "Runs and schedules made from it keep their settings and still name it.") }}
 {% endif %}
 {% endblock %}

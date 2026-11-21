@@ -69,7 +69,7 @@ def test_edit_keeps_secret_and_single_default(store):
 
 
 def test_env_names_are_checked(store):
-    for bad in ("lower", "PATH", "ANSIBLE_BECOME_PASS", "SSH_AUTH_SOCK"):
+    for bad in ("1STARTS_WITH_DIGIT", "HAS.DOT", "PATH", "path", "ANSIBLE_BECOME_PASS", "SSH_AUTH_SOCK"):
         with pytest.raises(Invalid):
             store.save(kind="env_secret", name="e", values={"env": bad, "value": "v"}, is_default=False, user="")
 
@@ -387,3 +387,16 @@ def test_a_loose_become_password_is_listed_under_accounts_to_move_into_one(app):
                                      "copy_become_from": str(old.id)}, follow_redirects=False)
     assert r.status_code == 303
     assert app.state.creds.secret(app.state.creds.by_kind("account")[0])["become_password"] == "pw-old"
+
+
+def test_env_secret_names_are_capitalised_and_deletes_sit_in_a_danger_zone(app):
+    c = TestClient(app)
+    r = c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "enroll_token", "value": "v"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    cred = app.state.creds.by_kind("env_secret")[0]
+    assert cred.meta["env"] == "ENROLL_TOKEN"
+    page = c.get(f"/credentials/{cred.id}").text
+    assert "data-upper" in page
+    assert 'class="section-title">Danger zone</h2>' in page and '<div class="danger-zone">' in page
+    assert '<button class="btn btn-danger" type="submit"' in page and ">Delete environment secret</button>" in page

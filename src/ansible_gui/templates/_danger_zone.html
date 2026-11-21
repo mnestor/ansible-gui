@@ -1,0 +1,19 @@
+{# Delete, the GitHub way: a "Danger zone" heading over a red-bordered frame; the consequence on the left, an
+   outlined danger button on the right that asks for a second click. Warnings (who uses it) go in the caller. #}
+{% macro danger_delete(action, what, name, consequence, confirm) -%}
+<section class="section danger-section" aria-labelledby="del-h">
+  <h2 id="del-h" class="section-title">Danger zone</h2>
+  <div class="danger-zone">
+    {% if caller %}{{ caller() }}{% endif %}
+    <div class="danger-row">
+      <div class="danger-text">
+        <p class="danger-title">Delete this {{ what }}</p>
+        <p class="help">{{ consequence }}</p>
+      </div>
+      <form method="post" action="{{ action }}" data-confirm-twice hx-boost="false">
+        <button class="btn btn-danger" type="submit" data-confirm-label="{{ confirm or 'Click again to delete ' ~ name }}" data-busy-label="Deleting…">Delete {{ what }}</button>
+      </form>
+    </div>
+  </div>
+</section>
+{%- endmacro %}

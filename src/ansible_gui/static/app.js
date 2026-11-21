@@ -251,6 +251,17 @@
 
   // The Variables section is redrawn only when the playbook or its Fields/YAML view changes: a redraw on every change would close
   // "more optional variables" while someone fills it in.
+  // Names that must be capitals (environment variables): typed in any case, shown as capitals at once, caret kept.
+  document.addEventListener("input", (e) => {
+    const el = e.target;
+    if (!el.matches || !el.matches("input[data-upper]")) return;
+    const up = el.value.toUpperCase().replace(/[\s-]/g, "_");
+    if (up === el.value) return;
+    const at = el.selectionStart;
+    el.value = up;
+    el.setSelectionRange(at, at);
+  });
+
   // Playbook picker: choosing closes the list and shows the choice; Escape or a click elsewhere closes it.
   document.addEventListener("change", (e) => {
     const picker = e.target.closest && e.target.closest("[data-picker]");
