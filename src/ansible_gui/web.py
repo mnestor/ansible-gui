@@ -236,6 +236,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     env.globals.update(
         cred_list=lambda kind: "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets",
         account_side=ACCOUNT_SIDE,
+        default_account=lambda: creds.default("account"),
         account_name=lambda cid: (lambda c: c.name if c else "")(creds.get(cid) if cid else None),
         present=present,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),

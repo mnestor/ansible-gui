@@ -219,7 +219,8 @@ ul, ol { padding: 0; list-style: none; }
 .identity { font: 700 28px/1.1 var(--font-display); letter-spacing: -.02em; overflow-wrap: anywhere; }
 .identity.mono { font-family: var(--font-mono); font-weight: 600; letter-spacing: -.01em; }
 @media (min-width: 640px) { .identity { font-size: var(--fs-xl); } }
-.subject-meta { color: var(--ink-muted); font-size: var(--fs-md); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
+.subject-meta { color: var(--ink-muted); font-size: var(--fs-md); }
+.subject-meta-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); }
 .subject-meta .mono { color: var(--ink); }
 
 .chips { display: flex; flex-wrap: wrap; gap: var(--s2); }
@@ -383,6 +384,7 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .label { font-weight: 600; padding: 0; }
 .optional { font-weight: 400; color: var(--ink-muted); }
 .help { color: var(--ink-muted); font-size: var(--fs-xs); }
+@media (max-width: 639px) { .help { font-size: var(--fs-sm); } }
 .input-medium { max-width: 440px; }
 .choices { display: flex; flex-direction: column; gap: var(--s1); }
 .choice, .check { display: flex; align-items: center; gap: var(--s2); min-height: 28px; cursor: pointer; }
@@ -453,10 +455,9 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .picker-select.is-open .picker-chevron .icon { transform: rotate(180deg); }
 .picker-select .picker-list { list-style: none; margin: 0; min-width: 100%; right: auto; width: max-content; max-width: min(480px, 90vw); }
 .picker-select .picker-list:focus { outline: none; }
-.picker-select .picker-option.is-active { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.picker-select .picker-option.is-active { background: color-mix(in oklab, var(--accent) 10%, transparent); box-shadow: inset 0 0 0 2px var(--accent); }
 .picker-select .picker-option[aria-selected="true"] { background: color-mix(in oklab, var(--accent) 14%, transparent); }
 .picker-select .picker-option[aria-selected="true"] .picker-title { color: var(--accent-ink); font-weight: 600; }
-.picker-select .picker-option.is-active[aria-selected="true"] { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent); }
 .picker-select .picker-option[aria-disabled="true"] { opacity: .5; cursor: default; }
 .picker-group { padding: var(--s2) var(--s3) var(--s1); font: 600 var(--fs-2xs)/1.2 var(--font-text); text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
 .picker-list { position: absolute; top: calc(100% + var(--s1)); left: 0; right: 0; z-index: 40; max-height: min(420px, 60dvh); overflow-y: auto;
@@ -470,6 +471,16 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 
 /* Several actions in one table cell (Run…, then quiet ones); they wrap rather than widen the table. */
 .row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--s1) var(--s2); }
+/* On a phone, a row's actions go on their own line under its name, in a row, rather than a narrow last column. */
+@media (max-width: 639px) {
+  tbody tr:has(> td > .row-actions) { display: flex; flex-wrap: wrap; align-items: center; column-gap: var(--s3);
+    border-bottom: 1px solid var(--rule); }
+  tbody tr:has(> td > .row-actions) > * { border-bottom: 0; }
+  tbody tr:has(> td > .row-actions) > th { flex: 1 1 100%; }
+  tbody tr:has(> td > .row-actions) > td:has(> .row-actions) { padding-top: 0; }
+  tbody tr:has(> td > .row-actions) .row-actions { justify-content: flex-start; }
+  thead:has(+ tbody > tr > td > .row-actions) th:last-child { display: none; }
+}
 .playbook-about { display: block; margin-top: var(--s1); font-weight: 400; color: var(--ink-muted); font-size: var(--fs-sm); max-width: 60ch; }
 /* The first targeted hosts, each with the inventory values this run overrides on it. */
 .target-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
@@ -830,3 +841,23 @@ table.repos th[scope=row] { white-space: normal; }
 .launcher .input-small, .launcher .input-medium, .launcher .picker-small { max-width: none; }
 .launcher .reveal .input { flex: 1 1 auto; }
 .launcher .picker-select .picker-list { right: 0; width: auto; max-width: none; }
+
+/* Below the two-column launcher, the side panel sits under every card: its Run button floats at the bottom
+   of the screen instead, so it is always one tap away. */
+@media (max-width: 1279px) {
+  .launcher-side .btn-run { position: fixed; z-index: 30; right: var(--s6); bottom: max(var(--s4), env(safe-area-inset-bottom));
+    min-height: 48px; padding-inline: var(--s5); box-shadow: var(--shadow-pop); }
+  .launcher:has(.launcher-side .btn-run) { padding-bottom: 88px; }
+}
+@media (max-width: 639px) { .launcher-side .btn-run { left: var(--s4); right: var(--s4); } }
+
+/* On touch there is no hover: icon actions show their name beside the icon. */
+@media (pointer: coarse) {
+  .btn-icon { width: auto; padding-inline: var(--s3); gap: var(--s2); }
+  .btn-icon .tip, .btn-icon:hover .tip, .btn-icon:focus-visible .tip { display: inline; position: static; transform: none; padding: 0; background: none; border: 0;
+    box-shadow: none; color: inherit; font: inherit; white-space: nowrap; animation: none; }
+}
+
+.key-note { margin-top: var(--s6); }
+.key-note summary { cursor: pointer; color: var(--ink-muted); font-size: var(--fs-sm); }
+.key-note .help-block { margin: var(--s2) 0 0; }

@@ -158,7 +158,7 @@
       const li = e.target.closest('[role="option"]:not([aria-disabled="true"])');
       if (li && !li.classList.contains("is-active")) active(li);
     });
-    document.addEventListener("click", (e) => { if (!box.contains(e.target)) close(false); });
+    box.closeList = () => close(false);
     sel.addEventListener("change", render);  // set by code, or by a reset
 
     sel.classList.add("visually-hidden");
@@ -168,6 +168,11 @@
     box.append(btn, list, sel);
     render();
   }
+
+  // One listener for every dropdown: a click outside an open one closes it.
+  document.addEventListener("click", (e) => {
+    document.querySelectorAll(".picker-select.is-open").forEach((b) => { if (!b.contains(e.target)) b.closeList(); });
+  });
 
   function all(root) {
     (root || document).querySelectorAll("select.input").forEach(enhance);

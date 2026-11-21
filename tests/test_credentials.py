@@ -394,3 +394,18 @@ def test_there_is_no_connect_as_field(app):
         assert 'name="remote_user"' not in page and 'name="account"' in page
     fresh = c.get("/runs/new", params={"playbook": "site.yml", "target": "box1"}).text
     assert 'id="inv-ansible_user"' in fresh  # the inventory's user, under Sign in as
+
+
+def test_the_host_header_names_the_user_a_run_signs_in_as(app):
+    c = TestClient(app)
+    plain = c.get("/inventory/hosts/box1").text
+    assert "default account" not in plain
+    c.post("/credentials", data={"kind": "account", "name": "ops", "username": "deploy", "is_default": "1"})
+    head = c.get("/inventory/hosts/box1").text.split('class="subject-meta"')[1].split("</p>")[0]
+    assert 'as <span class="mono">deploy</span>' in head and "default account" in head
+
+
+def test_the_key_note_is_folded_on_secrets_only(tmp_path):
+    c = TestClient(create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path)))
+    assert 'class="key-note"' in c.get("/credentials/secrets").text
+    assert 'class="key-note"' not in c.get("/credentials").text

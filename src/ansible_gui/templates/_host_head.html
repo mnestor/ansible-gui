@@ -3,7 +3,10 @@
 {% set user = host.var("ansible_user") %}
 <p class="subject-meta">
   {% if addr and not addr.vaulted %}connects to <span class="mono">{{ addr.value }}</span>{% else %}connects to <span class="mono">{{ host.name }}</span>{% endif %}
-  {% if user and not user.vaulted %} as <span class="mono">{{ user.value }}</span>{% endif %}
+  {%- set acct = default_account() %}
+  {%- if acct and acct.meta.username %} as <span class="mono">{{ acct.meta.username }}</span>
+  <span class="help">(from the default account <a href="/credentials/{{ acct.id }}">{{ acct.name }}</a>{% if user and not user.vaulted and user.value != acct.meta.username %}; the inventory says <span class="mono">{{ user.value }}</span>{% endif %})</span>
+  {%- elif user and not user.vaulted %} as <span class="mono">{{ user.value }}</span>{% endif %}
 </p>
 <ul class="chips" aria-label="Groups">
   {% for g in host.groups %}<li><a class="chip mono" href="/inventory/groups/{{ g }}">{{ g }}</a></li>{% endfor %}

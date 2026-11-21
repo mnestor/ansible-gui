@@ -5,10 +5,10 @@
   · depth {{ group.depth }}{% if group.priority != 1 %} · priority {{ group.priority }}{% endif %}
 </p>
 {% if group.parents %}
-  <p class="subject-meta">Inside {% for p in group.parents %}<a class="chip mono" href="/inventory/groups/{{ p }}">{{ p }}</a>{% endfor %}</p>
+  <p class="subject-meta subject-meta-row">Inside {% for p in group.parents %}<a class="chip mono" href="/inventory/groups/{{ p }}">{{ p }}</a>{% endfor %}</p>
 {% endif %}
 {% if group.children %}
-  <p class="subject-meta">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
+  <p class="subject-meta subject-meta-row">Contains {% for c in group.children %}<a class="chip mono" href="/inventory/groups/{{ c }}">{{ c }}</a>{% endfor %}</p>
 {% endif %}
 <div class="subject-actions">
   <a class="btn btn-secondary" href="/runs/new?{{ {'target': group.name, 'inventory': inv_repo.id} | urlencode }}">Run a playbook on {{ group.name }}{% if multi_inv %} with {{ inv_repo.name }}{% endif %}</a>
