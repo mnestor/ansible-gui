@@ -8,6 +8,7 @@ import json
 import os
 import re
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,11 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 
 from . import auth
-from .config import Settings, is_web_url, scrub_environment
+from .config import LOOPBACK_HOSTS, Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
 from .facts import FactStore
 from . import ansible_config
@@ -195,8 +197,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings.run_retention_days:
         Retention(store, settings.run_retention_days)
 
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        """On the way out (SIGTERM, docker stop): fire no more schedules, and end the run in progress with
+        its playbook, ssh-agent and temp directory, so none of them outlives the server."""
+        yield
+        scheduler.stop()
+        await run_in_threadpool(executor.shutdown)
+
     https = bool(settings.public_url and settings.public_url.startswith("https://"))
-    app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None)
+    app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None, lifespan=lifespan)
     # Starlette runs the last-added middleware first: the session must exist before the gate looks at it.
     app.add_middleware(auth.Gate, settings=settings, sessions=sessions)
     app.add_middleware(SessionMiddleware, secret_key=keys.session_secret, session_cookie="ansible_gui",
@@ -1462,7 +1472,10 @@ def main() -> None:
     check_bind(settings, host, os.environ.get("ANSIBLE_GUI_INSECURE_NO_AUTH") == "1")
     # Everything is read: from here on no child process can see the secrets in the environment.
     scrub_environment()
-    uvicorn.run(create_app(settings), host=host, port=port, proxy_headers=True, forwarded_allow_ips=proxies)
+    # On SIGTERM, requests still being answered get three seconds; then the run in progress is ended and
+    # cleaned up (create_app's lifespan), inside the ten seconds `docker stop` allows before it kills.
+    uvicorn.run(create_app(settings), host=host, port=port, proxy_headers=True, forwarded_allow_ips=proxies,
+                timeout_graceful_shutdown=3)
 
 
 def lock_down(data_dir: Path) -> None:
@@ -1487,12 +1500,22 @@ def lock_down(data_dir: Path) -> None:
 
 
 def check_bind(settings: Settings, host: str, insecure_ok: bool) -> None:
-    """Without sign-in, anyone who reaches the port can run playbooks. Only allow that on loopback."""
-    if settings.auth_enabled or insecure_ok or host in ("127.0.0.1", "::1", "localhost"):
-        return
-    raise SystemExit(
-        f"Refusing to listen on {host} without sign-in: anyone who can reach it could run playbooks. "
-        "Set ANSIBLE_GUI_OIDC_ISSUER (and its client settings), or ANSIBLE_GUI_INSECURE_NO_AUTH=1 if "
-        "something in front of ansible-gui already does the sign-in."
-    )
+    """Without sign-in, anyone who reaches the port can run playbooks. Only allow that on loopback.
+
+    And beyond loopback people reach ansible-gui under a name, which it has to be told: it answers only
+    requests addressed to that name or to localhost (Settings.allowed_hosts), so without one every page
+    would be refused."""
+    loopback = host in LOOPBACK_HOSTS
+    if not (settings.auth_enabled or insecure_ok or loopback):
+        raise SystemExit(
+            f"Refusing to listen on {host} without sign-in: anyone who can reach it could run playbooks. "
+            "Set ANSIBLE_GUI_OIDC_ISSUER (and its client settings), or ANSIBLE_GUI_INSECURE_NO_AUTH=1 if "
+            "something in front of ansible-gui already does the sign-in."
+        )
+    if not loopback and not settings.public_url:
+        raise SystemExit(
+            f"Refusing to listen on {host} without ANSIBLE_GUI_PUBLIC_URL: ansible-gui only answers requests "
+            "addressed to that URL’s host or to localhost, so a web page elsewhere can’t reach it under a name "
+            "of its own. Set it to the address people use, like https://ansible.example.com."
+        )
 

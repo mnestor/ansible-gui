@@ -18,6 +18,7 @@ from pathlib import Path
 from ..credentials import ssh as sshtools
 from ..inventory.cli import CliOptions
 from ..runs import playbooks
+from ..scratch import Scratch
 from . import git
 from .store import Repo, RepoStore
 
@@ -202,7 +203,7 @@ class Workspace:
         config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config,
                                            self.settings.ssh_host_key_checking)
         try:
-            result = git.sync(repo, config, key, token)
+            result = git.sync(repo, config, key, token, scratch=Scratch(self.settings.data_dir))
         except git.GitError as e:
             self.repos.record_fetch(repo.id, None, None, str(e))
             return str(e)

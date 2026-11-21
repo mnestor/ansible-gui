@@ -1,4 +1,5 @@
-"""Sign-in through an OIDC provider (Pocket ID, Authelia, Keycloak…), plus a same-origin check on writes.
+"""Sign-in through an OIDC provider (Pocket ID, Authelia, Keycloak…), plus two checks on every request
+whatever the sign-in: that it is addressed to this server by name, and, for writes, that it comes from it.
 
 Without ANSIBLE_GUI_OIDC_ISSUER there is no sign-in, and main() refuses to listen
 anywhere but loopback unless told otherwise.
@@ -14,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .config import Settings
+from .config import Settings, host_name
 from .sessions import SessionStore
 
 log = logging.getLogger(__name__)
@@ -55,14 +56,27 @@ class Gate(BaseHTTPMiddleware):
             u = request.url
         return f"{u.scheme}://{u.netloc}"
 
+    def _wrong_host(self) -> str:
+        if self.settings.public_url:
+            return (f"Refused: ansible-gui is at {self.settings.public_url}, and this request was addressed to "
+                    "another name. If that name is right, set ANSIBLE_GUI_PUBLIC_URL to it.")
+        return ("Refused: this request was addressed to a name ansible-gui doesn’t answer to. It answers to "
+                "localhost and 127.0.0.1; to reach it under another name, set ANSIBLE_GUI_PUBLIC_URL to that "
+                "address, like https://ansible.example.com.")
+
     async def dispatch(self, request: Request, call_next) -> Response:
+        # The path as the router sees it, never one worked out from the Host header.
+        path = request.scope["path"]
+        # First of all, and for every page: is this request addressed to us? (Settings.allowed_hosts says why.)
+        # /healthz says only "ok", so a probe may ask for it by container name or address.
+        if path != "/healthz" and host_name(request.headers.get("host", "")) not in self.settings.allowed_hosts:
+            return PlainTextResponse(self._wrong_host(), status_code=400)
         if request.method in UNSAFE:
             sent = request.headers.get("origin") or request.headers.get("referer")
             if sent:
                 u = urlsplit(sent)
                 if f"{u.scheme}://{u.netloc}" != self._origin(request):
                     return PlainTextResponse("Refused: this request came from another site.", status_code=403)
-        path = request.url.path
         if not self.settings.auth_enabled or path.startswith(OPEN_PATHS):
             return await call_next(request)
         if current_user(request) and self.sessions.valid(request.session.get("sid")):

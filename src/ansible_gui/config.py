@@ -5,8 +5,20 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HOST_KEY_CHECKING = ("yes", "accept-new", "no")  # OpenSSH's StrictHostKeyChecking values
+# The names this machine has for itself. A request addressed to any other name is answered only if
+# ANSIBLE_GUI_PUBLIC_URL names it (Settings.allowed_hosts).
+LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def host_name(header: str) -> str:
+    """The host in a Host header, without its port: example.com:8080, 127.0.0.1, [::1]:8080."""
+    host = header.strip().lower()
+    if host.startswith("["):
+        return host[1:].partition("]")[0]
+    return host.partition(":")[0]
 
 
 @dataclass
@@ -35,6 +47,17 @@ class Settings:
     def auth_enabled(self) -> bool:
         return bool(self.oidc_issuer)
 
+    @property
+    def allowed_hosts(self) -> frozenset[str]:
+        """The names a request may be addressed to (its Host header): this machine's own, and the public URL's.
+
+        A web page anywhere can point a DNS name of its own at 127.0.0.1 or a LAN address and then talk to
+        whatever listens there as if it were its own server (DNS rebinding): the browser sees one origin, so
+        the same-origin check on writes passes and the page can read every answer. The Host header still
+        carries the page's name, which is what gives it away."""
+        public = urlsplit(self.public_url).hostname if self.public_url else None
+        return LOOPBACK_HOSTS | {public} if public else LOOPBACK_HOSTS
+
     @classmethod
     def from_env(cls) -> "Settings":
         project = os.environ.get("ANSIBLE_GUI_PROJECT_DIR")
@@ -55,6 +78,10 @@ class Settings:
         edit = os.environ.get("ANSIBLE_GUI_EDIT_URL") or None
         if edit and not is_web_url(edit):
             raise SystemExit("ANSIBLE_GUI_EDIT_URL must start with https:// or http://.")
+        public = (os.environ.get("ANSIBLE_GUI_PUBLIC_URL") or "").strip().rstrip("/") or None
+        if public and not (is_web_url(public) and urlsplit(public).hostname):
+            raise SystemExit("ANSIBLE_GUI_PUBLIC_URL must be the address people use, starting with https:// or "
+                             "http://, like https://ansible.example.com.")
         host_keys = os.environ.get("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING", "accept-new").strip().lower()
         if host_keys not in HOST_KEY_CHECKING:
             raise SystemExit("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING must be yes, accept-new or no.")
@@ -69,7 +96,7 @@ class Settings:
             edit_url=edit,
             data_dir=Path(os.environ.get("ANSIBLE_GUI_DATA_DIR", "data")).expanduser().resolve(),
             ssh_config=((project_dir or Path("/")) / Path(ssh_config).expanduser()).resolve() if ssh_config else None,
-            public_url=(os.environ.get("ANSIBLE_GUI_PUBLIC_URL") or "").rstrip("/") or None,
+            public_url=public,
             oidc_issuer=issuer.rstrip("/") if issuer else None,
             oidc_client_id=os.environ.get("ANSIBLE_GUI_OIDC_CLIENT_ID") or None,
             oidc_client_secret=_env_or_file("ANSIBLE_GUI_OIDC_CLIENT_SECRET"),

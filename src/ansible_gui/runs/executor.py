@@ -10,7 +10,6 @@ import queue
 import shlex
 import signal
 import subprocess
-import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -19,6 +18,7 @@ from pathlib import Path
 from ..credentials import ssh
 from ..credentials.store import CredentialStore
 from ..facts import GATHER_ACTIONS
+from ..scratch import Scratch
 from ..wipe import wipe_tree
 from . import playbooks, variables
 from .store import Run, RunStore, host_result, now
@@ -85,6 +85,40 @@ def kill_tree(root: int) -> None:
             pass
 
 
+def command_line(pid: int) -> str:
+    """The command a process was started with, or "" if there is no such process."""
+    try:
+        return Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except OSError:  # gone, or no /proc (macOS)
+        pass
+    try:
+        return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def clear_leftovers(scratch: Scratch, data_dir: Path) -> int:
+    """Finish what a server that was killed couldn't: stop each noted playbook and ssh-agent, wipe each temp
+    directory.
+
+    A pid may belong to something else by now (always, after a container restart), so a process is only
+    stopped if its command line still says it is the one noted: every run's Ansible is started with
+    `-F <data dir>/ssh/ssh_config`, and its agent with `-a <temp dir>/agent.sock`."""
+    left = scratch.leftovers()
+    for path, pids in left:
+        play, agent = pids.get("play"), pids.get("agent")
+        if play and play != os.getpid() and str(data_dir / "ssh" / "ssh_config") in command_line(play):
+            kill_tree(play)
+        if agent and str(path / "agent.sock") in command_line(agent):
+            try:
+                os.kill(agent, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        scratch.drop(path)
+        log.warning("wiped %s, left by a run or pull the server didn't get to finish", path)
+    return len(left)
+
+
 class CredentialMissing(Exception):
     pass
 
@@ -101,6 +135,7 @@ class Prepared:
     passwords: dict[str, str] = field(default_factory=dict)
     agent: ssh.Agent | None = None
     user: str = ""  # the account's login, if the run signs in with one
+    scratch: Scratch | None = None  # where workdir is noted, so a later start can wipe it if this one can't
 
     @property
     def runner_dir(self) -> Path:
@@ -109,7 +144,10 @@ class Prepared:
     def cleanup(self) -> None:
         if self.agent:
             self.agent.stop()
-        wipe_tree(self.workdir)
+        if self.scratch:
+            self.scratch.drop(self.workdir)
+        else:
+            wipe_tree(self.workdir)
 
 
 def _write_secret(path: Path, text: str) -> Path:
@@ -129,9 +167,15 @@ class Executor:
         self.creds = creds
         self.data_dir = data_dir or store.data_dir
         self.ssh_config = ssh_config
-        self._queue: queue.Queue[int] = queue.Queue()
+        self.scratch = Scratch(self.data_dir)
+        # What a server that was killed mid-run left, before this one makes its own.
+        clear_leftovers(self.scratch, self.data_dir)
+        self._queue: queue.Queue[int | None] = queue.Queue()
         self._cancel: set[int] = set()
         self._live: dict[int, dict[str, dict[str, int]]] = {}
+        self._stopping = threading.Event()
+        self._prepared: Prepared | None = None  # the run in progress: its temp directory and agent,
+        self._play_pid: int | None = None  # and its ansible process once that has started
         self._thread = threading.Thread(target=self._loop, name="ansible-gui-runner", daemon=True)
         self._thread.start()
 
@@ -167,10 +211,30 @@ class Executor:
             items = list(self._queue.queue)
         return items.index(run_id) + 1 if run_id in items else 0
 
+    def shutdown(self, timeout: float = 5.0) -> None:
+        """The server is stopping: end the run in progress (its playbook, its ssh-agent, its temp directory)
+        and start no other. Otherwise the playbook would carry on against the hosts with nothing recording
+        it, and the run's key and passwords would stay on disk.
+
+        The run stays "running" in the store, like any run a restart cuts short: the next start marks it
+        interrupted and sends its email."""
+        self._stopping.set()
+        self._queue.put(None)  # wakes the worker if it is waiting for a run
+        if self._play_pid:
+            kill_tree(self._play_pid)  # now, rather than when ansible-runner next asks cancel_requested()
+        self._thread.join(timeout)
+        prepared = self._prepared
+        if prepared and self._thread.is_alive():  # the worker is stuck: at least leave no key behind
+            prepared.cleanup()
+
     # --- worker ----------------------------------------------------------------
     def _loop(self) -> None:
         while True:
             run_id = self._queue.get()
+            if run_id is None or self._stopping.is_set():
+                # Runs still queued stay queued: the next start marks them interrupted.
+                self._queue.task_done()
+                return
             try:
                 self._execute(run_id)
             except Exception as e:  # never let one run kill the worker
@@ -244,6 +308,10 @@ class Executor:
             log_file.close()
             self.store.update(run_id, status="canceled", finished_at=now(), error="Canceled before Ansible started.")
             return
+        if self._stopping.is_set():  # shutdown(): the run stays "running" for the next start to mark interrupted
+            log_file.write("[ansible-gui] The server stopped before Ansible started.\n")
+            log_file.close()
+            return
         try:
             prepared = self.prepare(run)
         except CredentialMissing as e:
@@ -252,7 +320,7 @@ class Executor:
         playbook_pid: list[int] = []  # the ansible process, from its first event
 
         def cancel_requested() -> bool:
-            if run_id not in self._cancel:
+            if run_id not in self._cancel and not self._stopping.is_set():
                 return False
             if playbook_pid:
                 kill_tree(playbook_pid.pop())
@@ -261,6 +329,9 @@ class Executor:
         def on_event(ev: dict) -> bool:
             if not playbook_pid and isinstance(ev.get("pid"), int):
                 playbook_pid.append(ev["pid"])
+                if self._play_pid != ev["pid"]:  # for shutdown(), and noted for a start after a kill
+                    self._play_pid = ev["pid"]
+                    self.scratch.note(prepared.workdir, "play", ev["pid"])
             data = ev.get("event_data") or {}
             host = data.get("host")
             kind = ev.get("event", "")
@@ -332,6 +403,7 @@ class Executor:
             what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
                         skip_tags=run.skip_tags or None)
             log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
+        self._prepared = prepared
         try:
             result = ansible_runner.run(
                 private_data_dir=str(prepared.runner_dir),
@@ -348,11 +420,19 @@ class Executor:
                 cancel_callback=cancel_requested,
                 quiet=True,
             )
-            if result.status == "canceled":
+            # shutdown() killed it, unless it had just finished by itself.
+            stopped = self._stopping.is_set() and result.status != "successful"
+            if stopped:
+                log_file.write("\n[ansible-gui] The server stopped: this run was interrupted.\n")
+            elif result.status == "canceled":
                 log_file.write("\n[ansible-gui] Run canceled from the web UI.\n")
         finally:
+            self._play_pid = None
             prepared.cleanup()
+            self._prepared = None
             log_file.close()
+        if stopped:
+            return  # still "running" in the store: the next start marks it interrupted and sends its email
 
         stats = final or live
         status = result.status
@@ -370,7 +450,7 @@ class Executor:
         and talks only to an agent holding the chosen key.
         """
         # Short path: the agent socket must fit in a Unix socket address.
-        p = Prepared(workdir=Path(tempfile.mkdtemp(prefix="agui-")))
+        p = Prepared(workdir=self.scratch.make(), scratch=self.scratch)
         try:
             p.runner_dir.mkdir()
             chosen = run.credentials or {}
@@ -403,6 +483,7 @@ class Executor:
                                           self.workspace.settings.ssh_host_key_checking)
             p.cmdline += ["--ssh-common-args", f"-F {shlex.quote(str(config))}"]
             p.agent = ssh.Agent(p.workdir)
+            self.scratch.note(p.workdir, "agent", p.agent.pid)
             p.env["SSH_AUTH_SOCK"] = str(p.agent.socket)
             p.env["SSH_AGENT_PID"] = str(p.agent.pid)
 

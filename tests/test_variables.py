@@ -152,6 +152,55 @@ def test_freeform_must_be_a_mapping_of_names():
     assert "isn’t a variable name" in variables.check_freeform("1bad: x\n")[1]
 
 
+def alias_bomb(levels: int) -> str:
+    """Each line a list of ten references to the one before: ten times the values per 50 characters."""
+    lines = ["a0: &a0 [" + ",".join(["x"] * 10) + "]"]
+    lines += [f"a{i}: &a{i} [" + ",".join([f"*a{i - 1}"] * 10) + "]" for i in range(1, levels)]
+    return "\n".join(lines)
+
+
+def test_aliases_cannot_multiply_typed_yaml_into_billions_of_values():
+    """Eight levels took the server five seconds and a gigabyte to show, with every other request waiting;
+    twelve never finish. The size is worked out from the aliases, without writing anything out."""
+    bomb = alias_bomb(12)
+    assert len(bomb) < 600
+    free, problem = variables.check_freeform(bomb)
+    assert free == {} and "20,000 values once the YAML aliases" in problem
+    assert variables.split_yaml(bomb, [])[0] == {}
+    assert "aliases" in variables.check_freeform("a: &a [*a]\n")[1]  # a list inside itself
+    # Aliases used as they are meant to be are fine, and so is all the plain YAML that fits in the box.
+    free, problem = variables.check_freeform("base: &base {port: 22, user: deploy}\nweb: *base\ndb: *base\n")
+    assert problem is None and free["db"] == {"port": 22, "user": "deploy"}
+    plain = "a: [" + ",".join(["1"] * 9_990) + "]"
+    assert len(plain) < variables.MAX_FREEFORM and variables.check_freeform(plain)[1] is None
+    # A YAML answer to a role's dict option goes the same way.
+    option = variables.Prompt(name="build_opts", role="builder", kind="dict")
+    assert "build_opts holds more than 20,000 values" in variables._convert(option, bomb)[1]
+    assert variables._convert(option, "a: &a [1, 2]\nb: *a\n") == ({"a": [1, 2], "b": [1, 2]}, None)
+
+
+def test_written_out_counts_shared_values_each_time_and_never_recurses():
+    shared = [1, 2, 3]
+    assert variables.written_out({"a": shared, "b": shared, "c": {"d": shared}}) == 2 + 3 * 4
+    assert variables.written_out("x") == 1 and variables.written_out([]) == 1
+    deep = []
+    for _ in range(50_000):
+        deep = [deep]
+    assert variables.written_out(deep) == 50_001
+    loop = {}
+    loop["me"] = [loop]
+    assert variables.written_out(loop) == float("inf")
+
+
+def test_a_run_with_an_alias_bomb_is_refused(app, c):
+    r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "check", "expected": ["box1"],
+                              "extra_vars": alias_bomb(12)})
+    assert r.status_code == 400 and "YAML aliases" in r.text and app.state.store.recent() == []
+    # The launcher and its preview only read the form, so a link can carry one: they answer, and say why.
+    assert c.get("/runs/preview", params={"playbook": "site.yml", "extra_vars": alias_bomb(12)}).status_code == 200
+    assert c.get("/runs/new", params={"extra_vars": alias_bomb(12)}).status_code == 200
+
+
 # --- the launcher ----------------------------------------------------------------------------------------------
 def test_the_launcher_draws_a_field_per_option(c):
     page = c.get("/runs/new", params={"playbook": "build.yml"}).text

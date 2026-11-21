@@ -15,6 +15,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..scratch import Scratch
 from .store import Repo
 
 _locks: dict[int, threading.Lock] = {}
@@ -55,15 +56,17 @@ def is_https(url: str) -> bool:
 
 
 def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
-         token: tuple[str, str] | None = None) -> Synced:
+         token: tuple[str, str] | None = None, scratch: Scratch | None = None) -> Synced:
     """Fetch the branch and check out its tip. Raises GitError with a one-line reason.
 
     private_key signs in over SSH; token is (user, token) for HTTPS, handed to git
-    through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper."""
+    through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper.
+    With scratch, the temp directory holding the key is noted there, so that a server killed
+    mid-pull has it wiped by the next start."""
     if token and not repo.url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     with _lock(repo.id):
-        workdir = Path(tempfile.mkdtemp(prefix="agui-git-"))
+        workdir = scratch.make("git-") if scratch else Path(tempfile.mkdtemp(prefix="agui-git-"))
         try:
             ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
             if private_key:
@@ -98,7 +101,10 @@ def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
             subject = _git(["log", "-1", "--format=%s"], path, env)
             return Synced(commit=commit, subject=subject, changed=commit != before)
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if scratch:
+                scratch.drop(workdir)
+            else:
+                shutil.rmtree(workdir, ignore_errors=True)
 
 
 _PLAIN = [

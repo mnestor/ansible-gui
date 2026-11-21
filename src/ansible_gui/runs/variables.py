@@ -21,6 +21,12 @@ from cryptography.fernet import Fernet, InvalidToken
 
 VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_FREEFORM = 20_000
+# What typed YAML may hold once its aliases are written out. A few hundred characters of nested aliases
+# (&a, *a) stand for billions of values, and showing or storing them writes every one out. Text without
+# aliases can't reach this: it holds at most one value per two characters.
+MAX_VALUES = MAX_FREEFORM
+TOO_MANY_VALUES = (f"more than {MAX_VALUES:,} values once the YAML aliases (&name, *name) are written out. "
+                   "Use fewer aliases, or put the values in a vars file in the repository.")
 SECRET = "__secret__"  # a stored secret answer: {"__secret__": "<fernet token>"}
 FIELD = "var."  # form field prefix: var.<name>
 
@@ -38,6 +44,32 @@ def _load(path: Path):
         return yaml.load(path.read_text(), Loader=_Loader)  # noqa: S506 - SafeLoader subclass
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return None
+
+
+def written_out(value) -> float:
+    """How many values `value` holds with every YAML alias written out, counted without writing them out.
+
+    PyYAML loads an alias as a second reference to the same list or mapping, so each one is measured once
+    and its size reused wherever it appears again. inf when one contains itself. No recursion: aliases
+    can nest a thousand levels in a few kilobytes."""
+    sizes: dict[int, float] = {}
+    open_: set[int] = set()  # the lists and mappings being measured: the path down to the one in hand
+    stack = [(value, False)]
+    while stack:
+        v, measured = stack.pop()
+        if not isinstance(v, (dict, list)):
+            continue
+        inside = list(v.values()) if isinstance(v, dict) else v
+        if measured:
+            sizes[id(v)] = 1 + sum(sizes[id(x)] if isinstance(x, (dict, list)) else 1 for x in inside)
+            open_.discard(id(v))
+        elif id(v) in open_:
+            return float("inf")
+        elif id(v) not in sizes:
+            open_.add(id(v))
+            stack.append((v, True))
+            stack.extend((x, False) for x in inside)
+    return sizes[id(value)] if isinstance(value, (dict, list)) else 1
 
 
 @dataclass
@@ -239,10 +271,12 @@ def _convert(p: Prompt, raw) -> tuple[object, str | None]:
     if p.kind == "dict":
         try:
             value = yaml.load(text, Loader=_Loader)  # noqa: S506
-        except yaml.YAMLError:
+        except (yaml.YAMLError, RecursionError):
             value = None
         if not isinstance(value, dict):
             return None, f"{p.name} takes YAML key: value lines."
+        if written_out(value) > max(MAX_VALUES, len(text)):
+            return None, f"{p.name} holds {TOO_MANY_VALUES}"
         return value, None
     return text, None
 
@@ -349,7 +383,7 @@ def check_freeform(text: str) -> tuple[dict, str | None]:
         return {}, f"Keep extra variables under {MAX_FREEFORM:,} characters; put more in a vars file in the repository."
     try:
         data = yaml.load(text, Loader=_Loader)  # noqa: S506
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, RecursionError) as e:
         mark = getattr(e, "problem_mark", None)
         where = f" on line {mark.line + 1}" if mark else ""
         return {}, f"Extra variables aren’t valid YAML{where}. Write one name: value per line."
@@ -357,6 +391,8 @@ def check_freeform(text: str) -> tuple[dict, str | None]:
         return {}, None
     if not isinstance(data, dict):
         return {}, "Extra variables must be name: value lines, not a list or a single value."
+    if written_out(data) > MAX_VALUES:
+        return {}, f"Extra variables hold {TOO_MANY_VALUES}"
     bad = [str(k) for k in data if not VAR_NAME.match(str(k))]
     if bad:
         return {}, f"{bad[0]} isn’t a variable name: use letters, digits and underscores, not starting with a digit."

@@ -63,12 +63,41 @@ def test_no_sign_in_only_listens_on_loopback(monkeypatch):
         check_bind(s, host, insecure_ok=False)
     with pytest.raises(SystemExit, match="Refusing to listen on 0.0.0.0 without sign-in"):
         check_bind(s, "0.0.0.0", insecure_ok=False)
-    check_bind(s, "0.0.0.0", insecure_ok=True)  # explicit opt-out, for a proxy that signs people in
+    env(monkeypatch, ANSIBLE_GUI_PUBLIC_URL="https://ansible.example.test")
+    # explicit opt-out, for a proxy that signs people in
+    check_bind(Settings.from_env(), "0.0.0.0", insecure_ok=True)
 
 
 def test_sign_in_may_listen_anywhere(monkeypatch):
-    env(monkeypatch, **OIDC)
+    env(monkeypatch, **OIDC, ANSIBLE_GUI_PUBLIC_URL="https://ansible.example.test")
     check_bind(Settings.from_env(), "0.0.0.0", insecure_ok=False)
+
+
+def test_beyond_loopback_needs_the_name_people_use(monkeypatch):
+    """Requests are answered only when addressed to this machine or to the public URL's host, so without
+    a public URL nothing beyond loopback could reach a page: refuse at start, and say what to set."""
+    env(monkeypatch, **OIDC)
+    s = Settings.from_env()
+    assert {"127.0.0.1", "localhost", "::1"} <= s.allowed_hosts and "ansible.example.test" not in s.allowed_hosts
+    check_bind(s, "127.0.0.1", insecure_ok=False)
+    for host in ("0.0.0.0", "::", "192.0.2.10"):
+        with pytest.raises(SystemExit, match=f"Refusing to listen on {host} without ANSIBLE_GUI_PUBLIC_URL"):
+            check_bind(s, host, insecure_ok=False)
+    with pytest.raises(SystemExit, match="without ANSIBLE_GUI_PUBLIC_URL"):
+        check_bind(s, "0.0.0.0", insecure_ok=True)
+    env(monkeypatch, ANSIBLE_GUI_PUBLIC_URL="https://Ansible.Example.test:8443/")
+    s = Settings.from_env()
+    assert s.public_url == "https://Ansible.Example.test:8443" and "ansible.example.test" in s.allowed_hosts
+    check_bind(s, "0.0.0.0", insecure_ok=False)
+
+
+@pytest.mark.parametrize("header, name", [
+    ("ansible.example.test", "ansible.example.test"), ("Ansible.Example.test:8443", "ansible.example.test"),
+    ("127.0.0.1:8080", "127.0.0.1"), ("[::1]:8080", "::1"), ("[::1]", "::1"), ("", ""), ("::1", ""),
+])
+def test_host_name_drops_the_port(header, name):
+    from ansible_gui.config import host_name
+    assert host_name(header) == name
 
 
 def test_smtp_half_configured_refuses(monkeypatch):
@@ -89,6 +118,8 @@ def test_host_key_checking_and_retention_defaults(monkeypatch):
     ("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING", "off", "yes, accept-new or no"),
     ("ANSIBLE_GUI_RUN_RETENTION_DAYS", "-1", "whole number of days"),
     ("ANSIBLE_GUI_EDIT_URL", "javascript:alert(1)//{path}", "must start with https://"),
+    ("ANSIBLE_GUI_PUBLIC_URL", "ansible.example.test", "ANSIBLE_GUI_PUBLIC_URL must be the address"),
+    ("ANSIBLE_GUI_PUBLIC_URL", "https://", "ANSIBLE_GUI_PUBLIC_URL must be the address"),
 ])
 def test_bad_values_refuse_to_start(monkeypatch, name, value, says):
     env(monkeypatch, **{name: value})

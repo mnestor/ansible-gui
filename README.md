@@ -30,13 +30,13 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |
 | `ANSIBLE_GUI_OIDC_CLIENT_ID`, `ANSIBLE_GUI_OIDC_CLIENT_SECRET` (or `_FILE`) | | The OIDC client. Redirect URI: `<public url>/auth/callback` |
 | `ANSIBLE_GUI_OIDC_GROUPS` | required with OIDC | Comma-separated groups allowed in (`groups` claim), or `*` for anyone the provider signs in |
-| `ANSIBLE_GUI_PUBLIC_URL` | | e.g. `https://ansible.example.com`; used for the redirect URI, the same-origin check and secure cookies |
+| `ANSIBLE_GUI_PUBLIC_URL` | required beyond loopback | The address people use, e.g. `https://ansible.example.com`. Besides `localhost`, its host is the only name requests may be addressed to; also used for the redirect URI, the same-origin check and secure cookies |
 | `ANSIBLE_GUI_SMTP_HOST` | none | Mail server for notifications. Turns email on |
 | `ANSIBLE_GUI_SMTP_PORT`, `ANSIBLE_GUI_SMTP_TLS` | `587`, `starttls` | `TLS` is `starttls`, `ssl` (port 465) or `none` (port 25) |
 | `ANSIBLE_GUI_SMTP_USERNAME`, `ANSIBLE_GUI_SMTP_PASSWORD` (or `_FILE`) | | SMTP login, if the server wants one |
 | `ANSIBLE_GUI_SMTP_FROM`, `ANSIBLE_GUI_NOTIFY_TO` | required with SMTP | Sender, and comma-separated recipients |
 | `ANSIBLE_GUI_TRUSTED_PROXIES` | `127.0.0.1` | Proxies whose `X-Forwarded-*` headers are believed |
-| `ANSIBLE_GUI_INSECURE_NO_AUTH` | | `1` allows listening beyond loopback without sign-in (only if a proxy in front does it) |
+| `ANSIBLE_GUI_INSECURE_NO_AUTH` | | `1` allows listening beyond loopback without sign-in (only if a proxy in front does it). `ANSIBLE_GUI_PUBLIC_URL` is still needed |
 | `ANSIBLE_GUI_HOST` / `ANSIBLE_GUI_PORT` | `127.0.0.1` / `8080` | Listen address |
 
 Needs `ansible-core` on PATH (`uv run` installs the locked one on Python 3.12+). Ansible is only ever called as a
@@ -49,10 +49,15 @@ server's environment, so no playbook, inventory plugin or collection inherits th
 docker build -t ansible-gui .
 ```
 
-The image holds ansible-gui, ansible-core 2.21.4, git and OpenSSH, runs as uid 10001 under tini, and listens
-on 8080 with data in `/data`. It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables (or
-`ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). `GET /healthz` backs the
-healthcheck. `deploy/` has a compose file and an env template for docker01. The compose file runs it with a
+The image is Alpine with ansible-gui, ansible-core 2.21.4, git and OpenSSH. It runs as uid 10001 under tini and
+listens on 8080 with data in `/data`. It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
+(or `ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). It also refuses without
+`ANSIBLE_GUI_PUBLIC_URL`, the one name besides `localhost` it answers to. `GET /healthz` backs the healthcheck and
+answers under any name.
+
+Tasks a playbook runs on the controller (`delegate_to: localhost`, `connection: local`) run in this image: it has
+bash and GNU tar for them, and otherwise BusyBox's tools and musl rather than glibc. A playbook that calls a
+program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it. `deploy/` has a compose file and an env template for docker01. The compose file runs it with a
 read-only root filesystem, every capability dropped and `no-new-privileges`; `deploy/smoke-test.sh` runs a playbook
 under exactly that.
 
@@ -115,6 +120,11 @@ ansible-runner's own directory (where it writes the run's environment, the becom
 inside the run's temp directory and wiped with the keys when the run ends; only `output.log` stays in
 `data/runs/<id>/`. Runs older than `ANSIBLE_GUI_RUN_RETENTION_DAYS` are deleted at start and every six hours.
 
+When the server stops (SIGTERM, `docker stop`), it ends the run in progress first: the playbook's processes, the
+run's ssh-agent and its temp directory all go, and the run shows as interrupted after the next start. A server
+that is killed outright can't do that, so each temp directory is noted in `data/scratch/` while it exists, and the
+next start wipes whatever is still noted and stops the agent and playbook that went with it.
+
 ## Facts
 
 Whenever a run gathers facts on a host (`gather_facts`, or the `setup` module), they are saved from the run's
@@ -167,6 +177,11 @@ With `ANSIBLE_GUI_OIDC_ISSUER` set, every page needs an OIDC sign-in (authorizat
 `openid profile email groups`) by a member of `ANSIBLE_GUI_OIDC_GROUPS`. Without it there is no sign-in, and
 the server refuses to listen anywhere but loopback. Writes (POST) from another origin are refused either way.
 
+So is every request not addressed to this server by name: its `Host` must be `localhost`, `127.0.0.1`, `::1` or
+the host of `ANSIBLE_GUI_PUBLIC_URL`. Otherwise a web page anywhere could point a DNS name of its own at
+127.0.0.1 or a LAN address (DNS rebinding) and, same-origin as far as the browser can tell, run playbooks through
+the visitor's browser. That matters most with no sign-in, where nothing else stands in the way.
+
 Every sign-in is recorded on the server, and a session lasts 12 hours from sign-in however much it's used, so
 group membership is checked again at least that often. Signing out ends the session everywhere, including in
 a copied cookie. To cut everyone off now (say, after removing someone from the group):
@@ -215,7 +230,8 @@ ansible-gui pulls, give it read-only deploy keys or tokens, and don't add a repo
 this server to.
 
 Credentials are encrypted with a key derived from `ANSIBLE_GUI_SECRET_KEY`, which belongs outside `data/`. Nothing
-under `data/` holds a secret in plain text: runs get theirs in a temp directory that is wiped afterwards.
+under `data/` holds a secret in plain text: runs get theirs in a temp directory that is wiped afterwards, by the
+server as it stops, or by the next start if it was killed.
 
 ## Tests
 

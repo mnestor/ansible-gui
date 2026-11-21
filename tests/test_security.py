@@ -3,6 +3,9 @@
 import os
 import re
 import shutil
+import signal
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -10,7 +13,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ansible_gui.config import Settings, scrub_environment
+from ansible_gui.credentials.ssh import Agent
 from ansible_gui.runs.store import RunStore
+from ansible_gui.scratch import Scratch
 from ansible_gui.web import create_app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runner"
@@ -97,6 +102,102 @@ def test_main_reads_settings_then_scrubs_before_starting(monkeypatch, tmp_path):
     web.main()
     assert started["port"] == 8099 and started["host"] == "127.0.0.1" and started["env"] == []
     assert TestClient(started["app"]).get("/healthz").text == "ok"
+
+
+# --- a server that stops, or is killed, in the middle of a run ----------------------------
+def gone(pid: int, timeout: float = 5) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+@needs_ansible
+def test_stopping_the_server_mid_run_ends_the_run_and_wipes_its_secrets(tmp_path):
+    """SIGTERM (docker stop, a new image) used to leave the run's private key and vault password in its temp
+    directory, its ssh-agent running with the key loaded, and the playbook carrying on against the hosts."""
+    data = tmp_path / "data"
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=data,
+                              secret_key="s" * 40))
+    key = tmp_path / "key"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    with TestClient(app) as c:  # leaving this block is the server stopping: uvicorn runs the same lifespan
+        c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "vault-pw-2", "is_default": "1"})
+        c.post("/credentials", data={"kind": "account", "name": "deploy", "private_key": key.read_text(),
+                                     "is_default": "1"})
+        ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "account")}
+        r = c.post("/runs", data={"playbook": "slow.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                                  **ids}, follow_redirects=False)
+        run_id = int(r.headers["location"].rsplit("/", 1)[1])
+        log = app.state.store.log_path(run_id)
+        end = time.time() + 30
+        while "TASK [Wait]" not in (log.read_text() if log.exists() else ""):
+            assert time.time() < end, "the pause task never started"
+            time.sleep(0.2)
+        [(workdir, pids)] = app.state.executor.scratch.leftovers()
+        assert "PRIVATE KEY" in (workdir / "id").read_text() and (workdir / "vault-pass").read_text() == "vault-pw-2"
+        assert set(pids) == {"agent", "play"}
+        stopping = time.time()
+    assert time.time() - stopping < 12  # not the playbook's 20 s pause
+    assert not workdir.exists() and app.state.executor.scratch.leftovers() == []
+    assert gone(pids["agent"]), "the run's ssh-agent is still running"
+    end = time.time() + 5
+    while (left := subprocess.run(["pgrep", "-f", str(data)], capture_output=True, text=True).stdout.split()):
+        assert time.time() < end, f"still running after the server stopped: {left}"
+        time.sleep(0.2)
+    assert "The server stopped: this run was interrupted." in log.read_text()
+    # Not finished as far as the store knows: the next start says so and sends the email, as for any restart.
+    assert app.state.store.get(run_id).status == "running"
+    assert RunStore(data).get(run_id).status == "interrupted"
+
+
+def test_what_a_killed_server_left_is_cleared_by_the_next_start(tmp_path):
+    """SIGKILL, the OOM killer or a power cut give the server no chance to clean up. Every temp directory is
+    noted in data/scratch/ while it exists, so the next start wipes the ones still noted and stops their
+    processes, and nothing else: not a pid that is someone else's by now, not a path the notes didn't make."""
+    data = tmp_path / "data"
+    scratch = Scratch(data)
+    sleep = [sys.executable, "-c", "import time; time.sleep(120)"]
+    run = scratch.make()
+    (run / "id").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
+    agent = Agent(run)
+    scratch.note(run, "agent", agent.pid)
+    play = subprocess.Popen([*sleep, "--ssh-common-args", f"-F {data}/ssh/ssh_config"])  # as a run's Ansible is
+    scratch.note(run, "play", play.pid)
+    pull = scratch.make("git-")
+    (pull / "id").write_text("a deploy key\n")
+    stranger = subprocess.Popen(sleep)  # the pid a note holds, reused since by something else
+    stale = scratch.make()
+    scratch.note(stale, "play", stranger.pid)
+    scratch.note(stale, "agent", stranger.pid)
+    precious = tmp_path / "precious"
+    precious.mkdir()
+    (precious / "keep").write_text("not ours\n")
+    (scratch.notes / "agui-forged").write_text(f"{precious}\n")  # a note pointing at a directory it doesn't name
+    (scratch.notes / precious.name).write_text(f"{precious}\n")  # and one that was never a temp directory
+    try:
+        create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=data, secret_key="s" * 40))
+        assert not run.exists() and not pull.exists() and not stale.exists()
+        assert list(scratch.notes.iterdir()) == []
+        assert play.wait(timeout=5) == -signal.SIGKILL and gone(agent.pid)
+        assert stranger.poll() is None and (precious / "keep").read_text() == "not ours\n"
+    finally:
+        play.kill(), stranger.kill(), agent.stop()
+
+
+def test_a_pull_notes_its_key_directory_only_while_it_lasts(tmp_path):
+    scratch = Scratch(tmp_path)
+    d = scratch.make("git-")
+    assert d.name.startswith("agui-git-") and d.stat().st_mode & 0o777 == 0o700
+    assert [p for p, _ in scratch.leftovers()] == [d]
+    scratch.drop(d)
+    assert not d.exists() and scratch.leftovers() == []
+    scratch.note(d, "agent", 1)  # too late: nothing is recreated
+    assert scratch.leftovers() == [] and list(scratch.notes.iterdir()) == []
 
 
 # --- response headers ---------------------------------------------------------------------
