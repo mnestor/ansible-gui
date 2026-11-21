@@ -322,7 +322,7 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     assert "pw-copied" not in listing and "PRIVATE KEY" not in listing and "become password" in listing
 
     launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
-    assert f'<option value="{acct.id}" selected data-desc="deploy · certificate · become password">admin (default)</option>' in launcher
+    assert f'<option value="{acct.id}" selected data-desc="user deploy · SSH certificate · become password">admin (default)</option>' in launcher
 
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               "account": str(acct.id)}, follow_redirects=False)
@@ -400,3 +400,10 @@ def test_env_secret_names_are_capitalised_and_deletes_sit_in_a_danger_zone(app):
     assert "data-upper" in page
     assert 'class="section-title">Danger zone</h2>' in page and '<div class="danger-zone">' in page
     assert '<button class="btn btn-danger" type="submit"' in page and ">Delete environment secret</button>" in page
+
+
+def test_an_account_says_what_it_lacks(app):
+    c = TestClient(app)
+    c.post("/credentials", data={"kind": "account", "name": "plain", "username": "ansible"})
+    page = c.get("/runs/new").text
+    assert 'data-desc="user ansible · no SSH key · no become password">plain' in page

@@ -1,11 +1,10 @@
 {# Who a run signs in as: an account (user, key, become password) in plain view; the vault password and the
    older separate SSH key and become password under More options, the last two only when some exist. #}
+{# All three parts, said either way, so a missing one is visible: "user deploy · SSH certificate · no become password". #}
 {% macro account_summary(c) -%}
-  {%- set bits = [] -%}
-  {%- if c.meta.username %}{% set _ = bits.append(c.meta.username) %}{% endif -%}
-  {%- if c.meta.has_key %}{% set _ = bits.append("certificate" if c.meta.cert else "key") %}{% endif -%}
-  {%- if c.meta.has_become %}{% set _ = bits.append("become password") %}{% endif -%}
-  {{ bits | join(" · ") }}
+  {{- ("user " ~ c.meta.username) if c.meta.username else "no user: the inventory’s" -}}
+  {{- " · " ~ (("SSH certificate" if c.meta.cert else "SSH key") if c.meta.has_key else "no SSH key") -}}
+  {{- " · " ~ ("become password" if c.meta.has_become else "no become password") -}}
 {%- endmacro %}
 
 {% macro account_field(form, cred_choices) %}
