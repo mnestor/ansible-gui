@@ -145,8 +145,8 @@ def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     assert "secret=s3cret file=s3cret" in log
     assert "agent=/" in log and "agui-" in log  # the per-run agent, not the server user's
     assert "ED25519-CERT" in log  # key and certificate loaded into it
-    assert "-F " in log and str(app.state.store.data_dir / "ssh" / "ssh_config") in log
     agent_dir = log.split("agent=")[1].split("/agent.sock")[0]
+    assert f"-F {agent_dir}/ssh_config" in log  # the run's own, beside its agent and key
     assert not Path(agent_dir).exists()  # keys and passwords removed after the run
     assert run.credentials["account"]["name"] == "lab" and run.credentials["env_secret"][0]["env"] == "TEST_TOKEN"
 

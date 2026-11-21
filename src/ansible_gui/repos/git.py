@@ -20,8 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..scratch import Scratch
-
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 _locks: dict[str, threading.Lock] = {}
@@ -36,7 +34,8 @@ def _lock(home: Path) -> threading.Lock:
 @contextmanager
 def locked(home: Path, on_wait=None):
     """Hold the repository's lock, calling on_wait() first if someone else holds it: fetches into one bare
-    clone take turns, and so do writing out and pruning its commit directories."""
+    clone take turns, and so do writing out and pruning its commit directories. Held by the app around the
+    jobs it sends, so it also orders them on a worker in another container."""
     lock = _lock(home)
     if not lock.acquire(blocking=False):
         if on_wait:
@@ -87,47 +86,43 @@ def _base_env() -> dict:
 
 
 def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str | None = None,
-          token: tuple[str, str] | None = None, *, scratch: Scratch) -> Fetched:
-    """Fetch the branch, whole, into the bare clone. Call it holding locked(home). Raises GitError.
+          token: tuple[str, str] | None = None, *, workdir: Path) -> Fetched:
+    """Fetch the branch, whole, into the bare clone. Raises GitError.
 
     private_key signs in over SSH; token is (user, token) for HTTPS, handed to git through GIT_ASKPASS so it
-    never lands in the URL, the clone's config or a credential helper. The temp directory holding either is
-    noted in scratch, so a server killed mid-pull has it wiped by the next start."""
+    never lands in the URL, the clone's config or a credential helper. Either is written into workdir, a
+    private temp directory the caller wipes."""
     if token and not url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     bare = home / "git"
     if (home / ".git").exists():  # a working copy from before commit directories: start again
         shutil.rmtree(home)
-    workdir = scratch.make("git-")
-    try:
-        ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
-        if private_key:
-            key = workdir / "id"
-            fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
-            with os.fdopen(fd, "w") as f:
-                f.write(private_key)
-            ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
-        env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
-        if token:
-            askpass = workdir / "askpass"
-            fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
-            with os.fdopen(fd, "w") as f:
-                f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
-            env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
-        if not (bare / "HEAD").exists():
-            shutil.rmtree(bare, ignore_errors=True)
-            bare.mkdir(parents=True)
-            _git(["init", "-q", "--bare"], bare, env)
-            _git(["remote", "add", "origin", url], bare, env)
-        else:
-            _git(["remote", "set-url", "origin", url], bare, env)
-        # The whole branch, not the last few commits: running an older run's commits again needs them.
-        _git(["fetch", "-q", "--prune", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], bare, env)
-        commit = _git(["rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"], bare, env)
-        subject = _git(["log", "-1", "--format=%s", commit], bare, env)
-        return Fetched(commit=commit, subject=subject)
-    finally:
-        scratch.drop(workdir)
+    ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
+    if private_key:
+        key = workdir / "id"
+        fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(private_key)
+        ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
+    env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
+    if token:
+        askpass = workdir / "askpass"
+        fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
+        with os.fdopen(fd, "w") as f:
+            f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
+        env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
+    if not (bare / "HEAD").exists():
+        shutil.rmtree(bare, ignore_errors=True)
+        bare.mkdir(parents=True)
+        _git(["init", "-q", "--bare"], bare, env)
+        _git(["remote", "add", "origin", url], bare, env)
+    else:
+        _git(["remote", "set-url", "origin", url], bare, env)
+    # The whole branch, not the last few commits: running an older run's commits again needs them.
+    _git(["fetch", "-q", "--prune", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], bare, env)
+    commit = _git(["rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"], bare, env)
+    subject = _git(["log", "-1", "--format=%s", commit], bare, env)
+    return Fetched(commit=commit, subject=subject)
 
 
 def has_commit(home: Path, commit: str) -> bool:
@@ -187,12 +182,6 @@ def prune(home: Path, keep: set[str]) -> list[str]:
         if SHA.match(d.name):
             gone.append(d.name)
     return gone
-
-
-def remove(home: Path) -> None:
-    """Delete the bare clone and every commit directory."""
-    with locked(home):
-        shutil.rmtree(home, ignore_errors=True)
 
 
 _PLAIN = [

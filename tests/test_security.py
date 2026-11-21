@@ -166,7 +166,7 @@ def test_what_a_killed_server_left_is_cleared_by_the_next_start(tmp_path):
     (run / "id").write_text("-----BEGIN OPENSSH PRIVATE KEY-----\n")
     agent = Agent(run)
     scratch.note(run, "agent", agent.pid)
-    play = subprocess.Popen([*sleep, "--ssh-common-args", f"-F {data}/ssh/ssh_config"])  # as a run's Ansible is
+    play = subprocess.Popen([*sleep, "--ssh-common-args", f"-F {run}/ssh_config"])  # as a run's Ansible is
     scratch.note(run, "play", play.pid)
     pull = scratch.make("git-")
     (pull / "id").write_text("a deploy key\n")

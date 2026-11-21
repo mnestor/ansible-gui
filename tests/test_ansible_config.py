@@ -53,7 +53,7 @@ def test_collections_in_search_order_mark_the_shadowed_copy(tmp_path, monkeypatc
                                                 "ansible.posix": {"version": "2.2.2"}},
                "/internal": {"ansible._protomatter": {"version": "*"}}}
 
-    def fake(cmd, cwd, env):
+    def fake(cmd, cwd, env, worker=None):
         out = "[]" if cmd[0] == "ansible-config" else json.dumps(listing)
         return subprocess.CompletedProcess(cmd, 0, out, "")
 
@@ -67,7 +67,7 @@ def test_collections_in_search_order_mark_the_shadowed_copy(tmp_path, monkeypatc
 
 
 def test_a_failing_cli_is_reported_not_raised(tmp_path, monkeypatch):
-    def fake(cmd, cwd, env):
+    def fake(cmd, cwd, env, worker=None):
         raise FileNotFoundError(cmd[0])
 
     monkeypatch.setattr(ansible_config, "_run", fake)

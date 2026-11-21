@@ -11,6 +11,7 @@ import re
 import signal
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -108,31 +109,79 @@ def inspect_cert(cert: str, key: KeyInfo | None = None) -> CertInfo:
     return info
 
 
-def write_ssh_config(data_dir: Path, user_config: Path | None, host_key_checking: str = "accept-new") -> Path:
+def ssh_config_text(user_config: Path | None, host_key_checking: str, known_hosts: Path) -> str:
     """The ssh_config every run and git pull uses: the configured file first, then ansible-gui's fallbacks.
 
     ssh keeps the first value it reads for each option, so anything in the configured
-    file wins; the fallbacks only fill gaps. Known hosts live in the data directory,
-    never in the server user's ~/.ssh. host_key_checking is ANSIBLE_GUI_SSH_HOST_KEY_CHECKING.
+    file wins; the fallbacks only fill gaps. Known hosts are ansible-gui's own, never the
+    server user's ~/.ssh. host_key_checking is ANSIBLE_GUI_SSH_HOST_KEY_CHECKING.
     """
     if host_key_checking not in ("yes", "accept-new", "no"):
         raise ValueError(f"StrictHostKeyChecking {host_key_checking!r}")
-    d = data_dir / "ssh"
-    d.mkdir(parents=True, exist_ok=True)
-    os.chmod(d, 0o700)
     lines = ["# Written by ansible-gui before every run. Edit the file it includes instead.", ""]
     if user_config:
         lines.append(f'Include "{user_config}"')
         lines.append("")
     lines += [
         "Host *",
-        f'  UserKnownHostsFile "{d / "known_hosts"}"',
+        f'  UserKnownHostsFile "{known_hosts}"',
         f"  StrictHostKeyChecking {host_key_checking}",
         "",
     ]
+    return "\n".join(lines)
+
+
+def write_ssh_config(data_dir: Path, user_config: Path | None, host_key_checking: str = "accept-new") -> Path:
+    """ssh_config_text() written to data/ssh/ssh_config, with data/ssh/known_hosts."""
+    d = data_dir / "ssh"
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
     path = d / "ssh_config"
-    path.write_text("\n".join(lines))
+    path.write_text(ssh_config_text(user_config, host_key_checking, d / "known_hosts"))
     return path
+
+
+def for_job(data_dir: Path, user_config: Path | None, host_key_checking: str) -> dict:
+    """What a job needs to write its own ssh_config: the configured file's text (a worker in another
+    container can't read it), the known hosts, and StrictHostKeyChecking."""
+    text = None
+    if user_config:
+        try:
+            text = user_config.read_text()
+        except OSError:  # ssh then fails on the Include, as it always has: the overview says why
+            pass
+    return {"config": text, "include": str(user_config) if user_config and text is None else None,
+            "known_hosts": read_known_hosts(data_dir), "checking": host_key_checking}
+
+
+_learn_lock = threading.Lock()
+
+
+def learn_host_keys(data_dir: Path, lines: list[str]) -> int:
+    """Add host keys a job's ssh accepted (StrictHostKeyChecking accept-new) to known_hosts. Returns how many
+    were new. Each line is checked like a pasted one; one that isn't a known_hosts line is dropped."""
+    added = 0
+    with _learn_lock:
+        have = set(read_known_hosts(data_dir).splitlines())
+        new = []
+        for line in lines:
+            line = line.strip()
+            if not line or line in have or "\n" in line:
+                continue
+            try:
+                check_known_hosts(line)
+            except InvalidKey:
+                continue
+            new.append(line)
+            have.add(line)
+        if new:
+            path = known_hosts_path(data_dir)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.chmod(path.parent, 0o700)
+            with path.open("a") as f:
+                f.write("".join(l + "\n" for l in new))
+            added = len(new)
+    return added
 
 
 def known_hosts_path(data_dir: Path) -> Path:

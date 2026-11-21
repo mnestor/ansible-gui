@@ -192,8 +192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     invs = Inventories(ws)
     ws.on_inventory_changed = invs.reload
     facts = FactStore(settings.data_dir)
-    executor = Executor(store, ws, creds, settings.data_dir, settings.ssh_config, facts=facts,
-                        run_timeout=settings.run_timeout_minutes * 60)
+    executor = Executor(store, ws, creds, settings.data_dir, facts=facts, run_timeout=settings.run_timeout_minutes * 60)
     sessions = SessionStore(settings.data_dir)
     if settings.run_retention_days:
         Retention(store, settings.run_retention_days)
@@ -1303,7 +1302,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repo = ws.playbook_repo(rid)
         if not repo:
             return RedirectResponse("/repos", status_code=303)
-        found = ansible_config.report(repo.run_dir, repo.path, ws.ansible_env(repo)) if repo.run_dir.is_dir() else None
+        found = (ansible_config.report(repo.run_dir, repo.path, ws.ansible_env(repo), ws.runner)
+                 if repo.run_dir.is_dir() else None)
         return render(request, "ansible_config.html", section="repos", repo=repo, report=found)
 
     @app.get("/repos/{rid}", response_class=HTMLResponse)

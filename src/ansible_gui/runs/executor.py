@@ -15,10 +15,10 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ..credentials import ssh
 from ..credentials.store import CredentialStore
 from ..facts import GATHER_ACTIONS
 from ..scratch import Scratch
+from ..worker import SCRATCH, VAULT, Cancel, vault_files
 from . import playbooks, variables
 from .store import Run, RunStore, host_result, now
 
@@ -103,11 +103,11 @@ def clear_leftovers(scratch: Scratch, data_dir: Path) -> int:
 
     A pid may belong to something else by now (always, after a container restart), so a process is only
     stopped if its command line still says it is the one noted: every run's Ansible is started with
-    `-F <data dir>/ssh/ssh_config`, and its agent with `-a <temp dir>/agent.sock`."""
+    `-F <temp dir>/ssh_config`, and its agent with `-a <temp dir>/agent.sock`."""
     left = scratch.leftovers()
     for path, pids in left:
         play, agent = pids.get("play"), pids.get("agent")
-        if play and play != os.getpid() and str(data_dir / "ssh" / "ssh_config") in command_line(play):
+        if play and play != os.getpid() and str(path / "ssh_config") in command_line(play):
             kill_tree(play)
         if agent and str(path / "agent.sock") in command_line(agent):
             try:
@@ -125,39 +125,19 @@ class CredentialMissing(Exception):
 
 @dataclass
 class Prepared:
-    """What a run needs from the credential store, materialised for this run only.
-
-    ansible-runner's own directory lives in here too (runner/): it writes the environment, the become
-    password and every event to it, so it goes when the run ends, with the keys."""
-    workdir: Path
-    scratch: Scratch  # where workdir is noted, so a later start can wipe it if this one can't
+    """What a run takes from the credential store, as the run job carries it: file contents, not files.
+    The runner writes the files into its own temp directory; SCRATCH in cmdline and env stands for it."""
+    files: dict[str, str] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     cmdline: list[str] = field(default_factory=list)
     passwords: dict[str, str] = field(default_factory=dict)
-    agent: ssh.Agent | None = None
+    key: str | None = None  # the file in files to load into the run's ssh-agent
     user: str = ""  # the account's login, if the run signs in with one
-
-    @property
-    def runner_dir(self) -> Path:
-        return self.workdir / "runner"
-
-    def cleanup(self) -> None:
-        if self.agent:
-            self.agent.stop()
-        self.scratch.drop(self.workdir)
-
-
-def _write_secret(path: Path, text: str) -> Path:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-    return path
 
 
 class Executor:
     def __init__(self, store: RunStore, workspace, creds: CredentialStore | None = None,
-                 data_dir: Path | None = None, ssh_config: Path | None = None, on_finish=None, facts=None,
-                 run_timeout: float = 0):
+                 data_dir: Path | None = None, on_finish=None, facts=None, run_timeout: float = 0):
         self.on_finish = on_finish or (lambda run_id: None)
         self.run_timeout = run_timeout  # seconds Ansible may run before it is stopped; 0 for no limit
         self.facts = facts  # FactStore: every gather_facts/setup result is saved there
@@ -165,16 +145,14 @@ class Executor:
         self.workspace = workspace
         self.creds = creds
         self.data_dir = data_dir or store.data_dir
-        self.ssh_config = ssh_config
-        self.scratch = Scratch(self.data_dir)
+        self.scratch = Scratch(self.data_dir)  # where a worker in this process notes its temp directories
         # What a server that was killed mid-run left, before this one makes its own.
         clear_leftovers(self.scratch, self.data_dir)
         self._queue: queue.Queue[int | None] = queue.Queue()
         self._cancel: set[int] = set()
         self._live: dict[int, dict[str, dict[str, int]]] = {}
+        self._jobs: dict[int, Cancel] = {}  # each run on a worker, to cancel it
         self._stopping = threading.Event()
-        self._prepared: Prepared | None = None  # the run in progress: its temp directory and agent,
-        self._play_pid: int | None = None  # and its ansible process once that has started
         self._thread = threading.Thread(target=self._loop, name="ansible-gui-runner", daemon=True)
         self._thread.start()
 
@@ -188,6 +166,8 @@ class Executor:
             self.store.update(run_id, status="canceled", finished_at=now(), error="Canceled before it started.")
         else:
             self._cancel.add(run_id)
+            if job := self._jobs.get(run_id):
+                job.cancel()
 
     def cancel_requested(self, run_id: int) -> bool:
         return run_id in self._cancel
@@ -219,12 +199,9 @@ class Executor:
         interrupted and sends its email."""
         self._stopping.set()
         self._queue.put(None)  # wakes the worker if it is waiting for a run
-        if self._play_pid:
-            kill_tree(self._play_pid)  # now, rather than when ansible-runner next asks cancel_requested()
+        for job in list(self._jobs.values()):
+            job.cancel()  # the worker kills Ansible's process tree now and wipes the run's temp directory
         self._thread.join(timeout)
-        prepared = self._prepared
-        if prepared and self._thread.is_alive():  # the worker is stuck: at least leave no key behind
-            prepared.cleanup()
 
     # --- worker ----------------------------------------------------------------
     def _loop(self) -> None:
@@ -251,8 +228,6 @@ class Executor:
                     self._queue.task_done()
 
     def _execute(self, run_id: int) -> None:
-        import ansible_runner  # imported lazily: slow, and only the worker needs it
-
         run = self.store.get(run_id)
         if run is None or run.status != "queued":
             return
@@ -318,25 +293,54 @@ class Executor:
         except CredentialMissing as e:
             return stop(str(e))
 
-        playbook_pid: list[int] = []  # the ansible process, from its first event
-        deadline: list[float] = []  # set as Ansible starts; ansible-runner calls cancel_requested at least every 5 s
-        timed_out = threading.Event()
+        cmdline = []
+        if run.check_mode:
+            cmdline.append("--check")
+        if run.diff:
+            cmdline.append("--diff")
+        cmdline += prepared.cmdline
+        files = dict(prepared.files)
+        # As files, not arguments: secret answers stay out of ps and the log. Free-form first, so a prompt
+        # answer wins over it, and Connect as over both.
+        if run.extra_vars.strip():
+            files["extra-vars.yml"] = run.extra_vars
+            cmdline += ["-e", f"@{SCRATCH}/extra-vars.yml"]
+        if run.prompt_vars:
+            try:
+                plain = variables.unseal(run.prompt_vars, self.creds.fernet)
+            except ValueError as e:
+                return stop(f"Didn’t start: the secret {e} can’t be decrypted: the secret key changed since it was "
+                            "saved. Enter it again and run again.")
+            files["prompt-vars.yml"] = variables.vars_file_text(plain)
+            cmdline += ["-e", f"@{SCRATCH}/prompt-vars.yml"]
+        user = prepared.user
+        if user:
+            # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
+            cmdline += ["-e", json.dumps({"ansible_user": user, "ansible_ssh_user": user})]
 
-        def cancel_requested() -> bool:
-            if deadline and time.monotonic() > deadline[0]:
-                timed_out.set()
-            if run_id not in self._cancel and not self._stopping.is_set() and not timed_out.is_set():
-                return False
-            if playbook_pid:
-                kill_tree(playbook_pid.pop())
-            return True
+        if adhoc:
+            # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to
+            # the playbooks, exactly as for the repository's own playbooks.
+            cmdline = ["--playbook-dir", opts.playbook_dir, *(["--become"] if run.become else []), *cmdline]
+            what = dict(module="ansible.builtin.setup", host_pattern=run.target) if facts_run else dict(
+                module=run.module, module_args=run.module_args or None, host_pattern=run.target)
+            shown = f"$ ansible {shlex.join(self._args(run, cmdline, inv_repo))}\n\n"
+        else:
+            what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
+                        skip_tags=run.skip_tags or None)
+            shown = f"$ ansible-playbook {shlex.join(self._args(run, cmdline, inv_repo))}\n\n"
+        job = {"project_dir": str(project), "inventory": opts.sources, "what": what, "verbosity": run.verbosity,
+               "cmdline": cmdline, "files": files, "key": prepared.key, "passwords": prepared.passwords,
+               "env": {"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
+               "ssh": self.workspace.ssh_job()}
 
-        def on_event(ev: dict) -> bool:
-            if not playbook_pid and isinstance(ev.get("pid"), int):
-                playbook_pid.append(ev["pid"])
-                if self._play_pid != ev["pid"]:  # for shutdown(), and noted for a start after a kill
-                    self._play_pid = ev["pid"]
-                    self.scratch.note(prepared.workdir, "play", ev["pid"])
+        def on_message(msg: dict) -> None:
+            if "scratch" in msg:  # the runner's temp directory is ready: the command line can name its files
+                log_file.write(shown.replace(SCRATCH, str(msg["scratch"])))
+            elif isinstance(msg.get("event"), dict):
+                on_event(msg["event"])
+
+        def on_event(ev: dict) -> None:
             data = ev.get("event_data") or {}
             host = data.get("host")
             kind = ev.get("event", "")
@@ -346,7 +350,7 @@ class Executor:
                 n = len((data.get("res") or {}).get("ansible_facts") or {})
                 log_file.write(f"{host} | SUCCESS | {n} facts gathered and saved\n")
             elif ev.get("stdout"):
-                log_file.write(ev["stdout"] + "\n")
+                log_file.write(str(ev["stdout"]) + "\n")
             if host and kind.startswith("runner_on_"):
                 c = live.setdefault(host, dict.fromkeys(_COUNTERS, 0))
                 if kind == "runner_on_ok":
@@ -371,89 +375,53 @@ class Executor:
                                    ("dark", "unreachable"), ("skipped", "skipped")):
                     for h, n in (data.get(key) or {}).items():
                         final.setdefault(h, dict.fromkeys(_COUNTERS, 0))[field] = n
-            return True
 
-        cmdline = []
-        if run.check_mode:
-            cmdline.append("--check")
-        if run.diff:
-            cmdline.append("--diff")
-        cmdline += prepared.cmdline
-        # As files, not arguments: secret answers stay out of ps and the log. Free-form first, so a prompt
-        # answer wins over it, and Connect as over both.
-        if run.extra_vars.strip():
-            cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "extra-vars.yml", run.extra_vars))]
-        if run.prompt_vars:
-            try:
-                plain = variables.unseal(run.prompt_vars, self.creds.fernet)
-            except ValueError as e:
-                prepared.cleanup()
-                return stop(f"Didn’t start: the secret {e} can’t be decrypted: the secret key changed since it was "
-                            "saved. Enter it again and run again.")
-            text = variables.vars_file_text(plain)
-            cmdline += ["-e", "@" + str(_write_secret(prepared.workdir / "prompt-vars.yml", text))]
-        user = prepared.user
-        if user:
-            # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
-            cmdline += ["-e", json.dumps({"ansible_user": user, "ansible_ssh_user": user})]
-
-        if adhoc:
-            # Ad hoc rather than a playbook, so --playbook-dir loads the group_vars and host_vars next to
-            # the playbooks, exactly as for the repository's own playbooks.
-            cmdline = ["--playbook-dir", opts.playbook_dir, *(["--become"] if run.become else []), *cmdline]
-            what = dict(module="ansible.builtin.setup", host_pattern=run.target) if facts_run else dict(
-                module=run.module, module_args=run.module_args or None, host_pattern=run.target)
-            log_file.write(f"$ ansible {shlex.join(self._args(run, cmdline, inv_repo))}\n\n")
-        else:
-            what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
-                        skip_tags=run.skip_tags or None)
-            log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline, inv_repo))}\n\n")
-        self._prepared = prepared
+        cancel = Cancel()
+        self._jobs[run_id] = cancel
+        timed_out = threading.Event()
+        timer = None
         if self.run_timeout:
-            deadline.append(time.monotonic() + self.run_timeout)
+            timer = threading.Timer(self.run_timeout, lambda: (timed_out.set(), cancel.cancel()))
+            timer.daemon = True
+            timer.start()
+        if run_id in self._cancel or self._stopping.is_set():  # asked for while the job was being put together
+            cancel.cancel()
         try:
-            result = ansible_runner.run(
-                private_data_dir=str(prepared.runner_dir),
-                # Hand envvars, passwords and cmdline over in memory rather than as files in env/.
-                suppress_env_files=True,
-                project_dir=str(project),
-                inventory=opts.sources,
-                **what,
-                verbosity=run.verbosity or None,
-                cmdline=shlex.join(cmdline) if cmdline else None,
-                envvars={"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
-                passwords=prepared.passwords or None,
-                event_handler=on_event,
-                cancel_callback=cancel_requested,
-                quiet=True,
-            )
+            result = self.workspace.runner.call("run", job, on_message, cancel)
+            self.workspace.learn_host_keys(result)
+            status = result.get("status") or "error"
             # shutdown() killed it, unless it had just finished by itself.
-            stopped = self._stopping.is_set() and result.status != "successful"
+            stopped = self._stopping.is_set() and status != "successful"
             if stopped:
                 log_file.write("\n[ansible-gui] The server stopped: this run was interrupted.\n")
+            elif "error" in result:
+                log_file.write(f"\n[ansible-gui] The run couldn’t start: {result['error']}\n")
             elif timed_out.is_set() and run_id not in self._cancel:
                 log_file.write(f"\n[ansible-gui] {self._timeout_message()}\n")
-            elif result.status == "canceled":
+            elif status == "canceled":
                 log_file.write("\n[ansible-gui] Run canceled from the web UI.\n")
         finally:
-            self._play_pid = None
-            prepared.cleanup()
-            self._prepared = None
+            if timer:
+                timer.cancel()
+            self._jobs.pop(run_id, None)
             log_file.close()
         if stopped:
             return  # still "running" in the store: the next start marks it interrupted and sends its email
 
         stats = final or live
+        if "error" in result:
+            self.store.update(run_id, status="error", finished_at=now(), host_stats=stats,
+                              error=f"Didn’t start: {result['error']}")
+            return
         if timed_out.is_set() and run_id not in self._cancel:
-            self.store.update(run_id, status="failed", finished_at=now(), rc=result.rc, host_stats=stats,
+            self.store.update(run_id, status="failed", finished_at=now(), rc=result.get("rc"), host_stats=stats,
                               error=self._timeout_message())
             return
-        status = result.status
         if status == "timeout":
             status = "failed"
         if status == "successful" and any(host_result(s) in ("failed", "unreachable") for s in stats.values()):
             status = "failed"
-        self.store.update(run_id, status=status, finished_at=now(), rc=result.rc, host_stats=stats)
+        self.store.update(run_id, status=status, finished_at=now(), rc=result.get("rc"), host_stats=stats)
 
     def _commits(self, run: Run, repo, inv_repo, log_line) -> tuple[str | None, dict[int, str]]:
         """The commits the run executes, kept for it until it ends: what a fresh pull lands on, or, for a run of
@@ -491,73 +459,60 @@ class Executor:
                 "Ansible was stopped, with every SSH connection it had open.")
 
     def prepare(self, run: Run) -> Prepared:
-        """Write this run's keys and passwords to a private temp dir and start its ssh-agent.
+        """What the run job carries from the credential store: the account's key and certificate, the become
+        and vault passwords, and the environment secrets, for this run only.
 
-        The run never sees the server user's ssh-agent, ~/.ssh/config or known_hosts:
-        SSH reads only the ssh_config ansible-gui writes (which includes ANSIBLE_GUI_SSH_CONFIG),
-        and talks only to an agent holding the chosen key.
+        The run never sees the server user's ssh-agent, ~/.ssh/config or known_hosts: the runner starts an
+        agent holding only this key, and SSH reads only the ssh_config the job carries (which includes
+        ANSIBLE_GUI_SSH_CONFIG).
         """
-        # Short path: the agent socket must fit in a Unix socket address.
-        p = Prepared(workdir=self.scratch.make(), scratch=self.scratch)
-        try:
-            p.runner_dir.mkdir()
-            chosen = run.credentials or {}
-            loaded = {}
-            for kind in ("account", "vault_password"):
-                ref = chosen.get(kind)
-                if not ref:
-                    continue
-                cred = self.creds.get(ref["id"]) if self.creds else None
-                if not cred or cred.kind != kind:
-                    raise CredentialMissing(f"The credential “{ref['name']}” was deleted before this run started.")
-                if not cred.readable:
-                    raise CredentialMissing(f"The credential “{cred.name}” can’t be decrypted: the secret key changed "
-                                            "since it was saved. Enter its value again on the Credentials page.")
-                loaded[kind] = (cred, self.creds.secret(cred))
-            if "account" in loaded:
-                acct, secret = loaded.pop("account")
-                p.user = acct.meta.get("username") or ""
-                if secret.get("private_key"):
-                    loaded["ssh_key"] = (acct, secret)
-                if secret.get("become_password"):
-                    loaded["become_password"] = (acct, {"password": secret["become_password"]})
-            envs = []
-            for ref in chosen.get("env_secret", []):
-                cred = self.creds.get(ref["id"]) if self.creds else None
-                if cred and cred.readable:
-                    envs.append((cred, self.creds.secret(cred)))
+        p = Prepared(cmdline=["--ssh-common-args", f"-F {SCRATCH}/ssh_config"])
+        chosen = run.credentials or {}
+        loaded = {}
+        for kind in ("account", "vault_password"):
+            ref = chosen.get(kind)
+            if not ref:
+                continue
+            cred = self.creds.get(ref["id"]) if self.creds else None
+            if not cred or cred.kind != kind:
+                raise CredentialMissing(f"The credential “{ref['name']}” was deleted before this run started.")
+            if not cred.readable:
+                raise CredentialMissing(f"The credential “{cred.name}” can’t be decrypted: the secret key changed "
+                                        "since it was saved. Enter its value again on the Credentials page.")
+            loaded[kind] = (cred, self.creds.secret(cred))
+        if "account" in loaded:
+            acct, secret = loaded.pop("account")
+            p.user = acct.meta.get("username") or ""
+            if secret.get("private_key"):
+                loaded["ssh_key"] = (acct, secret)
+            if secret.get("become_password"):
+                loaded["become_password"] = (acct, {"password": secret["become_password"]})
 
-            config = ssh.write_ssh_config(self.data_dir, self.ssh_config,
-                                          self.workspace.settings.ssh_host_key_checking)
-            p.cmdline += ["--ssh-common-args", f"-F {shlex.quote(str(config))}"]
-            p.agent = ssh.Agent(p.workdir)
-            self.scratch.note(p.workdir, "agent", p.agent.pid)
-            p.env["SSH_AUTH_SOCK"] = str(p.agent.socket)
-            p.env["SSH_AGENT_PID"] = str(p.agent.pid)
-
-            if "ssh_key" in loaded:
-                cred, secret = loaded["ssh_key"]
-                key = _write_secret(p.workdir / "id", secret["private_key"])
-                if cred.meta.get("certificate"):
-                    (p.workdir / "id-cert.pub").write_text(cred.meta["certificate"].strip() + "\n")
-                p.agent.add(key)
-                p.env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
-            if "vault_password" in loaded:
-                path = _write_secret(p.workdir / "vault-pass", loaded["vault_password"][1]["password"])
-                p.cmdline += ["--vault-password-file", str(path)]
-            elif self.workspace.settings.vault_password_file:
-                p.cmdline += ["--vault-password-file", str(self.workspace.settings.vault_password_file)]
-            if "become_password" in loaded:
-                p.cmdline.append("--ask-become-pass")
-                p.passwords[r"^BECOME password.*:\s*?$"] = loaded["become_password"][1]["password"]
-            for cred, secret in envs:
-                name = cred.meta["env"]
-                p.env[name] = secret["value"]
-                p.env[f"{name}_FILE"] = str(_write_secret(p.workdir / f"env-{name}", secret["value"]))
-            return p
-        except BaseException:
-            p.cleanup()
-            raise
+        if "ssh_key" in loaded:
+            cred, secret = loaded["ssh_key"]
+            p.files["id"] = secret["private_key"]
+            if cred.meta.get("certificate"):  # ssh-add picks up id-cert.pub beside id by itself
+                p.files["id-cert.pub"] = cred.meta["certificate"].strip() + "\n"
+            p.key = "id"
+            p.env["ANSIBLE_PRIVATE_KEY_FILE"] = f"{SCRATCH}/id"
+        if "vault_password" in loaded:
+            p.files["vault-pass"] = loaded["vault_password"][1]["password"]
+            p.cmdline += ["--vault-password-file", VAULT]
+        else:
+            files, args = vault_files(self.workspace.settings.vault_password_file)
+            p.files.update(files)
+            p.cmdline += args
+        if "become_password" in loaded:
+            p.cmdline.append("--ask-become-pass")
+            p.passwords[r"^BECOME password.*:\s*?$"] = loaded["become_password"][1]["password"]
+        for ref in chosen.get("env_secret", []):
+            cred = self.creds.get(ref["id"]) if self.creds else None
+            if cred and cred.readable:
+                name, value = cred.meta["env"], self.creds.secret(cred)["value"]
+                p.env[name] = value
+                p.files[f"env-{name}"] = value
+                p.env[f"{name}_FILE"] = f"{SCRATCH}/env-{name}"
+        return p
 
     def _args(self, run, cmdline: list[str], inv_repo) -> list[str]:
         """The command line shown at the top of the log."""

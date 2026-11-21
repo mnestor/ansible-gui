@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import re
-import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
 
-from ..inventory.cli import CliOptions, InventoryError
+from ..inventory.cli import CliOptions, InventoryError, run_cli
 
 
 class _AnyTagLoader(yaml.SafeLoader):
@@ -56,22 +54,7 @@ def _ansible_playbook(opts: CliOptions, playbook: str, args: list[str]) -> str:
 
 
 def _cli(opts: CliOptions, head: list[str], args: list[str]) -> str:
-    cmd = list(head)
-    for src in opts.sources:
-        cmd += ["-i", src]
-    if opts.vault_password_file:
-        cmd += ["--vault-password-file", str(opts.vault_password_file)]
-    cmd += args
-    env = {**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **opts.env}
-    try:
-        proc = subprocess.run(cmd, cwd=opts.project_dir, env=env, capture_output=True, text=True, timeout=opts.timeout)
-    except FileNotFoundError:
-        raise InventoryError(f"{head[0]} is not installed or not on PATH.", cmd) from None
-    except subprocess.TimeoutExpired:
-        raise InventoryError(f"{head[0]} took longer than {opts.timeout}s.", cmd) from None
-    if proc.returncode != 0:
-        raise InventoryError(f"{head[0]} exited with code {proc.returncode}.", cmd, proc.stderr or proc.stdout)
-    return proc.stdout
+    return run_cli(opts, head, args, {"ANSIBLE_NOCOLOR": "1", "ANSIBLE_DEPRECATION_WARNINGS": "0", **opts.env})
 
 
 def list_hosts(opts: CliOptions, pattern: str) -> Preview:

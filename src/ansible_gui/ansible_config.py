@@ -8,11 +8,12 @@ isn't a default, and `ansible-galaxy collection list` shows which copy of each c
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from . import worker as workers
 
 TIMEOUT = 60
 # Values that are credentials, not configuration: ansible-config prints a Galaxy server's token as is.
@@ -72,9 +73,9 @@ def _origin(origin: str, root: Path) -> str:
         return origin
 
 
-def _run(cmd: list[str], cwd: Path, env: dict) -> subprocess.CompletedProcess:
+def _run(cmd: list[str], cwd: Path, env: dict, worker) -> subprocess.CompletedProcess:
     # No ANSIBLE_NOCOLOR here: the JSON has no colour, and it would show up as a setting the repository made.
-    return subprocess.run(cmd, cwd=cwd, env={**os.environ, **env}, capture_output=True, text=True, timeout=TIMEOUT)
+    return workers.cli(worker, cmd, cwd, env, TIMEOUT)
 
 
 def _failure(cmd: str, proc: subprocess.CompletedProcess | None, exc: Exception | None = None) -> str:
@@ -86,10 +87,10 @@ def _failure(cmd: str, proc: subprocess.CompletedProcess | None, exc: Exception 
     return f"{cmd} failed: {lines[-1] if lines else 'exit code ' + str(proc.returncode if proc else '?')}"
 
 
-def report(run_dir: Path, repo_root: Path, env: dict) -> Report:
+def report(run_dir: Path, repo_root: Path, env: dict, worker=None) -> Report:
     out = Report()
     try:
-        proc = _run(["ansible-config", "dump", "--only-changed", "--format", "json"], run_dir, env)
+        proc = _run(["ansible-config", "dump", "--only-changed", "--format", "json"], run_dir, env, worker)
         if proc.returncode != 0:
             out.error = _failure("ansible-config", proc)
         else:
@@ -112,7 +113,7 @@ def report(run_dir: Path, repo_root: Path, env: dict) -> Report:
         out.error = "ansible-config didn’t return the JSON this page reads."
 
     try:
-        proc = _run(["ansible-galaxy", "collection", "list", "--format", "json"], run_dir, env)
+        proc = _run(["ansible-galaxy", "collection", "list", "--format", "json"], run_dir, env, worker)
         if proc.returncode != 0:
             out.collections_error = _failure("ansible-galaxy", proc)
         else:

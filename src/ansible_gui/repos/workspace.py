@@ -10,9 +10,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import logging
-import os
-import shutil
-import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +18,7 @@ from ..credentials import ssh as sshtools
 from ..inventory.cli import CliOptions
 from ..runs import playbooks
 from ..scratch import Scratch
+from ..worker import InlineWorker, Worker
 from . import git
 from .store import Repo, RepoStore
 
@@ -45,10 +43,14 @@ def split_key(key: str) -> tuple[int, str]:
 
 
 class Workspace:
-    def __init__(self, settings, repos: RepoStore, creds):
+    def __init__(self, settings, repos: RepoStore, creds, fetcher: Worker | None = None,
+                 runner: Worker | None = None):
         self.settings = settings
         self.repos = repos
         self.creds = creds
+        inline = InlineWorker(Scratch(settings.data_dir)) if not (fetcher and runner) else None
+        self.fetcher = fetcher or inline  # writes the repos volume: pulls, commit directories, collections
+        self.runner = runner or inline  # runs what is in it: the inventory, previews, settings, runs
         self.on_inventory_changed = lambda inv_id: None
         self._lock = threading.Lock()
         self._pins: dict[int, set[tuple[int, str]]] = {}  # run id -> {(repo id, commit)} it is using
@@ -107,13 +109,24 @@ class Workspace:
             return None
         playbook_dir = self.settings.playbook_dir if inv.local else "."
         return CliOptions(project_dir=inv.path, sources=inv.sources, playbook_dir=playbook_dir,
-                          vault_password_file=self.settings.vault_password_file, binary=self.settings.inventory_binary)
+                          vault_password_file=self.settings.vault_password_file, binary=self.settings.inventory_binary,
+                          worker=self.runner)
 
     def run_opts(self, repo: Repo, inv: Repo | None) -> CliOptions:
         """Ansible starts in the repo's run directory, so its ansible.cfg applies; playbooks are passed
         as absolute paths and the inventory as absolute sources."""
         return CliOptions(project_dir=repo.run_dir, sources=self.inventory_sources(inv), playbook_dir=repo.playbook_dir,
-                          vault_password_file=self.settings.vault_password_file, env=self.ansible_env(repo))
+                          vault_password_file=self.settings.vault_password_file, env=self.ansible_env(repo),
+                          worker=self.runner)
+
+    def ssh_job(self) -> dict:
+        """The ssh settings every pull and run job carries."""
+        s = self.settings
+        return sshtools.for_job(s.data_dir, s.ssh_config, s.ssh_host_key_checking)
+
+    def learn_host_keys(self, result: dict) -> None:
+        if result.get("host_keys"):
+            sshtools.learn_host_keys(self.settings.data_dir, result["host_keys"])
 
     # --- collections ----------------------------------------------------------------
     # Kept like commits: one directory per requirements file, named after its SHA-256, written once.
@@ -169,21 +182,10 @@ class Workspace:
             if target.is_dir():
                 return None
             log_line(f"[ansible-gui] Installing collections from {req.relative_to(repo.path)}")
-            fresh = target.with_name(f".{digest}.partial")
-            shutil.rmtree(fresh, ignore_errors=True)
-            fresh.mkdir(parents=True)
-            cmd = ["ansible-galaxy", "collection", "install", "-r", str(req), "-p", str(fresh), "--force"]
-            try:
-                proc = subprocess.run(cmd, cwd=repo.run_dir, capture_output=True, text=True, timeout=600,
-                                      env={**os.environ, "ANSIBLE_NOCOLOR": "1"})
-            except (OSError, subprocess.TimeoutExpired) as e:
-                shutil.rmtree(fresh, ignore_errors=True)
-                return f"installing its collections failed: {e}"
-            if proc.returncode != 0:
-                shutil.rmtree(fresh, ignore_errors=True)
-                lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
-                return f"installing its collections failed: {lines[-1] if lines else 'ansible-galaxy exited with ' + str(proc.returncode)}"
-            fresh.rename(target)
+            res = self.fetcher.call("collections", {"requirements": str(req), "run_dir": str(repo.run_dir),
+                                                    "target": str(target)})
+            if "error" in res:
+                return f"installing its collections failed: {res['error']}"
             log_line("[ansible-gui] Collections installed")
             return None
 
@@ -204,12 +206,8 @@ class Workspace:
             repo = self.repos.get(rid)
             if repo and (d := self.collections_digest(repo.at(commit))):
                 keep.add(d)
-        root = self.collections_root
-        if not root.is_dir():
-            return
-        for d in root.iterdir():
-            if len(d.name) == 64 and d.name not in keep:
-                shutil.rmtree(d, ignore_errors=True)
+        if self.collections_root.is_dir():
+            self.fetcher.call("prune_collections", {"root": str(self.collections_root), "keep": sorted(keep)})
 
     def discover(self) -> list[Playbook]:
         out = []
@@ -262,9 +260,26 @@ class Workspace:
         key, token, error = self._git_auth(repo)
         if error:
             raise git.GitError(error)
-        config = sshtools.write_ssh_config(self.settings.data_dir, self.settings.ssh_config,
-                                           self.settings.ssh_host_key_checking)
-        return git.fetch(repo.home, repo.url, repo.branch, config, key, token, scratch=Scratch(self.settings.data_dir))
+        res = self.fetcher.call("fetch", {"home": str(repo.home), "url": repo.url, "branch": repo.branch,
+                                          "private_key": key, "token": list(token) if token else None,
+                                          "ssh": self.ssh_job()})
+        self.learn_host_keys(res)
+        if "error" in res:
+            raise git.GitError(res["error"])
+        return git.Fetched(commit=res["commit"], subject=res["subject"])
+
+    def _materialize(self, repo: Repo, commit: str) -> None:
+        """Write the commit's directory out if it isn't there. Call it holding git.locked(repo.home).
+        Raises CommitGone, or GitError."""
+        res = self.fetcher.call("materialize", {"home": str(repo.home), "commit": commit})
+        if res.get("gone"):
+            raise git.CommitGone(res["error"])
+        if "error" in res:
+            raise git.GitError(res["error"])
+
+    def _prune(self, repo: Repo) -> None:
+        """Call it holding git.locked(repo.home)."""
+        self.fetcher.call("prune", {"home": str(repo.home), "keep": sorted(self._keep(repo.id))})
 
     def sync(self, repo: Repo, pin_for: int | None = None, on_wait=None) -> str | None:
         """Pull one repo: fetch the branch, write its tip out into its own directory, install the collections it
@@ -276,7 +291,7 @@ class Workspace:
         try:
             with git.locked(repo.home, on_wait):
                 fetched = self._fetch(repo)
-                git.materialize(repo.home, fetched.commit)
+                self._materialize(repo, fetched.commit)
                 try:
                     error = self.install_collections(repo.at(fetched.commit))
                     if error:
@@ -289,7 +304,7 @@ class Workspace:
                         self._pin(pin_for, repo.id, fetched.commit)
                 finally:
                     self._unfresh(repo.at(fetched.commit))
-                git.prune(repo.home, self._keep(repo.id))
+                self._prune(repo)
         except git.GitError as e:
             self.repos.record_fetch(repo.id, None, None, str(e))
             return str(e)
@@ -308,10 +323,10 @@ class Workspace:
         try:
             with git.locked(repo.home, on_wait):
                 try:
-                    git.materialize(repo.home, commit)
+                    self._materialize(repo, commit)
                 except git.CommitGone:
                     self._fetch(repo)  # it may only be missing from this copy of the clone
-                    git.materialize(repo.home, commit)
+                    self._materialize(repo, commit)
                 if pin_for is not None:
                     self._pin(pin_for, repo.id, commit)
         except git.CommitGone:
@@ -361,13 +376,14 @@ class Workspace:
             repo = self.repos.get(rid)
             if repo:
                 with git.locked(repo.home):
-                    git.prune(repo.home, self._keep(rid))
+                    self._prune(repo)
         if pins:
             self._prune_collections()
 
     def remove(self, repo: Repo) -> None:
         if not repo.local:
-            git.remove(repo.home)
+            with git.locked(repo.home):
+                self.fetcher.call("remove", {"home": str(repo.home)})
             self._prune_collections()
 
     def sync_for_run(self, repo: Repo, inv: Repo | None, log_line, run_id: int) -> tuple[str | None, dict[int, str]]:
