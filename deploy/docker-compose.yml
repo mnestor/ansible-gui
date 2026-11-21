@@ -2,46 +2,96 @@
 # (/homelab/docker01-stacks): ~/ansible-gui/, env in app.env (mode 600), its own
 # edge network, no host ports, Traefik on the LAN entrypoints only.
 #
+# Two containers from one image. The app holds every secret (the master key, the credential database,
+# the OIDC and SMTP secrets) and never runs code from a repository. The worker pulls the repositories and
+# runs Ansible: inventory plugins, previews, the settings report and runs. It gets one job at a time over a
+# Unix socket only the app may use, with only that job's credentials, and has nothing else to read.
+#
 # Before the first `docker compose up -d`:
 #   1. Add the ansible-gui_edge network to ~/traefik/docker-compose.yml (next free 172.28.N.0/24).
 #   2. Create a Pocket ID OIDC client: callback https://ansible.nanestor.us/auth/callback,
 #      PKCE on, restricted to the admins group.
 #   3. Fill in app.env from app.env.example and create secret.key as it describes.
-#   4. mkdir data && sudo chown 10001 data   (the container runs as uid 10001; a
+#   4. mkdir data && sudo chown 10001 data   (the app runs as uid 10001; a
 #      ./data that Docker creates is owned by root and the app can't write to it).
+
+x-hardened: &hardened
+  image: ghcr.io/mnestor/ansible-gui:sha-7574432
+  restart: unless-stopped
+  # Only the volumes are writable, and nothing in a container can gain privileges. deploy/smoke-test.sh runs a
+  # playbook under exactly this and checks what it can't reach.
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
 services:
   app:
-    image: ghcr.io/mnestor/ansible-gui:sha-7574432
+    <<: *hardened
     container_name: ansible-gui-app
-    restart: unless-stopped
     env_file: app.env
+    environment:
+      ANSIBLE_GUI_REPOS_DIR: /repos
+      ANSIBLE_GUI_FETCHER_SOCKET: /run/worker/worker.sock
+      ANSIBLE_GUI_RUNNER_SOCKET: /run/worker/worker.sock
+    group_add:
+      - "10010"                                            # the worker socket's group: the app may connect
     volumes:
       - ./data:/data
       - ./secret.key:/run/secrets/ansible-gui-key:ro
-    # Only /data is writable, and nothing in the container can gain privileges: a compromised playbook
-    # or repository gets uid 10001 and these directories, not the image. deploy/smoke-test.sh runs a
-    # playbook under exactly this.
-    read_only: true
+      - repos:/repos:ro                                    # lists playbooks, reads variables: never runs them
+      - worker-sock:/run/worker
     tmpfs:
-      - /tmp:size=512m                                     # per-run keys, agent socket, ansible-runner
-      - /home/app:size=64m,uid=10001,gid=10001,mode=0700   # ~/.ansible for local tasks, ssh's ~/.ssh
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    # A runaway playbook (a fork bomb in a local task, forks set too high) stops here, not at the rest of
-    # docker01. The /tmp tmpfs counts against mem_limit. docker01 has 4 CPUs and 8 GB (2026-11-20).
-    pids_limit: 512
-    mem_limit: 1536m
-    cpus: 2
+      - /tmp:size=64m
+      - /home/app:size=16m,uid=10001,gid=10001,mode=0700
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1
+    depends_on:
+      - worker
     networks:
-      - edge
+      - edge                                               # Traefik in; Pocket ID and mail out
     labels:
       - traefik.enable=true
       - traefik.docker.network=ansible-gui_edge
       - traefik.http.routers.ansible.rule=Host(`ansible.nanestor.us`)
       - traefik.http.routers.ansible.entrypoints=web443,web443v6
       - traefik.http.services.ansible.loadbalancer.server.port=8080
+
+  worker:
+    <<: *hardened
+    container_name: ansible-gui-worker
+    user: "10002:10010"
+    command: ["ansible-gui", "worker", "--socket", "/run/worker/worker.sock", "--allow-uid", "10001"]
+    environment:
+      ANSIBLE_GUI_REPOS_DIR: /repos
+      ANSIBLE_HOME: /home/fetcher/.ansible
+    volumes:
+      - repos:/repos                                       # bare clones, commit and collections directories
+      - worker-sock:/run/worker
+    tmpfs:
+      - /tmp:size=512m                                     # per-job keys, agent socket, ansible-runner
+      - /home/fetcher:size=64m,uid=10002,gid=10010,mode=0700   # ~/.ansible for local tasks, ssh's ~/.ssh
+    # A runaway playbook (a fork bomb in a local task, forks set too high) stops here, not at the rest of
+    # docker01. The /tmp tmpfs counts against mem_limit. docker01 has 4 CPUs and 8 GB (2026-11-20).
+    pids_limit: 512
+    mem_limit: 1536m
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/worker/worker.sock"]
+      interval: 30s
+      timeout: 5s
+    networks:
+      - edge                                               # git server, Galaxy, SSH to the managed hosts
+
+volumes:
+  repos:                                                   # rebuilt from git if lost: nothing to back up
+  worker-sock:                                             # the socket lives in memory, never on disk
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=10002,gid=10010,mode=0750"
 
 networks:
   edge:

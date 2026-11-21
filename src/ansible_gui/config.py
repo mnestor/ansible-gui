@@ -43,6 +43,15 @@ class Settings:
     ssh_host_key_checking: str = "accept-new"
     run_retention_days: int = 90  # finished runs older than this are deleted; 0 keeps them forever
     run_timeout_minutes: int = 120  # a run still going after this long is stopped; 0 lets it run forever
+    repos_dir: Path | None = None  # bare clones, commit and collections directories; None: data_dir/repos
+    # Workers in other containers (`ansible-gui worker`), by their Unix sockets. Unset: git and Ansible run in
+    # this process, as its own user, which can then read every secret this process holds.
+    fetcher_socket: Path | None = None
+    runner_socket: Path | None = None
+
+    @property
+    def repos(self) -> Path:
+        return self.repos_dir or self.data_dir / "repos"
 
     @property
     def auth_enabled(self) -> bool:
@@ -98,6 +107,14 @@ class Settings:
         run_timeout = os.environ.get("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES", "120").strip()
         if not run_timeout.isdigit():
             raise SystemExit("ANSIBLE_GUI_RUN_TIMEOUT_MINUTES must be a whole number of minutes (0 for no limit).")
+        sockets = {n: os.environ.get(f"ANSIBLE_GUI_{n}_SOCKET") or None for n in ("FETCHER", "RUNNER")}
+        if bool(sockets["FETCHER"]) != bool(sockets["RUNNER"]):
+            raise SystemExit("Set both ANSIBLE_GUI_FETCHER_SOCKET and ANSIBLE_GUI_RUNNER_SOCKET (they may be the "
+                             "same socket), or neither.")
+        repos = os.environ.get("ANSIBLE_GUI_REPOS_DIR") or None
+        if sockets["FETCHER"] and not repos:
+            raise SystemExit("ANSIBLE_GUI_FETCHER_SOCKET is set, so ANSIBLE_GUI_REPOS_DIR is needed too: the "
+                             "repositories volume, mounted at the same path in the app and the workers.")
         return cls(
             project_dir=project_dir,
             inventory=inventory,
@@ -116,6 +133,9 @@ class Settings:
             ssh_host_key_checking=host_keys,
             run_retention_days=int(retention),
             run_timeout_minutes=int(run_timeout),
+            repos_dir=Path(repos).expanduser().resolve() if repos else None,
+            fetcher_socket=Path(sockets["FETCHER"]) if sockets["FETCHER"] else None,
+            runner_socket=Path(sockets["RUNNER"]) if sockets["RUNNER"] else None,
         )
 
 

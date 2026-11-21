@@ -7,6 +7,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import threading
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -43,6 +45,7 @@ from .repos.store import RepoStore
 from .repos.workspace import Workspace
 from .runs import playbooks, variables
 from .runs.executor import Executor
+from .worker.socket import SocketWorker
 from .runs.schedules import Invalid as ScheduleInvalid
 from .runs.schedules import Scheduler, ScheduleStore, check_cron, local_now, next_times
 from .runs.templates import FIELDS as TEMPLATE_FIELDS, Invalid as TemplateInvalid, TemplateStore, changed_fields
@@ -187,8 +190,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     store = RunStore(settings.data_dir)
     keys = Keys.load(settings.secret_key, settings.data_dir)
     creds = CredentialStore(settings.data_dir, keys.fernet)
-    repos = RepoStore(settings.data_dir)
-    ws = Workspace(settings, repos, creds)
+    for old in (settings.data_dir / "collections", settings.data_dir / "repos"):
+        # Working copies and collections from before commit directories, or from before the repositories
+        # moved to their own volume. Rebuilt from git: the current commits are written out again below.
+        if old.is_dir() and old != settings.repos and settings.repos not in old.parents:
+            shutil.rmtree(old, ignore_errors=True)
+    repos = RepoStore(settings.data_dir, settings.repos)
+    fetcher = SocketWorker(settings.fetcher_socket, "fetcher") if settings.fetcher_socket else None
+    runner = SocketWorker(settings.runner_socket, "runner") if settings.runner_socket else None
+    ws = Workspace(settings, repos, creds, fetcher, runner)
+    if any(r.last_commit and not r.path.is_dir() for r in repos.all()):
+        threading.Thread(target=ws.restore, daemon=True, name="ansible-gui-restore").start()
     invs = Inventories(ws)
     ws.on_inventory_changed = invs.reload
     facts = FactStore(settings.data_dir)

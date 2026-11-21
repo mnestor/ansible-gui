@@ -394,6 +394,8 @@ class Executor:
             stopped = self._stopping.is_set() and status != "successful"
             if stopped:
                 log_file.write("\n[ansible-gui] The server stopped: this run was interrupted.\n")
+            elif result.get("lost"):
+                log_file.write(f"\n[ansible-gui] {result['error']}: this run was interrupted.\n")
             elif "error" in result:
                 log_file.write(f"\n[ansible-gui] The run couldn’t start: {result['error']}\n")
             elif timed_out.is_set() and run_id not in self._cancel:
@@ -409,6 +411,10 @@ class Executor:
             return  # still "running" in the store: the next start marks it interrupted and sends its email
 
         stats = final or live
+        if result.get("lost"):  # the runner stopped, or the connection to it broke: Ansible was stopped with it
+            self.store.update(run_id, status="interrupted", finished_at=now(), host_stats=stats,
+                              error=f"Interrupted: {result['error']}. Ansible was stopped with it. Run it again.")
+            return
         if "error" in result:
             self.store.update(run_id, status="error", finished_at=now(), host_stats=stats,
                               error=f"Didn’t start: {result['error']}")

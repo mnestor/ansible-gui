@@ -265,17 +265,19 @@ class Workspace:
                                           "ssh": self.ssh_job()})
         self.learn_host_keys(res)
         if "error" in res:
-            raise git.GitError(res["error"])
-        return git.Fetched(commit=res["commit"], subject=res["subject"])
+            raise git.GitError(str(res["error"]))
+        if not git.SHA.match(str(res.get("commit"))):  # it names a directory: never take a path from a worker
+            raise git.GitError(f"the fetcher answered with something that isn’t a commit: {res.get('commit')!r}")
+        return git.Fetched(commit=res["commit"], subject=str(res.get("subject") or ""))
 
     def _materialize(self, repo: Repo, commit: str) -> None:
         """Write the commit's directory out if it isn't there. Call it holding git.locked(repo.home).
         Raises CommitGone, or GitError."""
         res = self.fetcher.call("materialize", {"home": str(repo.home), "commit": commit})
         if res.get("gone"):
-            raise git.CommitGone(res["error"])
+            raise git.CommitGone(str(res["error"]))
         if "error" in res:
-            raise git.GitError(res["error"])
+            raise git.GitError(str(res["error"]))
 
     def _prune(self, repo: Repo) -> None:
         """Call it holding git.locked(repo.home)."""
@@ -379,6 +381,15 @@ class Workspace:
                     self._prune(repo)
         if pins:
             self._prune_collections()
+
+    def restore(self) -> None:
+        """Write out each repository's current commit if its directory is missing: after an upgrade that
+        moved the repositories, or a repositories volume that was recreated. Fetches if it has to."""
+        for repo in self.repos.all():
+            if repo.last_commit and not repo.path.is_dir():
+                error, _ = self.ensure_commit(repo, repo.last_commit)
+                if error:
+                    log.warning("couldn’t restore %s at %s: %s", repo.name, repo.last_commit[:10], error)
 
     def remove(self, repo: Repo) -> None:
         if not repo.local:
