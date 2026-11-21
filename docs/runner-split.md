@@ -5,7 +5,8 @@ that holds the secrets. Three containers start from one image:
 
 - **app** (uid 10001) holds every secret: the master key, the credential database, the OIDC and SMTP secrets.
   It never starts git or Ansible. It reads commit directories only as YAML, with the safe loader, to list
-  playbooks and show where a variable is set.
+  playbooks and show where a variable is set, and never through a link that leads out of the repositories
+  (`src/ansible_gui/repofiles.py`).
 - **fetcher** (uid 10002) pulls the repositories and installs their collections. It is the only container that
   can write the repos volume, and it never runs what it writes.
 - **runner** (uid 10003) runs Ansible: the inventory, host previews, the settings report and runs. It mounts the
@@ -53,6 +54,7 @@ What a hostile playbook gets:
 | Signing in as an admin | Signs a session cookie with the key | No key to sign with |
 | Schedules, run history, logs | Writes the database and log files | Can only send its own run's output |
 | Repositories and collections later runs use | Writes them | Read-only mount |
+| Known hosts | Writes the file | A key for a host that has none yet, as a first connection gives |
 | Credentials of later runs | All of them, through the key | Only by staying alive in the runner until it restarts |
 | This run's key and become password | Has them | Has them |
 | The hosts that account reaches | Reaches them | Reaches them |
@@ -78,7 +80,8 @@ socket.
 - **Named by content.** A commit directory is named by the full commit hash, and a collections directory by the
   SHA-256 of its requirements file. The same name always means the same files.
 - **Written once.** Each one is built under a temporary name and renamed into place when complete. A directory
-  that exists is whole.
+  that exists is whole, and has no write permission left on it or anything in it. The fetcher writes every
+  repository as one user, so the modes are what keeps a program it runs for one repository out of another's.
 - **A run executes one commit from its first task to its last.** A pull never changes files under a running
   play, so the commit on the run page is exactly what ran.
 - **The app knows which commit is current.** It records the commit each pull returns. Nothing in the volume
@@ -146,9 +149,19 @@ Rules every job follows (`src/ansible_gui/worker/jobs.py`):
   serves that run only. The temp directory is removed when the job ends.
 - **Jobs carry only their own environment**, never the app's, which holds the SMTP and OIDC secrets.
 - **The app owns SSH state.** Known hosts and the text of the configured ssh_config are copied into each job.
-  Host keys ssh learned under `accept-new` come back as replies, and the app checks each one like a pasted line
-  before adding it.
+  Host keys ssh learned under `accept-new` come back as replies. The playbook can write the file they are read
+  from, so the app keeps only what ssh itself adds for a host it has just met: one key, for a name that has
+  none yet. No `@cert-authority` or `@revoked`, no pattern, no hashed name, no second key for a listed host.
+  Under `yes` it keeps nothing.
+- **ansible-galaxy gets its own ansible.cfg.** The fetcher writes one for each install, with only the Galaxy
+  servers of the repository's file (`[galaxy]` server settings and `[galaxy_server.*]`), and points
+  `ANSIBLE_CONFIG` at it. With the repository's file as it is, `log_path`, `home`, `local_tmp` and `cache_dir`
+  chose where ansible-galaxy wrote.
 - **Replies are untrusted text.** The app stores and escapes them, and never uses them as a path or a command.
+  It reads at most 16 MB of a reply at once and leaves a longer line out, saying so in the run's log.
+- **The app waits only so long.** Every job but a run must answer within a time longer than the job's own
+  limits (5 to 20 minutes; a `cli` job's timeout plus 30 s). A run has the run timeout, and 30 s to answer
+  once it is canceled. After that the app closes the connection and the job is lost.
 
 Fetches into one bare clone take turns. The app holds the repository's lock around the jobs it sends, so a
 run's log says when it waits for a pull started from the web UI.
@@ -171,12 +184,14 @@ List the playbooks' needs before narrowing.
 
 - **The run's own credentials and the hosts they open.** A playbook is code you chose to run with that account.
 - **Staying alive inside the runner.** The worker and the playbooks share one user, so a process a playbook leaves
-  behind could watch later jobs arrive until the runner restarts. Nothing it writes survives a restart. Closing
-  this needs a supervisor that gives each job its own Unix user, which costs the SETUID and SETGID capabilities.
-  Left out on purpose until a second person or someone else's repository is added.
+  behind could watch later jobs arrive until the runner restarts. Nothing it writes survives a restart, apart from
+  a first-contact host key (below). Closing this needs a supervisor that gives each job its own Unix user, which
+  costs the SETUID and SETGID capabilities. Left out on purpose until a second person or someone else's
+  repository is added.
 - **The vault password at view time.** The code that resolves vaulted variables for display sees the password.
 - **First contact with a host under `accept-new`.** The same trust on first use as before, now visible in the
-  run log. Setting `yes` avoids it.
+  run log. A playbook can have a key recorded for a host that has none yet, which is what answering that first
+  connection would get an impostor too. Setting `yes` avoids both.
 
 ## Why not a chroot, or one container
 
@@ -220,7 +235,10 @@ and shares `/tmp`, the process list and the limits. Separate services cost none 
 ## Unverified
 
 - That `git fetch`, writing out a commit, and `ansible-galaxy collection install` never execute code from the
-  repository. The fetcher's rule depends on it, and it hasn't been audited.
+  repository. The fetcher's rule depends on it. Reviewed on 21 Nov 2026 by reading and testing, not exhaustively:
+  nothing executed, but ansible-galaxy obeyed the repository's `ansible.cfg`, and a `log_path` there added a
+  working `ssh_executable` line to another repository's `ansible.cfg`. That is closed twice over: the install's
+  own ansible.cfg, and the sealed directories. `tests/test_worker.py` keeps the exploit.
 - That no homelab playbook writes into its repository directory on the controller (retry files, fact caches,
   generated files). The read-only mount would break one that does.
 - That `ProxyJump` works with a run's private agent and `-F` pointing at the job's ssh_config, offering the jump

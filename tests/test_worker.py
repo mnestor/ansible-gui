@@ -1,13 +1,17 @@
 """The worker boundary: what a job carries, and what a worker refuses."""
 
+import configparser
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from ansible_gui import worker as workers
 from ansible_gui.credentials import ssh
 from ansible_gui.inventory import cli as invcli
 from ansible_gui.scratch import Scratch
-from ansible_gui.worker import InlineWorker
+from ansible_gui.worker import InlineWorker, jobs
 
 
 class Recorder:
@@ -76,13 +80,94 @@ def test_a_file_name_in_a_job_cant_leave_the_temp_directory(tmp_path):
     assert "not a file name" in res["error"] and not (tmp_path / "escape").exists()
 
 
-def test_host_keys_a_job_learned_are_added_once_and_checked(tmp_path):
-    key = tmp_path / "k"
+def public_key(tmp_path: Path, name: str) -> str:
+    key = tmp_path / name
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
-    line = "newhost " + " ".join(key.with_suffix(".pub").read_text().split()[:2])
+    return " ".join(key.with_suffix(".pub").read_text().split()[:2])
+
+
+def test_host_keys_a_job_learned_are_added_once_and_checked(tmp_path):
+    line = "newhost " + public_key(tmp_path, "k")
     assert ssh.learn_host_keys(tmp_path, [line, line, "not a key line", "evil ssh-ed25519 AAAA\nsecond"]) == 1
     assert ssh.learn_host_keys(tmp_path, [line]) == 0
     assert ssh.read_known_hosts(tmp_path) == line + "\n"
+
+
+def test_learned_host_keys_are_held_to_what_ssh_adds_for_a_host_it_just_met(tmp_path):
+    """The lines come from a directory the playbook can write. A @cert-authority line there would have every
+    later run and pull trust whoever holds that key, for any host; a second key for a known host, likewise for
+    that host."""
+    mine, theirs = public_key(tmp_path, "mine"), public_key(tmp_path, "theirs")
+    ssh.save_known_hosts(tmp_path, f"git.example.test {mine}\n@cert-authority *.lan {mine}\n")
+    before = ssh.read_known_hosts(tmp_path)
+    planted = [f"@cert-authority * {theirs}", f"@revoked git.example.test {mine}", f"* {theirs}",
+               f"host?.example.test {theirs}", f"!a.example.test,b.example.test {theirs}",
+               f"git.example.test {theirs}", f"new.example.test,git.example.test {theirs}",
+               f"|1|c2FsdHNhbHRzYWx0c2FsdHNhbHQ=|aGFzaGhhc2hoYXNoaGFzaGhhc2g= {theirs}",
+               f"-oProxyCommand=id {theirs}", "a b c", f"only.example.test {theirs.split()[0]}"]
+    assert ssh.learn_host_keys(tmp_path, planted) == 0
+    assert ssh.read_known_hosts(tmp_path) == before
+
+    # What ssh writes: a name or [name]:port, and one key. A host covered only by a certificate authority has
+    # no key of its own yet, so its key is kept. A comment after the key isn't.
+    met = [f"nas.lan {theirs}", f"[10.0.0.5]:2222 {theirs} planted comment", f"nas.lan {mine}"]
+    assert ssh.learn_host_keys(tmp_path, met) == 2
+    assert ssh.read_known_hosts(tmp_path) == before + f"nas.lan {theirs}\n[10.0.0.5]:2222 {theirs}\n"
+
+    # StrictHostKeyChecking yes: ssh adds nothing itself, so nothing is taken from a job.
+    assert ssh.learn_host_keys(tmp_path, [f"another.example.test {theirs}"], "yes") == 0
+    assert "another.example.test" not in ssh.read_known_hosts(tmp_path)
+
+
+def test_ansible_galaxy_gets_the_galaxy_servers_of_a_repositorys_ansible_cfg_and_nothing_else(tmp_path):
+    (tmp_path / "ansible.cfg").write_text(
+        "[defaults]\nlog_path = /repos/1/commits/x/ansible.cfg\nhome = /repos/1\nlocal_tmp = /repos/2\n\n"
+        "[galaxy]\nserver_list = hub\ncache_dir = /repos/3\ntoken_path = /repos/4\nignore_certs = true\n\n"
+        "[galaxy_server.hub]\nurl = https://hub.example.test/api/\ntoken = abc\nlog_path = /repos/5\n")
+    ours = configparser.ConfigParser()
+    ours.read_string(jobs.galaxy_config(tmp_path))
+    assert {name: dict(ours[name]) for name in ours.sections()} == {
+        "galaxy": {"server_list": "hub", "ignore_certs": "true"},
+        "galaxy_server.hub": {"url": "https://hub.example.test/api/", "token": "abc"}}
+
+    # A value that runs on over indented lines stays one value: it can't start a section of its own.
+    (tmp_path / "ansible.cfg").write_text("[galaxy]\nserver = https://a.example.test\n  [defaults]\n  log_path = /x\n")
+    ours = configparser.ConfigParser()
+    ours.read_string(jobs.galaxy_config(tmp_path))
+    assert ours.sections() == ["galaxy"] and "log_path" not in ours["galaxy"]
+
+    none = configparser.ConfigParser()
+    none.read_string(jobs.galaxy_config(tmp_path / "no-such-directory"))
+    assert none.sections() == []
+    (tmp_path / "ansible.cfg").write_text("not an ini file\n")
+    with pytest.raises(jobs.Refused, match="ansible.cfg can’t be read"):
+        jobs.galaxy_config(tmp_path)
+
+
+@pytest.mark.skipif(shutil.which("ansible-galaxy") is None, reason="needs ansible-core")
+def test_a_repositorys_ansible_cfg_cant_make_the_fetcher_write_into_another_repository(tmp_path):
+    """The fetcher writes every repository as one user. With the repository's ansible.cfg as it is, log_path
+    there appended ansible-galaxy's log, with a line of the requirement's own choosing in it, to another
+    repository's ansible.cfg: a setting Ansible then obeyed in that repository's runs."""
+    repos = tmp_path / "repos"
+    other = repos / "1" / "commits" / ("a" * 40)
+    other.mkdir(parents=True)
+    (other / "ansible.cfg").write_text("[defaults]\nroles_path = roles\n\n[ssh_connection]\npipelining = True\n")
+    before = (other / "ansible.cfg").read_text()
+    hostile = repos / "2" / "commits" / ("b" * 40)
+    hostile.mkdir(parents=True)
+    (hostile / "ansible.cfg").write_text(
+        f"[defaults]\nlog_path = {other}/ansible.cfg\nhome = {repos}/planted-home\n"
+        f"local_tmp = {repos}/planted-tmp\n\n[galaxy]\ncache_dir = {repos}/planted-cache\n")
+    (hostile / "requirements.yml").write_text(
+        'collections:\n  - name: "a = b\\nssh_executable = %s/pwn.sh\\n#"\n' % hostile)
+    w = InlineWorker(Scratch(tmp_path / "data"), roots=[repos])
+    res = w.call("collections", {"requirements": str(hostile / "requirements.yml"), "run_dir": str(hostile),
+                                 "target": str(repos / "collections" / ("c" * 64))})
+    assert "error" in res  # the requirement names no collection: the install fails, as it did before
+    assert (other / "ansible.cfg").read_text() == before
+    assert sorted(p.name for p in repos.iterdir()) == ["1", "2", "collections"]
+    assert not list((repos / "collections").iterdir()) and Scratch(tmp_path / "data").leftovers() == []
 
 
 def test_a_jobs_ssh_config_includes_the_configured_file_as_text(tmp_path):

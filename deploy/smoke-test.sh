@@ -171,6 +171,10 @@ docker exec -i "$fetcher" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
       register: reach
     - ansible.builtin.debug:
         msg: "{{ reach.stdout_lines | join(' ') }}"
+    - name: Plant a certificate authority for every host where the run's known hosts are
+      ansible.builtin.shell: |
+        ssh-keygen -q -t ed25519 -N '' -f /tmp/planted-ca
+        echo "@cert-authority * $(cut -d' ' -f1,2 /tmp/planted-ca.pub)" >> "$(dirname "$SSH_AUTH_SOCK")/known_hosts"
 YAML
 docker exec "$fetcher" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm hostile'
 # post PATH FORM: the status and Location of a POST from this app's own pages
@@ -198,10 +202,40 @@ echo "  hostile playbook: $reach"
 [ "$reach" = "KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed" ] \
   || fail "split: the runner reached what it shouldn't: $reach"
 docker exec "$runner" sh -c 'ls -A /tmp' | grep agui- >/dev/null && fail "split: the run left its temp directory behind"
+docker exec "$name" sh -c 'cat /data/ssh/known_hosts 2>/dev/null' | grep cert-authority >/dev/null \
+  && fail "split: the playbook's certificate authority was kept in the app's known hosts"
 # Each socket takes jobs from the app's uid only: a playbook in the runner can't send one of its own.
 docker exec "$runner" python -c "
 import socket, json; s = socket.socket(socket.AF_UNIX); s.connect('/run/runner/runner.sock')
 s.sendall(json.dumps({'kind': 'cli', 'job': {}}).encode() + b'\n'); print(s.makefile().readline())" \
   | grep "takes jobs from uid 10001 only, not 10003" >/dev/null || fail "split: the runner's own uid was let in"
+
+echo "- runs split: a repository can't have the fetcher write anywhere but its own commit and collections"
+# Its ansible.cfg names places in the repositories volume, and its requirements file fails to install, which
+# is when ansible-galaxy logs the most. The fetcher itself can't write a commit directory that is finished.
+docker exec -i "$fetcher" sh -c 'cat > /tmp/src/ansible.cfg' <<'INI'
+[defaults]
+log_path = /repos/planted.log
+home = /repos/planted-home
+local_tmp = /repos/planted-tmp
+
+[galaxy]
+cache_dir = /repos/planted-cache
+INI
+docker exec -i "$fetcher" sh -c 'cat > /tmp/src/requirements.yml' <<'YAML'
+collections:
+  - name: "not a collection"
+YAML
+docker exec "$fetcher" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm config'
+post /repos/2/pull "" >/dev/null
+docker exec "$name" python -c "
+import urllib.request
+req = urllib.request.Request('http://127.0.0.1:8080/repos', headers={'Host': '127.0.0.1:8080'})
+print(urllib.request.urlopen(req, timeout=30).read().decode())" | grep "collections failed" >/dev/null \
+  || fail "split: the pull didn't get as far as installing collections"
+docker exec "$fetcher" sh -c 'ls -A /repos' | grep planted >/dev/null \
+  && fail "split: the repository's ansible.cfg chose where the fetcher wrote: $(docker exec "$fetcher" ls -A /repos)"
+docker exec "$fetcher" sh -c 'for d in /repos/*/commits/*/; do touch "$d/planted" 2>/dev/null && exit 0; done; exit 1' \
+  && fail "split: the fetcher can still write into a finished commit directory"
 
 echo "smoke test passed"

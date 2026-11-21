@@ -14,6 +14,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
+from .. import repofiles
 from ..credentials import ssh as sshtools
 from ..inventory.cli import CliOptions
 from ..runs import playbooks
@@ -125,8 +126,10 @@ class Workspace:
         return sshtools.for_job(s.data_dir, s.ssh_config, s.ssh_host_key_checking)
 
     def learn_host_keys(self, result: dict) -> None:
-        if result.get("host_keys"):
-            sshtools.learn_host_keys(self.settings.data_dir, result["host_keys"])
+        """Keep the host keys a job's ssh met for the first time, held to what ssh itself would add."""
+        keys = result.get("host_keys")
+        if isinstance(keys, list) and keys:
+            sshtools.learn_host_keys(self.settings.data_dir, keys, self.settings.ssh_host_key_checking)
 
     # --- collections ----------------------------------------------------------------
     # Kept like commits: one directory per requirements file, named after its SHA-256, written once.
@@ -151,7 +154,10 @@ class Workspace:
         req = self.requirements_file(repo)
         if req is None or not req.is_file():
             return None
-        return hashlib.sha256(req.read_bytes()).hexdigest()
+        try:
+            return hashlib.sha256(repofiles.read_bytes(req)).hexdigest()
+        except OSError:  # a link out of the repositories: install_collections() says so
+            return None
 
     def collections_dir(self, repo: Repo) -> Path | None:
         digest = self.collections_digest(repo)
@@ -174,7 +180,10 @@ class Workspace:
             return None
         if not req.is_file():
             return f"its collections file {repo.requirements} isn’t in the repository"
-        digest = hashlib.sha256(req.read_bytes()).hexdigest()
+        try:
+            digest = hashlib.sha256(repofiles.read_bytes(req)).hexdigest()
+        except OSError as e:
+            return f"its collections file {req.relative_to(repo.path)} can’t be read: {e.strerror or e}"
         target = self.collections_root / digest
         with self._collections_lock(digest):
             with self._lock:

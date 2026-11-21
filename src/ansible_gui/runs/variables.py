@@ -19,6 +19,8 @@ from pathlib import Path
 import yaml
 from cryptography.fernet import Fernet, InvalidToken
 
+from .. import repofiles
+
 VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 MAX_FREEFORM = 20_000
 # What typed YAML may hold once its aliases are written out. A few hundred characters of nested aliases
@@ -41,7 +43,7 @@ _Loader.add_multi_constructor("!", lambda loader, suffix, node: (
 
 def _load(path: Path):
     try:
-        return yaml.load(path.read_text(), Loader=_Loader)  # noqa: S506 - SafeLoader subclass  # nosec B506
+        return yaml.load(repofiles.read_text(path), Loader=_Loader)  # noqa: S506 - SafeLoader subclass  # nosec B506
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return None
 
@@ -476,7 +478,7 @@ class About:
 def _top_comment(path: Path) -> str:
     lines = []
     try:
-        text = path.read_text()
+        text = repofiles.read_text(path)
     except (OSError, UnicodeDecodeError):
         return ""
     for line in text.splitlines():

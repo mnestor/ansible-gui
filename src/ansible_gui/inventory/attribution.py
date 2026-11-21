@@ -21,6 +21,7 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
+from .. import repofiles
 from . import varfiles
 from .model import VAULTED, Group, Host, Inventory, Layer, ResolvedVar, Setting
 
@@ -77,7 +78,7 @@ class _SourceText:
 
     def __init__(self, path: Path):
         try:
-            self.lines = path.read_text().splitlines()
+            self.lines = repofiles.read_text(path).splitlines()
         except OSError:
             self.lines = []
 

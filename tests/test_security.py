@@ -246,3 +246,35 @@ def test_static_urls_change_with_the_file_and_are_cached_only_when_versioned(tmp
     url = re.search(r'/static/app\.js\?v=\w+', page).group(0)
     assert c.get(url).headers["cache-control"] == "public, max-age=31536000, immutable"
     assert c.get("/static/app.js").headers["cache-control"] == "no-cache"
+
+
+@needs_ansible
+def test_a_playbook_cant_plant_trust_in_known_hosts(tmp_path):
+    """A run's known_hosts is in its temp directory, which the playbook can write, and what is new in it
+    afterwards comes back to be kept. A certificate authority for every host, written there by a task, was
+    kept too: under StrictHostKeyChecking yes as well, where ssh itself adds nothing."""
+    project = tmp_path / "project"
+    shutil.copytree(FIXTURE, project)
+    key = tmp_path / "ca"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
+    public = " ".join(key.with_suffix(".pub").read_text().split()[:2])
+    (project / "plant.yml").write_text(f"""- hosts: box1
+  gather_facts: false
+  tasks:
+    - ansible.builtin.shell: |
+        d=$(dirname "$SSH_AUTH_SOCK")
+        echo '@cert-authority * {public}' >> "$d/known_hosts"
+        echo 'git.example.test,* {public}' >> "$d/known_hosts"
+        echo 'first-contact.example.test {public}' >> "$d/known_hosts"
+      delegate_to: localhost
+""")
+    for checking, kept in (("accept-new", f"first-contact.example.test {public}\n"), ("yes", "")):
+        data = tmp_path / checking
+        app = create_app(Settings(project_dir=project, inventory=["inventory/hosts.yml"], data_dir=data,
+                                  ssh_host_key_checking=checking))
+        r = TestClient(app).post("/runs", data={"playbook": "plant.yml", "target": "box1", "mode": "apply",
+                                                "expected": ["box1"]}, follow_redirects=False)
+        run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+        assert run.status == "successful", app.state.store.log_path(run.id).read_text()
+        known = data / "ssh" / "known_hosts"
+        assert (known.read_text() if known.exists() else "") == kept

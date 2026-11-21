@@ -41,6 +41,7 @@ from .inventory.service import Inventories
 from .repos import git as gitsync
 from .repos.store import Invalid as RepoInvalid
 from .repos.store import RepoStore
+from . import repofiles
 from .repos.workspace import Workspace
 from .runs import playbooks, variables
 from .runs.executor import Executor
@@ -193,6 +194,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     fetcher = SocketWorker(settings.fetcher_socket, "fetcher") if settings.fetcher_socket else None
     runner = SocketWorker(settings.runner_socket, "runner") if settings.runner_socket else None
     ws = Workspace(settings, repos, creds, fetcher, runner)
+    # With workers, the server reads repository files only where the repositories are: see repofiles.
+    repofiles.confine([settings.repos, *([settings.project_dir] if settings.project_dir else [])]
+                      if fetcher and runner else None)
     if any(r.last_commit and not r.path.is_dir() for r in repos.all()):
         threading.Thread(target=ws.restore, daemon=True, name="ansible-gui-restore").start()
     invs = Inventories(ws)

@@ -6,9 +6,10 @@ Runner jobs only read it: cli (ansible-inventory, ansible-playbook --list-hosts,
 
 from __future__ import annotations
 
+import configparser
+import io
 import os
 import shlex
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
@@ -106,28 +107,73 @@ def materialize(job: dict, ctx: Context) -> dict:
     return {}
 
 
+# What a repository's ansible.cfg may tell ansible-galaxy: which Galaxy servers to ask, and how to sign in to
+# them. Nothing in these names a path.
+GALAXY_SETTINGS = {"server", "server_list", "server_timeout", "ignore_certs", "disable_gpg_verify",
+                   "ignore_signature_status_codes", "required_valid_signature_count"}
+GALAXY_SERVER_SETTINGS = {"url", "username", "password", "token", "auth_url", "validate_certs", "client_id",
+                          "client_secret", "timeout"}
+
+
+def galaxy_config(run_dir: Path) -> str:
+    """The ansible.cfg ansible-galaxy runs with: the Galaxy servers of the repository's own ansible.cfg, and
+    nothing else of it.
+
+    The fetcher can write every repository's directories, and ansible-galaxy does what its configuration says:
+    with the repository's file as it is, `log_path` appended ansible-galaxy's log to any file in another
+    repository (its ansible.cfg, a script), and `home`, `local_tmp` and `cache_dir` chose where it wrote too.
+    So the settings it may have are listed, not the ones it may not."""
+    theirs = configparser.ConfigParser(inline_comment_prefixes=(";",), interpolation=None)
+    try:
+        theirs.read_string((run_dir / "ansible.cfg").read_text())
+    except (OSError, UnicodeDecodeError):  # no ansible.cfg: Galaxy's defaults
+        pass
+    except configparser.Error as e:
+        raise Refused(f"its ansible.cfg can’t be read: {str(e).splitlines()[0]}") from None
+    ours = configparser.ConfigParser(interpolation=None)
+    for section in theirs.sections():
+        allowed = (GALAXY_SETTINGS if section == "galaxy"
+                   else GALAXY_SERVER_SETTINGS if section.startswith("galaxy_server.") else None)
+        kept = {k: v for k, v in theirs.items(section, raw=True) if allowed and k in allowed and v is not None}
+        if kept:
+            ours[section] = kept
+    out = io.StringIO()
+    out.write("# Written by ansible-gui for this install: the Galaxy servers from the repository's ansible.cfg.\n")
+    ours.write(out)
+    return out.getvalue()
+
+
 def collections(job: dict, ctx: Context) -> dict:
     """Install what a requirements file lists into target, unless target is there already. Written beside it
-    under a temporary name and renamed into place, so a collections directory that exists is whole."""
+    under a temporary name and renamed into place, so a collections directory that exists is whole, and
+    without write permission from then on."""
     req, run_dir, target = ctx.path(job["requirements"]), ctx.path(job["run_dir"]), ctx.path(job["target"])
     if target.is_dir():
         return {"installed": False}
     fresh = target.with_name(f".{target.name}.partial")
-    shutil.rmtree(fresh, ignore_errors=True)
-    fresh.mkdir(parents=True)
-    cmd = ["ansible-galaxy", "collection", "install", "-r", str(req), "-p", str(fresh), "--force"]
+    git.remove_tree(fresh)
+    d = ctx.scratch.make("galaxy-")
     try:
-        proc = subprocess.run(cmd, cwd=run_dir, capture_output=True, text=True, timeout=600,
-                              env={**os.environ, "ANSIBLE_NOCOLOR": "1"})
-    except (OSError, subprocess.TimeoutExpired) as e:
-        shutil.rmtree(fresh, ignore_errors=True)
-        return {"error": str(e)}
-    if proc.returncode != 0:
-        shutil.rmtree(fresh, ignore_errors=True)
-        lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
-        return {"error": lines[-1] if lines else f"ansible-galaxy exited with {proc.returncode}"}
-    fresh.rename(target)
-    return {"installed": True}
+        (d / "ansible.cfg").write_text(galaxy_config(run_dir))
+        fresh.mkdir(parents=True)
+        cmd = ["ansible-galaxy", "collection", "install", "-r", str(req), "-p", str(fresh), "--force"]
+        try:
+            # In the repository's directory, so a requirements file can name a collection beside it, but with
+            # ANSIBLE_CONFIG set: Ansible then doesn't read the ansible.cfg there.
+            proc = subprocess.run(cmd, cwd=run_dir, capture_output=True, text=True, timeout=600,
+                                  env={**os.environ, "ANSIBLE_NOCOLOR": "1", "ANSIBLE_CONFIG": str(d / "ansible.cfg")})
+        except (OSError, subprocess.TimeoutExpired) as e:
+            git.remove_tree(fresh)
+            return {"error": str(e)}
+        if proc.returncode != 0:
+            git.remove_tree(fresh)
+            lines = [l for l in (proc.stderr or proc.stdout).splitlines() if l.strip()]
+            return {"error": lines[-1] if lines else f"ansible-galaxy exited with {proc.returncode}"}
+        git.seal(fresh)
+        fresh.rename(target)
+        return {"installed": True}
+    finally:
+        ctx.scratch.drop(d)
 
 
 def prune(job: dict, ctx: Context) -> dict:
@@ -138,13 +184,13 @@ def prune_collections(job: dict, ctx: Context) -> dict:
     root, keep, removed = ctx.path(job["root"]), set(job["keep"]), []
     for d in root.iterdir() if root.is_dir() else []:
         if (len(d.name) == 64 or d.name.endswith(".partial")) and d.name not in keep:
-            shutil.rmtree(d, ignore_errors=True)
+            git.remove_tree(d)
             removed.append(d.name)
     return {"removed": removed}
 
 
 def remove(job: dict, ctx: Context) -> dict:
-    shutil.rmtree(ctx.path(job["home"]), ignore_errors=True)
+    git.remove_tree(ctx.path(job["home"]))
     return {}
 
 

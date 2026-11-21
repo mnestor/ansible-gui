@@ -14,9 +14,10 @@ from ansible_gui.scratch import Scratch
 from ansible_gui.web import create_app
 from ansible_gui.worker import Cancel, InlineWorker
 from ansible_gui.worker.jobs import FETCHER, RUNNER
+from ansible_gui.worker import socket as sockets
 from ansible_gui.worker.socket import Server, SocketWorker
 
-from test_repos import FIXTURE, add, make_remote, pytestmark, wait  # noqa: F401 - pytestmark: needs ansible-core
+from test_repos import FIXTURE, add, git, make_remote, pytestmark, wait  # noqa: F401 - pytestmark: needs ansible-core
 
 
 @pytest.fixture
@@ -169,3 +170,77 @@ def test_fetcher_and_runner_each_get_only_their_own_jobs(tmp_path, sockdir):
     finally:
         fetcher.close()
         runner.close()
+
+
+def test_the_app_stops_waiting_for_a_worker_that_never_answers(sockdir, tmp_path):
+    """A playbook runs as the runner's user and could answer on its socket, or just hang it. Every job but a
+    run has a time by which it must have answered; a run that was told to stop has a little longer."""
+    server = serve(sockdir / "h.sock", tmp_path)
+    release = threading.Event()
+
+    def never(kind, job, on_message=None, cancel=None):
+        release.wait(30)
+        return {"late": True}
+
+    server.worker.call = never
+    try:
+        started = time.time()
+        fetcher = SocketWorker(sockdir / "h.sock", "fetcher", deadlines={"prune": 0.3})
+        assert fetcher.call("prune", {}) == {"error": "the fetcher didn’t answer in time", "lost": True}
+
+        runner = SocketWorker(sockdir / "h.sock", "runner", cancel_grace=0.3)
+        stop = Cancel()
+        threading.Timer(0.2, stop.cancel).start()
+        assert runner.call("run", {}, cancel=stop) == {"error": "the runner didn’t answer in time", "lost": True}
+        assert time.time() - started < 10
+    finally:
+        release.set()
+        server.close()
+    runner = SocketWorker(sockdir / "h.sock", "runner")
+    assert runner.deadline("run", {}) is None  # the run timeout stops a run, not the socket
+    assert runner.deadline("cli", {"timeout": 60}) == 60 + sockets.CLI_MARGIN
+    assert all(runner.deadline(kind, {}) for kind in FETCHER)
+
+
+def test_a_reply_longer_than_the_app_reads_at_once_is_left_out_and_the_job_goes_on(sockdir, tmp_path, monkeypatch):
+    monkeypatch.setattr(sockets, "MAX_REPLY", 4096)
+    server = serve(sockdir / "o.sock", tmp_path)
+
+    def call(kind, job, on_message=None, cancel=None):
+        on_message({"event": {"stdout": "x" * 20000}})
+        on_message({"event": {"stdout": "after"}})
+        return {"status": "successful"}
+
+    server.worker.call = call
+    try:
+        seen = []
+        assert SocketWorker(sockdir / "o.sock").call("run", {}, on_message=seen.append) == {"status": "successful"}
+        assert len(seen) == 2 and seen[0]["oversized"] > 20000 and seen[1] == {"event": {"stdout": "after"}}
+    finally:
+        server.close()
+
+
+def test_with_workers_the_server_doesnt_read_through_a_repositorys_links_to_its_own_files(split, tmp_path):
+    """Ansible follows a repository's links in the runner. The server, listing playbooks and showing where a
+    variable is set, would follow them into its own data directory."""
+    app, c, _, _ = split
+    secret = tmp_path / "data" / "notes.yml"
+    secret.write_text("- hosts: all\n  tasks: []\n")
+    pb, work = make_remote(tmp_path, "pb", {"site.yml": FIXTURE / "site.yml"})
+    (work / "linked.yml").symlink_to(secret)
+    (work / "beside.yml").symlink_to("site.yml")
+    (work / "requirements.yml").symlink_to(tmp_path / "data" / "ansible-gui.db")
+    git("add", "-A", cwd=work)
+    git("commit", "-qm", "links", cwd=work)
+    git("push", "-q", "origin", "HEAD:main", cwd=work)
+    add(c, name="lab", role="playbooks", url=f"file://{pb}")
+    lab = next(r for r in app.state.repos.all() if r.name == "lab")
+    assert "can’t be read: it is a link to somewhere outside the repositories" in lab.last_error
+
+    (work / "requirements.yml").unlink()
+    git("commit", "-qam", "no requirements", cwd=work)
+    git("push", "-q", "origin", "HEAD:main", cwd=work)
+    c.post(f"/repos/{lab.id}/pull")
+    lab = app.state.repos.get(lab.id)
+    assert not lab.last_error and (lab.path / "linked.yml").is_symlink()
+    assert [p.path for p in app.state.workspace.discover()] == ["beside.yml", "site.yml"]

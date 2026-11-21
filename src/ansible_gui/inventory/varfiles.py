@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from .. import repofiles
 from .model import VAULTED
 
 EXTENSIONS = ["", ".yml", ".yaml", ".json"]
@@ -46,7 +47,7 @@ class VarFile:
 def load(path: Path) -> VarFile:
     vf = VarFile(path=path)
     try:
-        text = path.read_text()
+        text = repofiles.read_text(path)
     except OSError as e:
         vf.error = f"could not read: {e.strerror}"
         return vf
@@ -78,7 +79,8 @@ def _dir_files(d: Path) -> list[Path]:
         if entry.name.startswith("."):
             continue
         if entry.is_dir():
-            out.extend(_dir_files(entry))
+            # A directory that is a link out of the repositories isn't listed: load() then says why.
+            out.extend(_dir_files(entry) if repofiles.inside(entry) else [entry])
         elif entry.suffix in EXTENSIONS[1:] or entry.suffix == "":
             out.append(entry)
     return out
@@ -92,7 +94,7 @@ def find(basedir: Path, subdir: str, name: str) -> list[Path]:
     for ext in EXTENSIONS:
         candidate = base / f"{name}{ext}"
         if candidate.is_dir():
-            return _dir_files(candidate)
+            return _dir_files(candidate) if repofiles.inside(candidate) else [candidate]
         if candidate.is_file():
             return [candidate]
     return []

@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import stat
 import subprocess
 import time
 from pathlib import Path
@@ -525,6 +526,36 @@ def test_run_dir_config_and_collections_apply(app, c, remotes, tmp_path):
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log[-1500:]
     assert "hello-from-run-dir-config" in log and "hello-from-collection" in log
+
+
+def test_commit_and_collections_directories_cant_be_written_once_they_exist(app, c, remotes, tmp_path):
+    """Never written again, in the file modes too: whatever the fetcher runs for one repository can't add a
+    line to another's files. Pruning and deleting still remove them."""
+    tarball = build_collection(tmp_path)
+    sealed, work = make_remote(tmp_path, "sealed", {
+        "site.yml": FIXTURE / "site.yml", "roles/r/tasks/main.yml": "[]\n",
+        "requirements.yml": f"collections:\n  - name: {tarball}\n    type: file\n"})
+    assert add(c, name="sealed", role="playbooks", url=f"file://{sealed}").status_code == 303
+    repo = next(r for r in app.state.repos.all() if r.name == "sealed")
+    assert not repo.last_error, repo.last_error
+    collections = app.state.workspace.collections_dir(repo)
+    for tree in (repo.path, collections):
+        paths = [tree, *tree.rglob("*")]
+        assert len(paths) > 3
+        assert not [str(p) for p in paths if not p.is_symlink() and stat.S_IMODE(p.stat().st_mode) & 0o222]
+    for attempt in (lambda: (repo.path / "planted.yml").write_text("x"),
+                    lambda: (repo.path / "site.yml").open("a"),
+                    lambda: (repo.path / "roles" / "r" / "tasks" / "main.yml").unlink(),
+                    lambda: (collections / "ansible_collections" / "planted").mkdir()):
+        with pytest.raises(PermissionError):
+            attempt()
+
+    old = repo.path
+    push_change(work, "site.yml", "# changed")
+    c.post(f"/repos/{repo.id}/pull")
+    assert not old.exists() and app.state.repos.get(repo.id).path.is_dir()  # the earlier commit was pruned
+    c.post(f"/repos/{repo.id}/delete")
+    assert not repo.home.exists() and not collections.exists()
 
 
 def test_broken_collections_file_cancels_the_run(app, c, remotes, tmp_path):

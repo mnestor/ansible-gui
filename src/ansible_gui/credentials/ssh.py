@@ -155,33 +155,52 @@ def for_job(data_dir: Path, user_config: Path | None, host_key_checking: str) ->
 
 
 _learn_lock = threading.Lock()
+MAX_LEARNED = 1000  # host keys taken from one job; a run that meets more hosts than this learns the rest next time
+# A name as ssh writes it for a host it just met: a name or an address, or [name]:port.
+_LEARNED_NAME = re.compile(r"^(?:\[[A-Za-z0-9._:%-]+\]:\d{1,5}|[A-Za-z0-9._:%][A-Za-z0-9._:%-]*)$")
 
 
-def learn_host_keys(data_dir: Path, lines: list[str]) -> int:
-    """Add host keys a job's ssh accepted (StrictHostKeyChecking accept-new) to known_hosts. Returns how many
-    were new. Each line is checked like a pasted one; one that isn't a known_hosts line is dropped."""
-    added = 0
+def _has_key(known_hosts: Path, name: str) -> bool:
+    """Whether known_hosts already lists a key for the name. ssh-keygen does the matching, so hashed names and
+    patterns on file count. A @cert-authority line doesn't: a host without a certificate still gets its key."""
+    found = _keygen("-F", name, "-f", str(known_hosts))
+    return found.returncode == 0 and any(
+        line.strip() and not line.startswith(("#", "@")) for line in found.stdout.splitlines())
+
+
+def learn_host_keys(data_dir: Path, lines: list[str], host_key_checking: str = "accept-new") -> int:
+    """Add host keys a job's ssh accepted on first contact to known_hosts. Returns how many were added.
+
+    The lines come back from a worker's temp directory, where the playbook could write as well, so they are
+    held to what ssh itself adds for a host it has just met: one key, for names that have none yet. Dropped:
+    a marker (@cert-authority would trust a key to vouch for any host), a pattern, a hashed name (it can't be
+    told which host it is for), and a key for a host that already has one (ssh would then accept either).
+    With StrictHostKeyChecking yes ssh adds nothing, so nothing is taken."""
+    if host_key_checking == "yes":
+        return 0
+    path = known_hosts_path(data_dir)
+    new: list[str] = []
+    taken: set[str] = set()
     with _learn_lock:
-        have = set(read_known_hosts(data_dir).splitlines())
-        new = []
-        for line in lines:
-            line = line.strip()
-            if not line or line in have or "\n" in line:
+        for line in lines[:MAX_LEARNED]:
+            fields = line.split() if isinstance(line, str) and len(line) < 8192 else []
+            if len(fields) < 3:
                 continue
-            try:
-                check_known_hosts(line)
-            except InvalidKey:
+            names = fields[0].split(",")
+            if not all(_LEARNED_NAME.match(n) for n in names) or taken.intersection(names):
                 continue
-            new.append(line)
-            have.add(line)
+            if _keygen("-l", "-f", "-", stdin=f"{fields[1]} {fields[2]}\n").returncode != 0:
+                continue
+            if path.exists() and any(_has_key(path, n) for n in names):
+                continue
+            new.append(" ".join(fields[:3]))
+            taken.update(names)
         if new:
-            path = known_hosts_path(data_dir)
             path.parent.mkdir(parents=True, exist_ok=True)
             os.chmod(path.parent, 0o700)
             with path.open("a") as f:
                 f.write("".join(l + "\n" for l in new))
-            added = len(new)
-    return added
+    return len(new)
 
 
 def known_hosts_path(data_dir: Path) -> Path:

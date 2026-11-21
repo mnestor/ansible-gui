@@ -339,6 +339,9 @@ class Executor:
                 log_file.write(shown.replace(SCRATCH, str(msg["scratch"])))
             elif isinstance(msg.get("event"), dict):
                 on_event(msg["event"])
+            elif isinstance(msg.get("oversized"), int):  # from the socket, not the runner: see MAX_REPLY
+                log_file.write(f"[ansible-gui] Left out one event of {msg['oversized'] / 1e6:.0f} MB: more than "
+                               "ansible-gui reads from the runner at once. That task’s output is missing here.\n")
 
         def on_event(ev: dict) -> None:
             data = ev.get("event_data") or {}

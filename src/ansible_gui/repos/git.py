@@ -6,6 +6,10 @@
 A commit directory is built under a temporary name beside it and renamed into place when it is complete,
 so a directory that exists is whole. Nothing ever writes into one again: a pull lands on a new commit
 in a new directory, and a run keeps reading the one it started with. Pruning removes the ones nobody uses.
+
+"Never written again" is also in the file modes: seal() takes write permission off a finished directory. The
+fetcher writes every repository as one user, so without that a program it runs for one repository, steered by
+that repository's files, could write into another's. Only remove_tree() gives the permission back.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import threading
 from contextlib import contextmanager
@@ -45,6 +50,30 @@ def locked(home: Path, on_wait=None):
         yield
     finally:
         lock.release()
+
+
+def seal(tree: Path) -> None:
+    """Take write permission off every directory and file in tree, for everyone. Links are left alone:
+    chmod would follow them out of the tree."""
+    for root, _dirs, files in os.walk(tree):
+        for name in files:
+            path = os.path.join(root, name)
+            if not os.path.islink(path):
+                os.chmod(path, stat.S_IMODE(os.lstat(path).st_mode) & ~0o222)
+        os.chmod(root, stat.S_IMODE(os.lstat(root).st_mode) & ~0o222)
+
+
+def remove_tree(path: Path) -> None:
+    """Remove a directory that may be sealed, or a file. Nothing happens if it isn't there."""
+    if path.is_symlink() or not path.is_dir():
+        path.unlink(missing_ok=True)
+        return
+    for root, _dirs, _files in os.walk(path):  # entries can only be removed from a directory one may write
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
 
 
 class GitError(Exception):
@@ -96,7 +125,7 @@ def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str 
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     bare = home / "git"
     if (home / ".git").exists():  # a working copy from before commit directories: start again
-        shutil.rmtree(home)
+        remove_tree(home)
     ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
     if private_key:
         key = workdir / "id"
@@ -112,7 +141,7 @@ def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str 
             f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
         env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
     if not (bare / "HEAD").exists():
-        shutil.rmtree(bare, ignore_errors=True)
+        remove_tree(bare)
         bare.mkdir(parents=True)
         _git(["init", "-q", "--bare"], bare, env)
         _git(["remote", "add", "origin", url], bare, env)
@@ -146,14 +175,15 @@ def materialize(home: Path, commit: str) -> Path:
     locked(home). Raises CommitGone if the bare clone doesn't have the commit.
 
     Written through a temporary index, file for file as git checks it out: symlinks and executable bits
-    kept, and nothing left out the way .gitattributes export-ignore would leave it out of an archive."""
+    kept, and nothing left out the way .gitattributes export-ignore would leave it out of an archive. Sealed
+    before it gets its name."""
     dest = commit_dir(home, commit)
     if dest.is_dir():
         return dest
     if not has_commit(home, commit):
         raise CommitGone(f"commit {commit[:12]} isn’t in the repository any more")
     tmp = dest.with_name(f".{commit}.partial")
-    shutil.rmtree(tmp, ignore_errors=True)
+    remove_tree(tmp)
     tmp.mkdir(parents=True)
     index = dest.with_name(f".{commit}.index")
     env = {**_base_env(), "GIT_INDEX_FILE": str(index), "GIT_DIR": str(home / "git"), "GIT_WORK_TREE": str(tmp)}
@@ -161,10 +191,11 @@ def materialize(home: Path, commit: str) -> Path:
         _git(["read-tree", commit], tmp, env)
         _git(["checkout-index", "--all", "--force"], tmp, env)
     except GitError:
-        shutil.rmtree(tmp, ignore_errors=True)
+        remove_tree(tmp)
         raise
     finally:
         index.unlink(missing_ok=True)
+    seal(tmp)
     tmp.rename(dest)
     return dest
 
@@ -178,7 +209,7 @@ def prune(home: Path, keep: set[str]) -> list[str]:
     for d in commits.iterdir():
         if d.name in keep:
             continue
-        shutil.rmtree(d, ignore_errors=True) if d.is_dir() else d.unlink(missing_ok=True)
+        remove_tree(d)
         if SHA.match(d.name):
             gone.append(d.name)
     return gone

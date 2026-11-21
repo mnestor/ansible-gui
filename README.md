@@ -106,7 +106,10 @@ lists in `data/repos/collections/<SHA-256 of the file>/`, unless that directory 
 of that commit use it. The file
 is the one named on the repository, or else the first of `collections/requirements.yml` and `requirements.yml`
 in the Run from directory, then at the top level. A failed install cancels the run like a failed pull, and the
-repository stays at the commit it was at. Roles listed in the file are not installed.
+repository stays at the commit it was at. Roles listed in the file are not installed. Of the repository's
+`ansible.cfg`, the install uses only the Galaxy servers: `server`, `server_list`, `server_timeout`, `ignore_certs`
+and the signature settings under `[galaxy]`, and each `[galaxy_server.<name>]` section. A commit's directory and a
+collections directory lose their write permission once they are complete.
 
 **Run again…** on a finished run opens the launcher filled in from it, and runs the latest commits. When a
 repository has moved since, the launcher says so and offers **Run the commits run #N used instead**: nothing is
@@ -233,9 +236,11 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
   doesn't. Your file wins wherever it sets an option. An
   inventory `ansible_ssh_common_args` replaces the `-F`; the Credentials page lists hosts that do this.
 - With the default `accept-new`, a new host's key is recorded under **Known hosts** on the Credentials page
-  on its first connection (the worker reports it, the app checks and keeps it), and a different key is refused
-  after that. Whoever answers that first connection
-  is trusted, impostor or not. When a host is rebuilt with a new key, delete its line there.
+  on its first connection, and a different key is refused after that. Whoever answers that first connection
+  is trusted, impostor or not. When a host is rebuilt with a new key, delete its line there. The worker reports
+  the key and the app keeps it only if it is what ssh adds for a host it has just met: one key, for a name or
+  `[name]:port` that has none yet. A certificate authority, a pattern, a hashed name (`HashKnownHosts yes` in
+  your ssh_config) or a second key for a listed host is never taken from a run: add those yourself.
 - With `yes`, a run or SSH pull reaches only hosts whose key is already listed. Paste `ssh-keyscan` output
   from a machine you trust, lines from your own `known_hosts`, or one `@cert-authority` line if your hosts
   have SSH certificates. `no` accepts any key, every time.
@@ -271,11 +276,16 @@ workers (the compose file's layout), that code runs in the runner container, as 
 own credentials: the run's account, become and vault passwords, its environment secrets. It can't read the master
 key, the other credentials, the OIDC and SMTP secrets or the database, can't sign a session, and can't change the
 commit directories and collections later runs read (the runner mounts them read-only). What it still can: use the
-run's credentials on the hosts they reach, and stay alive in the runner to watch later jobs arrive until the
-container restarts. The fetcher writes the repositories and is meant never to run them. That rests on git (a
-fetch into a bare clone, then `read-tree` and `checkout-index`) and `ansible-galaxy collection install` not
-executing what they fetch, which hasn't been audited: the fetcher holds a deploy key or token only for the length
-of a pull. [docs/runner-split.md](docs/runner-split.md) has the full table of what a hostile playbook gets.
+run's credentials on the hosts they reach, stay alive in the runner to watch later jobs arrive until the
+container restarts, and have a key recorded for a host that has none yet, as a first connection would. The app
+reads the repository's files too, to list playbooks and show where a variable is set: as YAML, and never
+through a link that leads out of the repositories. The fetcher writes the repositories and is meant never to run
+them. That rests on git (a fetch into a bare clone, then `read-tree` and `checkout-index`) and
+`ansible-galaxy collection install` not executing what they fetch. A review on 21 Nov 2026 found no way for
+them to, but found ansible-galaxy obeying the repository's `ansible.cfg`, which let one repository write into
+another's files; the install now gets only its Galaxy servers, and finished directories can't be written. That
+review was reading and testing, not proof: the fetcher holds a deploy key or token only for the length of a pull.
+[docs/runner-split.md](docs/runner-split.md) has the full table of what a hostile playbook gets.
 Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
 access to a repository is admin access to this server. Either way: protect the branches ansible-gui pulls, give it
 read-only deploy keys or tokens, and don't add a repository you wouldn't trust with those credentials.

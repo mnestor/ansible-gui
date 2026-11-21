@@ -3,9 +3,9 @@
 # only runs as a subprocess; it is never imported.
 #
 # One image, three users. deploy/docker-compose.yml runs it as the app (10001), which holds the secrets and
-# never runs repository code, and as a worker (10002), which pulls and runs it and holds no secret of its own.
-# A third user (10003) is there for a runner split off from the worker. OpenSSH refuses to run for a uid with
-# no passwd entry, so each has one.
+# never runs repository code; as the fetcher (10002), which pulls the repositories and installs their
+# collections; and as the runner (10003), which runs Ansible from a read-only mount of what the fetcher wrote.
+# Neither worker holds a secret of its own. OpenSSH refuses to run for a uid with no passwd entry, so each has one.
 
 # Base images by digest, so a rebuild gets exactly what was tested; Dependabot proposes updates.
 # Alpine, with its release in the tag: a digest update stays on 3.24, and moving to the next release

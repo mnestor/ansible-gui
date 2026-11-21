@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from .. import repofiles
 from ..inventory.cli import CliOptions, InventoryError, run_cli
 
 
@@ -20,7 +21,7 @@ _AnyTagLoader.add_multi_constructor("!", lambda loader, suffix, node: None)
 
 def _is_playbook(path: Path) -> bool:
     try:
-        data = yaml.load(path.read_text(), Loader=_AnyTagLoader)  # noqa: S506 - SafeLoader subclass  # nosec B506
+        data = yaml.load(repofiles.read_text(path), Loader=_AnyTagLoader)  # noqa: S506 - SafeLoader subclass  # nosec B506
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return False
     if not isinstance(data, list) or not data:
@@ -34,6 +35,8 @@ def _is_playbook(path: Path) -> bool:
 def discover(project_dir: Path, playbook_dir: str = ".") -> list[str]:
     """Playbooks directly in the playbook directory, relative to project_dir."""
     base = (project_dir / playbook_dir).resolve()
+    if not repofiles.inside(base):
+        return []
     found = []
     for p in sorted(base.iterdir()):
         if p.is_file() and p.suffix in (".yml", ".yaml") and _is_playbook(p):

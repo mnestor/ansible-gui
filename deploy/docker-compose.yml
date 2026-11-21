@@ -18,7 +18,9 @@
 #      ./data that Docker creates is owned by root and the app can't write to it).
 
 x-hardened: &hardened
-  image: ghcr.io/mnestor/ansible-gui:sha-7574432
+  # An image from 8c42c40 on: earlier ones don't know `ansible-gui worker`. They start the web app in all three
+  # containers, and the app then runs git and Ansible itself, beside every secret.
+  image: ghcr.io/mnestor/ansible-gui:sha-8c42c40
   restart: unless-stopped
   # Only the volumes are writable, and nothing in a container can gain privileges. deploy/smoke-test.sh runs a
   # playbook under exactly this and checks what it can't reach.
