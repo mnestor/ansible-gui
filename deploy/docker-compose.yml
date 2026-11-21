@@ -18,7 +18,10 @@
 #      ./data that Docker creates is owned by root and the app can't write to it).
 
 x-hardened: &hardened
-  # An image from 8c42c40 on: earlier ones don't know `ansible-gui worker`. They start the web app in all three
+  # NOT YET THE RIGHT TAG. The runner below is started with --clean-between-jobs, which sha-8c42c40 doesn't
+  # know: its runner exits at start, naming the argument. Put here the tag CI publishes for the commit that
+  # added the flag, or a later one.
+  # Images before 8c42c40 don't know `ansible-gui worker` at all. They start the web app in all three
   # containers, and the app then runs git and Ansible itself, beside every secret.
   image: ghcr.io/mnestor/ansible-gui:sha-8c42c40
   restart: unless-stopped
@@ -95,8 +98,13 @@ services:
     <<: *hardened
     container_name: ansible-gui-runner
     user: "10003:10011"
+    # --clean-between-jobs: a playbook runs as the runner's own user, so each time the jobs are done the runner
+    # kills every other process in this container and empties these directories, which are all a playbook can
+    # write here. Nothing one job left is there for the next. A shell opened with `docker exec` goes too:
+    # use `docker exec -u 0` to look around.
     command: ["ansible-gui", "worker", "--jobs", "runner", "--socket", "/run/runner/runner.sock",
-              "--allow-uid", "10001"]
+              "--allow-uid", "10001",
+              "--clean-between-jobs", "/tmp", "/home/runner", "/dev/shm", "/dev/mqueue", "/run/runner"]
     environment:
       ANSIBLE_GUI_REPOS_DIR: /repos
       ANSIBLE_HOME: /home/runner/.ansible

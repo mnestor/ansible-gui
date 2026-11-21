@@ -57,7 +57,8 @@ listens on 8080 with data in `/data`. The same image runs the workers: `ansible-
 --socket PATH --allow-uid 10001` takes the app's jobs on a Unix socket and accepts a connection from uid 10001 only
 (the kernel reports who is on the other end). `deploy/docker-compose.yml` runs the app, a fetcher (uid 10002, the
 only container that can write the repositories) and a runner (uid 10003, with the repositories mounted
-read-only). It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
+read-only, and `--clean-between-jobs`: it clears its container of what its jobs left each time they are done).
+It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
 (or `ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). It also refuses without
 `ANSIBLE_GUI_PUBLIC_URL`, the one name besides `localhost` it answers to. `GET /healthz` backs the healthcheck and
 answers under any name.
@@ -275,9 +276,13 @@ plugins and read its `ansible.cfg`; a pull installs the collections it lists; a 
 workers (the compose file's layout), that code runs in the runner container, as another user, with only the job's
 own credentials: the run's account, become and vault passwords, its environment secrets. It can't read the master
 key, the other credentials, the OIDC and SMTP secrets or the database, can't sign a session, and can't change the
-commit directories and collections later runs read (the runner mounts them read-only). What it still can: use the
-run's credentials on the hosts they reach, stay alive in the runner to watch later jobs arrive until the
-container restarts, and have a key recorded for a host that has none yet, as a first connection would. The app
+commit directories and collections later runs read (the runner mounts them read-only). Each time the runner's
+jobs are done, it kills every process they left in its container and empties every directory they could write,
+so nothing of one job is there for the next. What that code still can: use the run's credentials on the hosts
+they reach, read the files of another job that runs in the runner at the same time, and have a key recorded for
+a host that has none yet, as a first connection would. Nothing a playbook starts on the controller outlives its
+run (a local `async` task with `poll: 0`, for one), and a cache Ansible keeps in the runner (an inventory
+plugin's, facts in a file) starts empty for every job. The app
 reads the repository's files too, to list playbooks and show where a variable is set: as YAML, and never
 through a link that leads out of the repositories. The fetcher writes the repositories and is meant never to run
 them. That rests on git (a fetch into a bare clone, then `read-tree` and `checkout-index`) and

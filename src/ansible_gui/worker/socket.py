@@ -12,6 +12,9 @@ The app doesn't take the worker's word for anything it can check. A playbook run
 could take over its end of the socket: so a reply is read up to MAX_REPLY at a time, every job but a run has
 a time by which it must have answered (DEADLINES), and a run that was told to stop has CANCEL_GRACE to say so.
 After that the app closes the connection and calls the job lost.
+
+A worker given something to clean with (worker/clean.py) calls it each time its last job in flight has ended,
+and starts no job meanwhile. If the cleaning fails it stops serving: its container then starts again clean.
 """
 
 from __future__ import annotations
@@ -82,9 +85,11 @@ class Server:
         finally:
             os.umask(old)
         self.sock.listen(16)
+        self.clean: Callable[[], None] | None = None  # set before serving, once the socket above is open
+        self.unclean = False  # the cleaning failed, and this server stopped because of it
         self._closed = False
         self._active: set[Cancel] = set()
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()  # held while the container is cleaned: a job starts only with it
 
     def serve_forever(self) -> None:
         while True:
@@ -109,6 +114,21 @@ class Server:
             pass
         self.sock.close()
         self.path.unlink(missing_ok=True)
+
+    def _ended(self, cancel: Cancel) -> None:
+        """A job is over. If it was the last one in flight, clean the container before the next one starts."""
+        with self._lock:
+            self._active.discard(cancel)
+            if self.clean is None or self._active or self._closed:
+                return
+            try:
+                self.clean()
+                return
+            except Exception as e:
+                log.error("couldn’t clean up after the last job (%s): stopping, so that the container starts "
+                          "again clean", e)
+                self.unclean = self._closed = True  # under the lock: no job waiting for it starts
+        self.close()
 
     def _handle(self, conn: socket.socket) -> None:
         write = _writer(conn)
@@ -151,15 +171,17 @@ class Server:
                 if not write({"message": msg}):
                     cancel.cancel()
 
-            with self._lock:
+            with self._lock:  # waits here while the container is cleaned after the jobs before
+                if self._closed:
+                    write({"result": {"lost": True}})
+                    return
                 self._active.add(cancel)
             try:
                 result = self.worker.call(kind, job, send, cancel)
                 # Stopped by close(): whatever the job made of that, for the app it was cut short.
                 write({"result": {"lost": True} if self._closed else result})
             finally:
-                with self._lock:
-                    self._active.discard(cancel)
+                self._ended(cancel)
         except Exception:
             log.exception("serving a job")
         finally:

@@ -4,6 +4,7 @@ USAGE = """usage: ansible-gui                     start the server
        ansible-gui sign-out-everyone   end every session now (in the container:
                                        docker exec ansible-gui-app ansible-gui sign-out-everyone)
        ansible-gui worker --socket PATH --allow-uid UID [--jobs all|fetcher|runner]
+                          [--clean-between-jobs DIR ...]
                                        take git and Ansible jobs from the app on a Unix socket"""
 
 
@@ -39,7 +40,7 @@ def run_worker(args: list[str]) -> None:
     from .config import scrub_environment
     from .runs.executor import clear_leftovers
     from .scratch import Scratch
-    from .worker import InlineWorker
+    from .worker import InlineWorker, clean
     from .worker.jobs import FETCHER, RUNNER
     from .worker.socket import Server
 
@@ -47,7 +48,14 @@ def run_worker(args: list[str]) -> None:
     p.add_argument("--socket", required=True, type=Path)
     p.add_argument("--allow-uid", required=True, type=int, help="the app's uid: the only one that may connect")
     p.add_argument("--jobs", default="all", choices=["all", "fetcher", "runner"])
+    p.add_argument("--clean-between-jobs", nargs="+", type=Path, metavar="DIR",
+                   help="for a worker alone in a container of its own: whenever no job is running, kill every "
+                        "other process in it and empty these directories (every one a job can write)")
     a = p.parse_args(args)
+    if a.clean_between_jobs and not clean.own_container():
+        raise SystemExit("--clean-between-jobs kills every process this user may signal each time the jobs are "
+                         "done. That is only for a worker that is not root and was started by PID 1 (tini) as the "
+                         "same user, in a container of its own. This isn’t one.")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     repos = os.environ.get("ANSIBLE_GUI_REPOS_DIR")
     if not repos:
@@ -58,17 +66,27 @@ def run_worker(args: list[str]) -> None:
     tools = {"ansible", "ansible-playbook", "ansible-inventory", "ansible-config", "ansible-galaxy",
              os.environ.get("ANSIBLE_GUI_INVENTORY_BINARY", "ansible-inventory")}
     scrub_environment()
+    clean.hide()  # a job runs as this user: it may not read or change the process that outlives it
     state = Path(tempfile.gettempdir()) / "ansible-gui-worker"
     scratch = Scratch(state)
     clear_leftovers(scratch, state)  # this container's tmpfs normally went with it; a crashed process's didn't
     kinds = {"all": FETCHER | RUNNER, "fetcher": FETCHER, "runner": RUNNER}[a.jobs]
     server = Server(a.socket, kinds, a.allow_uid, InlineWorker(scratch, roots=roots, tools=tools))
+    if a.clean_between_jobs:
+        server.clean = clean.Cleaner(a.clean_between_jobs, a.socket)
+        try:
+            server.clean()  # now, so that a directory that can't be emptied shows at the start
+        except clean.Unclean as e:
+            server.close()
+            raise SystemExit(f"--clean-between-jobs: {e}") from None
     signal.signal(signal.SIGTERM, lambda *_: server.close())
     logging.getLogger("ansible_gui.worker").info("taking %s jobs on %s from uid %s", a.jobs, a.socket, a.allow_uid)
     server.serve_forever()
     deadline = time.monotonic() + 8  # the jobs it canceled wipe their temp directories as they end
     while threading.active_count() > 1 and time.monotonic() < deadline:
         time.sleep(0.1)
+    if server.unclean:
+        raise SystemExit(1)
 
 
 def sign_out_everyone() -> None:

@@ -133,7 +133,8 @@ docker run -d --name "$fetcher" "${WORKER[@]}" --user 10002:10010 \
 docker run -d --name "$runner" "${WORKER[@]}" --user 10003:10011 \
   --tmpfs /home/runner:size=64m,uid=10003,gid=10011,mode=0700 -e ANSIBLE_HOME=/home/runner/.ansible \
   --health-cmd "test -S /run/runner/runner.sock" -v "$repos:/repos:ro" -v "$rsock:/run/runner" \
-  "$image" ansible-gui worker --jobs runner --socket /run/runner/runner.sock --allow-uid 10001 >/dev/null
+  "$image" ansible-gui worker --jobs runner --socket /run/runner/runner.sock --allow-uid 10001 \
+  --clean-between-jobs /tmp /home/runner /dev/shm /dev/mqueue /run/runner >/dev/null
 for w in fetcher runner; do
   c=agui-smoke-$w-$$
   for _ in $(seq 30); do docker exec "$c" test -S "/run/$w/$w.sock" 2>/dev/null && break; sleep 1; done
@@ -168,6 +169,9 @@ docker exec -i "$fetcher" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
         echo "ENV=$(r 'cat /proc/[0-9]*/environ 2>/dev/null | tr "\000" "\n" | grep -q -e ANSIBLE_GUI_SECRET_KEY -e ANSIBLE_GUI_PUBLIC_URL')"
         echo "REPOS=$(r 'touch /repos/hostile || touch "$PWD/hostile"')"
         echo "SOCKET=$(r 'test -e /run/fetcher/fetcher.sock')"
+        w=$(grep -lx ansible-gui /proc/[0-9]*/comm 2>/dev/null | head -1)
+        if [ -z "$w" ]; then echo "WORKER=missing"
+        elif cat "$(dirname "$w")/environ" >/dev/null 2>&1; then echo "WORKER=open"; else echo "WORKER=closed"; fi
       register: reach
     - ansible.builtin.debug:
         msg: "{{ reach.stdout_lines | join(' ') }}"
@@ -175,6 +179,27 @@ docker exec -i "$fetcher" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
       ansible.builtin.shell: |
         ssh-keygen -q -t ed25519 -N '' -f /tmp/planted-ca
         echo "@cert-authority * $(cut -d' ' -f1,2 /tmp/planted-ca.pub)" >> "$(dirname "$SSH_AUTH_SOCK")/known_hosts"
+    - name: Stay in the runner for the next job
+      ansible.builtin.shell: |
+        setsid sleep 86399 >/dev/null 2>&1 </dev/null &
+        mkdir -p "$ANSIBLE_HOME/plugins/vars" && echo 'raise SystemExit("planted")' > "$ANSIBLE_HOME/plugins/vars/agui_stayed.py"
+        echo '[defaults]' > "$HOME/.ansible.cfg"
+        /app/.venv/bin/python - <<'PY'
+        import os
+        made = 0
+        for root, dirs, _ in os.walk("/"):
+            dirs[:] = [d for d in dirs if os.path.join(root, d) not in ("/proc", "/sys")]
+            try:
+                open(os.path.join(root, "agui-stayed"), "w").close()
+                made += 1
+            except OSError:
+                pass
+        print(f"STAYED={made}")
+        PY
+        mkdir -p /tmp/agui-stayed-closed/inside && chmod 0 /tmp/agui-stayed-closed/inside /tmp/agui-stayed-closed
+      register: stay
+    - ansible.builtin.debug:
+        msg: "{{ stay.stdout }}"
 YAML
 docker exec "$fetcher" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm hostile'
 # post PATH FORM: the status and Location of a POST from this app's own pages
@@ -197,11 +222,33 @@ run=${out##*/runs/}
 log=/data/runs/$run/output.log
 for _ in $(seq 120); do docker exec "$name" grep -q "PLAY RECAP" "$log" 2>/dev/null && break; sleep 1; done
 docker exec "$name" grep -q "PLAY RECAP" "$log" || fail "split: the run never finished: $(docker exec "$name" cat "$log" 2>&1 | tail -5)"
-reach=$(docker exec "$name" grep -o 'KEY=[a-z]* DB=[a-z]* ENV=[a-z]* REPOS=[a-z]* SOCKET=[a-z]*' "$log" | head -1)
+reach=$(docker exec "$name" grep -o 'KEY=[a-z]* DB=[a-z]* ENV=[a-z]* REPOS=[a-z]* SOCKET=[a-z]* WORKER=[a-z]*' "$log" | head -1)
 echo "  hostile playbook: $reach"
-[ "$reach" = "KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed" ] \
+[ "$reach" = "KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed WORKER=closed" ] \
   || fail "split: the runner reached what it shouldn't: $reach"
-docker exec "$runner" sh -c 'ls -A /tmp' | grep agui- >/dev/null && fail "split: the run left its temp directory behind"
+# The playbook also left a process running, a plugin and an ansible.cfg that Ansible would load for every later
+# job, and a file in every directory it could write. The runner clears all of that out once the run is over,
+# without restarting. Looked for as root with capabilities: the cleaning ends anything else that looks, and
+# the runner's home is closed to others.
+docker exec "$name" grep -E 'STAYED=[1-9]' "$log" >/dev/null \
+  || fail "split: the playbook found nowhere to leave a file, so the next check would show nothing"
+inside() { docker exec -u 0 --privileged "$runner" "$@"; }
+for _ in $(seq 20); do
+  stayed=$(inside sh -c 'ps -o user,comm | awk "\$1 == \"runner\" && \$2 != \"tini\" && \$2 != \"ansible-gui\""
+    find / -path /proc -prune -o \( -name "agui[-_]stayed*" -o -name .ansible.cfg \) -print; ls -A /tmp')
+  [ -z "$stayed" ] && break
+  sleep 1
+done
+[ -z "$stayed" ] || fail "split: what the playbook left was still in the runner after its run: $stayed"
+[ "$(docker inspect -f '{{.State.Running}} {{.RestartCount}}' "$runner")" = "true 0" ] \
+  || fail "split: the runner stopped to get clean"
+# And it still takes jobs: the same playbook again, which fails where its first run's files are still there.
+out=$(post /runs "playbook=2:hostile.yml&target=localhost&mode=apply&verbosity=0&expected=localhost")
+again=${out##*/runs/}
+[ "${out%% *}" = 303 ] && [ -n "$again" ] && [ "$again" != "$run" ] || fail "split: starting a second run: $out"
+for _ in $(seq 120); do docker exec "$name" grep -q "PLAY RECAP" "/data/runs/$again/output.log" 2>/dev/null && break; sleep 1; done
+docker exec "$name" grep "failed=0" "/data/runs/$again/output.log" >/dev/null \
+  || fail "split: a run after the cleaning failed: $(docker exec "$name" cat "/data/runs/$again/output.log" 2>&1 | tail -8)"
 docker exec "$name" sh -c 'cat /data/ssh/known_hosts 2>/dev/null' | grep cert-authority >/dev/null \
   && fail "split: the playbook's certificate authority was kept in the app's known hosts"
 # Each socket takes jobs from the app's uid only: a playbook in the runner can't send one of its own.
@@ -209,6 +256,11 @@ docker exec "$runner" python -c "
 import socket, json; s = socket.socket(socket.AF_UNIX); s.connect('/run/runner/runner.sock')
 s.sendall(json.dumps({'kind': 'cli', 'job': {}}).encode() + b'\n'); print(s.makefile().readline())" \
   | grep "takes jobs from uid 10001 only, not 10003" >/dev/null || fail "split: the runner's own uid was let in"
+
+echo "- the worker cleans between jobs only where every process is its own"
+out=$(docker run --rm --user 0 -e ANSIBLE_GUI_REPOS_DIR=/repos "$image" ansible-gui worker --socket /tmp/w.sock \
+  --allow-uid 10001 --clean-between-jobs /tmp 2>&1) && fail "a worker started as root agreed to clean between jobs"
+grep "container of its own" <<<"$out" >/dev/null || fail "unexpected refusal: $out"
 
 echo "- runs split: a repository can't have the fetcher write anywhere but its own commit and collections"
 # Its ansible.cfg names places in the repositories volume, and its requirements file fails to install, which

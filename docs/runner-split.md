@@ -10,7 +10,8 @@ that holds the secrets. Three containers start from one image:
 - **fetcher** (uid 10002) pulls the repositories and installs their collections. It is the only container that
   can write the repos volume, and it never runs what it writes.
 - **runner** (uid 10003) runs Ansible: the inventory, host previews, the settings report and runs. It mounts the
-  repos volume read-only and holds one run's credentials only while that run lasts.
+  repos volume read-only and holds one run's credentials only while that run lasts. Each time its jobs are done
+  it clears out whatever they left in its container.
 
 All three run non-root with a read-only root, every capability dropped and `no-new-privileges`. They are fixed
 services in `deploy/docker-compose.yml`. Nothing starts a container per job, and nothing needs the Docker socket.
@@ -55,13 +56,14 @@ What a hostile playbook gets:
 | Schedules, run history, logs | Writes the database and log files | Can only send its own run's output |
 | Repositories and collections later runs use | Writes them | Read-only mount |
 | Known hosts | Writes the file | A key for a host that has none yet, as a first connection gives |
-| Credentials of later runs | All of them, through the key | Only by staying alive in the runner until it restarts |
+| Credentials of later runs | All of them, through the key | Only of a job that runs while it does. What it leaves in the runner is cleared out before the next |
 | This run's key and become password | Has them | Has them |
 | The hosts that account reaches | Reaches them | Reaches them |
 
 `deploy/smoke-test.sh` checks the "After" column. A hostile playbook in the runner must report
-`KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed`, and the runner's own uid must be refused on the
-socket.
+`KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed WORKER=closed`, the runner's own uid must be refused
+on the socket, and the process and files the playbook leaves must be gone once its run is over, with the runner
+not restarted and the next run working.
 
 ## One directory per commit
 
@@ -163,6 +165,42 @@ Rules every job follows (`src/ansible_gui/worker/jobs.py`):
   limits (5 to 20 minutes; a `cli` job's timeout plus 30 s). A run has the run timeout, and 30 s to answer
   once it is canceled. After that the app closes the connection and the job is lost.
 
+## A clean runner between jobs
+
+The runner and the playbooks it runs share one user. Left alone, a playbook could leave a process behind to
+watch later jobs arrive, or a file Ansible loads on its own: a plugin in `~/.ansible/plugins`, a
+`~/.ansible.cfg`. Either would run with the next job's key and vault password.
+
+So each time the last job in flight has ended, and before the next one starts, the runner
+(`src/ansible_gui/worker/clean.py`, `--clean-between-jobs` in the compose file):
+
+1. kills every process in its container but tini and itself, with one `kill(-1, SIGKILL)`, and waits until
+   they are gone;
+2. empties every directory a playbook can write there: `/tmp`, `/home/runner`, `/dev/shm`, `/dev/mqueue` and
+   `/run/runner`, apart from its own socket;
+3. checks that the socket file is still the one it opened. A playbook can replace it, and would then be sent
+   the jobs that follow.
+
+A job that arrives meanwhile waits, usually for milliseconds. If any step fails, the runner stops, and Docker starts
+the container again with empty tmpfs mounts, which does the same more slowly. The worker also marks itself not
+dumpable when it starts, so a playbook can't read or attach to the one process that stays.
+
+What that costs:
+
+- **`kill(-1)` kills every process its caller may signal.** Outside a container that is everything the person
+  who started the worker is running. The worker refuses `--clean-between-jobs` unless it is not root and PID 1
+  is its own or runs as the same user (tini, under `user:`), and asks again before each kill.
+- **Nothing a playbook starts on the controller outlives its run.** A local task with `async` and `poll: 0`
+  is killed, and so is the ssh connection Ansible would keep open for 60 s for the next run.
+- **Ansible's caches in the runner start empty for every job.** An inventory plugin's cache or a fact cache in
+  a file there is one more thing a playbook could leave for the next job, so it goes too.
+- **A shell from `docker exec` ends with the next job.** `docker exec -u 0` gives one that stays.
+- **The list of directories is written down twice,** here and in the compose file. A writable mount added to
+  the runner has to be added to it. The smoke test's playbook leaves a file wherever it can write and fails
+  if one is still there, so a mount that was forgotten shows.
+
+It does nothing for two jobs that run at the same time (below).
+
 Fetches into one bare clone take turns. The app holds the repository's lock around the jobs it sends, so a
 run's log says when it waits for a pull started from the web UI.
 
@@ -183,11 +221,13 @@ List the playbooks' needs before narrowing.
 ## What this does not close
 
 - **The run's own credentials and the hosts they open.** A playbook is code you chose to run with that account.
-- **Staying alive inside the runner.** The worker and the playbooks share one user, so a process a playbook leaves
-  behind could watch later jobs arrive until the runner restarts. Nothing it writes survives a restart, apart from
-  a first-contact host key (below). Closing this needs a supervisor that gives each job its own Unix user, which
-  costs the SETUID and SETGID capabilities. Left out on purpose until a second person or someone else's
-  repository is added.
+- **Two jobs in the runner at the same time.** They share one user, so a playbook can read the files of any
+  job that runs while it does: another run's key and vault password, or an inventory view's vault password.
+  The cleaning happens when no job is running, so it also waits for the longest of them. Closing this takes a
+  user or a container per job. A user per job costs the SETUID and SETGID capabilities. A process namespace per
+  job is refused under Docker's default seccomp profile without capabilities. Several runners that each take
+  one job at a time would do it with neither (see "One runner, with room for a second"). Left out on purpose
+  until a second person or someone else's repository is added.
 - **The vault password at view time.** The code that resolves vaulted variables for display sees the password.
 - **First contact with a host under `accept-new`.** The same trust on first use as before, now visible in the
   run log. A playbook can have a key recorded for a host that has none yet, which is what answering that first
@@ -230,7 +270,8 @@ and shares `/tmp`, the process list and the limits. Separate services cost none 
   hosts and ssh_config), and runners share nothing they can write. A second runner would still need a rule for
   which runs may overlap (one run per inventory at a time is the simplest that keeps today's guarantee), a queue
   display that says which runner a run is on, limits sized for the sum, and another service with its own user,
-  group and socket volume.
+  group and socket volume. Runners that take one job at a time and clean up after it would give every job a
+  container to itself, which is what two jobs at the same time lack today.
 
 ## Unverified
 
@@ -248,3 +289,16 @@ and shares `/tmp`, the process list and the limits. Separate services cost none 
 
 Verified while building: a tmpfs named volume with uid, gid and mode is shared between containers, and
 `SO_PEERCRED` reports the app's uid across them (Docker 29.5.2). Ansible runs from a read-only commit directory.
+
+Measured on 21 Nov 2026 under the compose file's hardening (Docker 29.5.2, `ptrace_scope` 1):
+
+- One `kill(-1, SIGKILL)` from the worker ended 100 processes in 12 ms: a daemon in its own session that
+  ignores TERM, and a fork bomb at the process limit. Only PID 1 and the worker were left, and nothing came back.
+- A process of the same user read the worker's environment and list of open files. After the worker marked
+  itself not dumpable, both were refused, and its memory too.
+- `unshare` of a user or a process namespace was refused (`EPERM`), so a namespace per job is not available.
+- The runner's user can create a file in `/tmp`, `/home/runner`, `/dev/shm`, `/dev/mqueue` and `/run/runner`,
+  and nowhere else.
+- A vars plugin left in `~/.ansible/plugins/vars` ran in a later `ansible-inventory` started in another
+  directory, and a `~/.ansible.cfg` left there was obeyed. Staying needed no process, only a file.
+- A tree 3000 directories deep on tmpfs was emptied in 0.3 s.
