@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -92,3 +93,18 @@ def test_hosts_and_groups_are_full_width_lists_and_detail_pages_have_breadcrumbs
     group = c.get("/inventory/groups/web").text
     assert 'href="/inventory/groups">Groups</a>' in group and '<span class="mono" aria-current="page">web</span>' in group
     assert "data-rail-toggle" in page
+
+
+@needs_ansible
+def test_whole_file_vaulted_values_never_reach_a_page(tmp_path):
+    from test_attribution import vaulted_file_project
+    project = vaulted_file_project(tmp_path)
+    c = TestClient(create_app(Settings(project_dir=project, inventory=["inventory/hosts.ini"], data_dir=tmp_path / "data",
+                                       vault_password_file=project / ".vault-pass")))
+    page = c.get("/inventory/hosts/db1").text
+    assert "S3CRET" not in page and "so its value isn’t shown" in page
+    assert page.count('<span class="badge badge-neutral">vaulted</span>') == 2
+    # The launcher notes what the inventory already sets on the targeted hosts: not these either.
+    assert "S3CRET" not in c.get("/runs/new", params={"playbook": "site.yml", "target": "db1"}).text
+    assert c.get("/openapi.json").status_code == 404
+

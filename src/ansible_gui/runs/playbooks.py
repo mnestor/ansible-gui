@@ -22,7 +22,7 @@ _AnyTagLoader.add_multi_constructor("!", lambda loader, suffix, node: None)
 
 def _is_playbook(path: Path) -> bool:
     try:
-        data = yaml.load(path.read_text(), Loader=_AnyTagLoader)  # noqa: S506 - SafeLoader subclass
+        data = yaml.load(path.read_text(), Loader=_AnyTagLoader)  # noqa: S506 - SafeLoader subclass  # nosec B506
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return False
     if not isinstance(data, list) or not data:

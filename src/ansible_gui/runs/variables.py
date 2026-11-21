@@ -41,7 +41,7 @@ _Loader.add_multi_constructor("!", lambda loader, suffix, node: (
 
 def _load(path: Path):
     try:
-        return yaml.load(path.read_text(), Loader=_Loader)  # noqa: S506 - SafeLoader subclass
+        return yaml.load(path.read_text(), Loader=_Loader)  # noqa: S506 - SafeLoader subclass  # nosec B506
     except (OSError, yaml.YAMLError, UnicodeDecodeError):
         return None
 
@@ -270,7 +270,7 @@ def _convert(p: Prompt, raw) -> tuple[object, str | None]:
         return [line.strip() for line in text.splitlines() if line.strip()], None
     if p.kind == "dict":
         try:
-            value = yaml.load(text, Loader=_Loader)  # noqa: S506
+            value = yaml.load(text, Loader=_Loader)  # noqa: S506  # nosec B506
         except (yaml.YAMLError, RecursionError):
             value = None
         if not isinstance(value, dict):
@@ -382,7 +382,7 @@ def check_freeform(text: str) -> tuple[dict, str | None]:
     if len(text) > MAX_FREEFORM:
         return {}, f"Keep extra variables under {MAX_FREEFORM:,} characters; put more in a vars file in the repository."
     try:
-        data = yaml.load(text, Loader=_Loader)  # noqa: S506
+        data = yaml.load(text, Loader=_Loader)  # noqa: S506  # nosec B506
     except (yaml.YAMLError, RecursionError) as e:
         mark = getattr(e, "problem_mark", None)
         where = f" on line {mark.line + 1}" if mark else ""

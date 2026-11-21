@@ -222,7 +222,7 @@ class RunStore:
                 fields[key] = json.dumps(fields[key])
         cols = ", ".join(f"{k}=?" for k in fields)
         with self._lock:
-            self._db.execute(f"update runs set {cols} where id=?", (*fields.values(), run_id))  # noqa: S608 - keys are ours
+            self._db.execute(f"update runs set {cols} where id=?", (*fields.values(), run_id))  # noqa: S608 - keys are ours  # nosec B608
             self._db.commit()
 
     def get(self, run_id: int) -> Run | None:
@@ -245,12 +245,12 @@ class RunStore:
         done = ",".join(f"'{s}'" for s in sorted(FINISHED))
         with self._lock:
             ids = [r["id"] for r in self._db.execute(
-                f"select id from runs where status in ({done}) and finished_at is not null and finished_at < ?"  # noqa: S608
+                f"select id from runs where status in ({done}) and finished_at is not null and finished_at < ?"  # noqa: S608  # nosec B608
                 f" and id not in (select max(id) from runs where schedule_id is not null and status in ({done})"
                 " group by schedule_id)", (cutoff,))]
             for i in range(0, len(ids), 500):
                 chunk = ids[i:i + 500]
-                self._db.execute(f"delete from runs where id in ({','.join('?' * len(chunk))})", chunk)  # noqa: S608
+                self._db.execute(f"delete from runs where id in ({','.join('?' * len(chunk))})", chunk)  # noqa: S608  # nosec B608
             self._db.commit()
         for run_id in ids:
             shutil.rmtree(self.data_dir / "runs" / str(run_id), ignore_errors=True)

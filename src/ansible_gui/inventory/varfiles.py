@@ -54,7 +54,7 @@ def load(path: Path) -> VarFile:
         vf.encrypted = True
         return vf
     try:
-        data = yaml.load(text, Loader=_Loader)  # noqa: S506 - SafeLoader subclass
+        data = yaml.load(text, Loader=_Loader)  # noqa: S506 - SafeLoader subclass  # nosec B506
         node = yaml.compose(text, Loader=_Loader)
     except yaml.YAMLError as e:
         vf.error = f"invalid YAML: {e}"

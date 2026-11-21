@@ -5,3 +5,6 @@ __pycache__/
 data/
 .coverage
 htmlcov/
+# What deploy/docker-compose.yml asks for next to it: the OIDC client secret and the master key.
+app.env
+secret.key

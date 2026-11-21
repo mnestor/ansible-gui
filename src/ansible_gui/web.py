@@ -206,7 +206,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await run_in_threadpool(executor.shutdown)
 
     https = bool(settings.public_url and settings.public_url.startswith("https://"))
-    app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None, lifespan=lifespan)
+    # No API description either: the pages are the interface, and /openapi.json would list every route.
+    app = FastAPI(title="ansible-gui", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     # Starlette runs the last-added middleware first: the session must exist before the gate looks at it.
     app.add_middleware(auth.Gate, settings=settings, sessions=sessions)
     app.add_middleware(SessionMiddleware, secret_key=keys.session_secret, session_cookie="ansible_gui",

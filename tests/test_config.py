@@ -6,7 +6,8 @@ from ansible_gui.config import Settings
 from ansible_gui.web import check_bind
 
 OIDC = {"ANSIBLE_GUI_OIDC_ISSUER": "https://id.example.test", "ANSIBLE_GUI_OIDC_CLIENT_ID": "agui",
-        "ANSIBLE_GUI_OIDC_CLIENT_SECRET": "s3cret", "ANSIBLE_GUI_OIDC_GROUPS": "ansible_admins"}
+        "ANSIBLE_GUI_OIDC_CLIENT_SECRET": "s3cret", "ANSIBLE_GUI_OIDC_GROUPS": "ansible_admins",
+        "ANSIBLE_GUI_PUBLIC_URL": "https://ansible.example.test"}
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +43,14 @@ def test_issuer_without_allowed_groups_refuses_to_start(monkeypatch):
         Settings.from_env()
 
 
+def test_sign_in_needs_the_public_url(monkeypatch):
+    """The provider sends people back to <public url>/auth/callback, and the session cookie is marked Secure
+    when that URL is https. Neither is left to be worked out from each request's own headers."""
+    env(monkeypatch, **{k: v for k, v in OIDC.items() if k != "ANSIBLE_GUI_PUBLIC_URL"})
+    with pytest.raises(SystemExit, match="ANSIBLE_GUI_OIDC_ISSUER is set, so ANSIBLE_GUI_PUBLIC_URL is needed too"):
+        Settings.from_env()
+
+
 def test_client_secret_can_come_from_a_file(monkeypatch, tmp_path):
     secret = tmp_path / "client-secret"
     secret.write_text("from-file\n")
@@ -69,26 +78,23 @@ def test_no_sign_in_only_listens_on_loopback(monkeypatch):
 
 
 def test_sign_in_may_listen_anywhere(monkeypatch):
-    env(monkeypatch, **OIDC, ANSIBLE_GUI_PUBLIC_URL="https://ansible.example.test")
+    env(monkeypatch, **OIDC)
     check_bind(Settings.from_env(), "0.0.0.0", insecure_ok=False)
 
 
 def test_beyond_loopback_needs_the_name_people_use(monkeypatch):
     """Requests are answered only when addressed to this machine or to the public URL's host, so without
     a public URL nothing beyond loopback could reach a page: refuse at start, and say what to set."""
-    env(monkeypatch, **OIDC)
-    s = Settings.from_env()
+    s = Settings.from_env()  # no sign-in, so only a proxy in front (insecure_ok) could make it listen further
     assert {"127.0.0.1", "localhost", "::1"} <= s.allowed_hosts and "ansible.example.test" not in s.allowed_hosts
-    check_bind(s, "127.0.0.1", insecure_ok=False)
+    check_bind(s, "127.0.0.1", insecure_ok=True)
     for host in ("0.0.0.0", "::", "192.0.2.10"):
         with pytest.raises(SystemExit, match=f"Refusing to listen on {host} without ANSIBLE_GUI_PUBLIC_URL"):
-            check_bind(s, host, insecure_ok=False)
-    with pytest.raises(SystemExit, match="without ANSIBLE_GUI_PUBLIC_URL"):
-        check_bind(s, "0.0.0.0", insecure_ok=True)
+            check_bind(s, host, insecure_ok=True)
     env(monkeypatch, ANSIBLE_GUI_PUBLIC_URL="https://Ansible.Example.test:8443/")
     s = Settings.from_env()
     assert s.public_url == "https://Ansible.Example.test:8443" and "ansible.example.test" in s.allowed_hosts
-    check_bind(s, "0.0.0.0", insecure_ok=False)
+    check_bind(s, "0.0.0.0", insecure_ok=True)
 
 
 @pytest.mark.parametrize("header, name", [

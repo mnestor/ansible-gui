@@ -115,6 +115,17 @@ def test_the_public_urls_host_is_answered_and_says_so_to_others(tmp_path):
     assert r.headers["x-frame-options"] == "DENY" and "other.example.test" not in r.text
 
 
+def test_the_session_cookie_is_secure_when_the_public_url_is_https(tmp_path):
+    """Sign-in can't be configured without a public URL (test_config), so this is never left to the request."""
+    app = create_app(settings(tmp_path, public_url="https://ansible.example.test"))
+    app.state.oauth.oidc = FakeOIDC({"sub": "1", "preferred_username": "mike", "groups": ["admins"]})
+    c = TestClient(app, base_url="https://ansible.example.test")
+    r = c.get("/auth/login", follow_redirects=False)
+    cookie = r.headers["set-cookie"].lower()
+    assert "secure" in cookie and "httponly" in cookie and "samesite=lax" in cookie
+    assert r.headers["strict-transport-security"] == "max-age=31536000"
+
+
 def test_runs_record_who_started_them(tmp_path):
     app = create_app(settings(tmp_path))
     c = signed_in_client(app, {"sub": "1", "preferred_username": "mike", "groups": ["admins"]})

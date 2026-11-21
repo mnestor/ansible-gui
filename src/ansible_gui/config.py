@@ -82,6 +82,12 @@ class Settings:
         if public and not (is_web_url(public) and urlsplit(public).hostname):
             raise SystemExit("ANSIBLE_GUI_PUBLIC_URL must be the address people use, starting with https:// or "
                              "http://, like https://ansible.example.com.")
+        if issuer and not public:
+            # Otherwise both would be worked out per request: the address the provider sends people back to,
+            # and whether the session cookie is marked Secure (it is when this starts with https://).
+            raise SystemExit("ANSIBLE_GUI_OIDC_ISSUER is set, so ANSIBLE_GUI_PUBLIC_URL is needed too: the address "
+                             "people use, like https://ansible.example.com. The provider sends them back to "
+                             "<that address>/auth/callback.")
         host_keys = os.environ.get("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING", "accept-new").strip().lower()
         if host_keys not in HOST_KEY_CHECKING:
             raise SystemExit("ANSIBLE_GUI_SSH_HOST_KEY_CHECKING must be yes, accept-new or no.")

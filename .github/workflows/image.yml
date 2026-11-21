@@ -3,7 +3,7 @@
 #   tag v1.2.3        -> :1.2.3, :1.2, :latest
 #   tag v0.1.0-dev    -> :0.1.0-dev only (a pre-release never moves :latest)
 #   pull request      -> tests, a build and the smoke test, nothing pushed
-# Nothing is pushed unless the tests, the dependency audit and deploy/smoke-test.sh pass.
+# Nothing is pushed unless the tests, the audit (dependencies and Bandit) and deploy/smoke-test.sh pass.
 # Actions are pinned to commit SHAs and base images to digests; .github/dependabot.yml proposes updates.
 name: image
 
@@ -63,6 +63,10 @@ jobs:
         run: |
           uv export --frozen --no-dev --group ansible --no-emit-project --format requirements-txt -o requirements.txt
           uvx --python 3.12 --from pip-audit==2.10.1 pip-audit --strict --disable-pip -r requirements.txt
+      # What anyone pointing Bandit at the repository would be shown first. The lines it would flag at this
+      # level (yaml.load with a SafeLoader subclass, SQL built from our own column names) carry "# nosec".
+      - name: Static analysis of ansible-gui's own code (medium severity and up)
+        run: uvx --python 3.12 --from bandit==1.9.4 bandit -q -r src -ll
 
   image:
     needs: [test, audit]

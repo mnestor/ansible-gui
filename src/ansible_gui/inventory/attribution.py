@@ -5,6 +5,11 @@ rebuilds the merge layer by layer in Ansible's default precedence order
 (VARIABLE_PRECEDENCE), then checks every final value against what
 ansible-inventory itself reports. Any disagreement is flagged, never hidden:
 the value shown is always Ansible's.
+
+One kind of value is never shown: with a vault password file, ansible-inventory
+decrypts whole-file vaulted vars files, so what it reports for their variables
+is the secret itself. A value that probably comes from such a file is shown as
+vaulted, like an inline !vault value, with a note naming the file.
 """
 
 from __future__ import annotations
@@ -27,6 +32,11 @@ NOT_IN_ANSIBLE = "This file sets it, but Ansible does not report it for this hos
 VALUE_DIFFERS = (
     "Ansible resolves a different value than the source shown. The value shown is "
     "Ansible's; the source may be wrong."
+)
+IN_ENCRYPTED_FILE = "Probably set in an encrypted file ({files}), so its value isn’t shown."
+UNDER_ENCRYPTED_FILE = (
+    "Ansible resolves a different value than the source shown, probably from an encrypted "
+    "file that outranks it ({files}), so the value isn’t shown."
 )
 
 
@@ -213,16 +223,24 @@ def build(
                 line = source_text.host_var_line(layer.host or "", key)
         return Layer(layer.kind, layer.path, layer.group, layer.host, layer.scope, line)
 
-    def merge(ordered: list[tuple[Layer, dict, dict]]) -> tuple[dict[str, list[Setting]], list[Layer]]:
+    def merge(ordered: list[tuple[Layer, dict, dict]]) -> tuple[dict[str, list[Setting]], list[Layer], dict[str, int]]:
+        """Every setting of each variable, lowest precedence first; the encrypted files, whose variables
+        can't be read; and for each variable how many of those files rank below its winning setting
+        (the others outrank it, and may be what Ansible actually uses)."""
         track: dict[str, list[Setting]] = {}
         encrypted: list[Layer] = []
+        below: dict[str, int] = {}
         for layer, values, lines in ordered:
             if lines.get("__encrypted__"):
                 encrypted.append(layer)
                 continue
             for k, v in values.items():
                 track.setdefault(k, []).append(Setting(with_line(layer, k, lines), v))
-        return track, encrypted
+                below[k] = len(encrypted)
+        return track, encrypted, below
+
+    def files(layers: list[Layer]) -> str:
+        return ", ".join(l.path or "" for l in layers)
 
     # --- hosts -------------------------------------------------------------
     truth_vars = truth.get("_meta", {}).get("hostvars", {})
@@ -261,16 +279,15 @@ def build(
         for b in play_basedirs:
             layers += file_layers("host_vars", h, "host_vars", "playbook", b, host=h)
 
-        track, encrypted = merge(layers)
+        track, encrypted, below = merge(layers)
         actual = _devault(truth_vars.get(h, {}))
         resolved: list[ResolvedVar] = []
         for key in sorted(set(track) | set(actual)):
             settings = track.get(key, [])
             if not settings:
-                note = NOT_FROM_REPO
-                if encrypted:
-                    note = "Probably set in an encrypted file: " + ", ".join(l.path or "" for l in encrypted)
-                value = actual[key]
+                value, note = actual[key], NOT_FROM_REPO
+                if encrypted:  # ansible-inventory decrypted it: what it reports is the secret
+                    value, note = VAULTED, IN_ENCRYPTED_FILE.format(files=files(encrypted))
                 resolved.append(ResolvedVar(key, value, Layer("unknown", None), [], note))
                 continue
             winner = settings[-1]
@@ -280,6 +297,9 @@ def build(
             truth_value = actual[key]
             value = VAULTED if winner.value is VAULTED else truth_value
             mismatch = None if _same(winner.value, truth_value) else VALUE_DIFFERS
+            outranking = encrypted[below[key]:]
+            if mismatch and outranking:  # a readable file sets it, and an encrypted one above it sets it again
+                value, mismatch = VAULTED, UNDER_ENCRYPTED_FILE.format(files=files(outranking))
             resolved.append(ResolvedVar(key, value, winner.layer, settings[:-1], mismatch))
         hosts[h] = Host(h, direct, ["all", *ordered_groups], resolved)
 
@@ -287,7 +307,7 @@ def build(
     groups: dict[str, Group] = {}
     for g in sorted(children):
         ordered = [l for _, ls in group_layers(g) for l in ls]
-        track, _ = merge(ordered)
+        track, _, _ = merge(ordered)
         own = [
             ResolvedVar(k, s[-1].value, s[-1].layer, s[:-1])
             for k, s in sorted(track.items())

@@ -20,7 +20,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_PROJECT_DIR` | none | A local checkout used as inventory and playbooks. A git repository of the same role on the Repositories page replaces it |
 | `ANSIBLE_GUI_INVENTORY` | `inventory` | Inventory source(s), comma-separated, relative to the project dir |
 | `ANSIBLE_GUI_PLAYBOOK_DIR` | `.` | Where playbook-adjacent `group_vars/` and `host_vars/` live |
-| `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted |
+| `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted. Its variables are shown as vaulted, never their values |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}`. Must be `https://` or `http://` |
 | `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, git clones. Made 0700 at start, and everything written in it is private to the server's user |
 | `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
@@ -30,7 +30,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_OIDC_ISSUER` | none | OIDC issuer URL, e.g. `https://id.example.com` (Pocket ID). Turns on sign-in |
 | `ANSIBLE_GUI_OIDC_CLIENT_ID`, `ANSIBLE_GUI_OIDC_CLIENT_SECRET` (or `_FILE`) | | The OIDC client. Redirect URI: `<public url>/auth/callback` |
 | `ANSIBLE_GUI_OIDC_GROUPS` | required with OIDC | Comma-separated groups allowed in (`groups` claim), or `*` for anyone the provider signs in |
-| `ANSIBLE_GUI_PUBLIC_URL` | required beyond loopback | The address people use, e.g. `https://ansible.example.com`. Besides `localhost`, its host is the only name requests may be addressed to; also used for the redirect URI, the same-origin check and secure cookies |
+| `ANSIBLE_GUI_PUBLIC_URL` | required with sign-in, and beyond loopback | The address people use, e.g. `https://ansible.example.com`. Besides `localhost`, its host is the only name requests may be addressed to; also used for the redirect URI, the same-origin check and secure cookies |
 | `ANSIBLE_GUI_SMTP_HOST` | none | Mail server for notifications. Turns email on |
 | `ANSIBLE_GUI_SMTP_PORT`, `ANSIBLE_GUI_SMTP_TLS` | `587`, `starttls` | `TLS` is `starttls`, `ssl` (port 465) or `none` (port 25) |
 | `ANSIBLE_GUI_SMTP_USERNAME`, `ANSIBLE_GUI_SMTP_PASSWORD` (or `_FILE`) | | SMTP login, if the server wants one |
@@ -232,6 +232,8 @@ this server to.
 Credentials are encrypted with a key derived from `ANSIBLE_GUI_SECRET_KEY`, which belongs outside `data/`. Nothing
 under `data/` holds a secret in plain text: runs get theirs in a temp directory that is wiped afterwards, by the
 server as it stops, or by the next start if it was killed.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Tests
 
