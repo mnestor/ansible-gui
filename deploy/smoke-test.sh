@@ -36,7 +36,7 @@ try: sys.stdout.write(str(urllib.request.urlopen(req, timeout=4).status))
 except urllib.error.HTTPError as e: sys.stdout.write(str(e.code))"; }
 for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && break; sleep 1; done
 [ "$(get /healthz)" = 200 ] || fail "/healthz never answered"
-for page in / /inventory /runs /runs/new /schedules /repos /credentials; do
+for page in / /inventory /runs /runs/new /schedules /repos /credentials /static/app.css /static/htmx.min.js; do
   [ "$(get "$page")" = 200 ] || fail "$page didn't return 200"
 done
 
@@ -63,9 +63,26 @@ for tool in ssh-keygen ssh-agent ssh-add; do
   docker exec "$name" sh -c "command -v $tool" >/dev/null || fail "$tool missing"
 done
 # For playbooks' local tasks; the image is Alpine, whose own sh and tar are BusyBox's.
+# (grep without -q, here and below: -q stops reading at the first match, and under pipefail a docker exec
+# still writing the rest of its output then fails the line.)
 docker exec "$name" bash -c 'set -o pipefail; echo ok | grep -q ok' || fail "bash missing"
-docker exec "$name" tar --version | grep -q "GNU tar" || fail "tar isn't GNU tar"
+docker exec "$name" tar --version | grep "GNU tar" >/dev/null || fail "tar isn't GNU tar"
 docker exec "$name" python -c "import ansible" 2>/dev/null && echo "  (ansible-core is importable in the venv, as expected; the app never imports it)"
+
+echo "- carries nothing it has no use for"
+docker exec "$name" sh -c 'command -v pip || command -v pip3 || command -v uv' >/dev/null && fail "an installer is in the image"
+docker exec "$name" python -c "import pip" 2>/dev/null && fail "pip is importable"
+docker exec "$name" python -c "import ensurepip" 2>/dev/null && fail "ensurepip is importable"
+[ "$(docker exec "$name" sh -c 'ls -A /app | sort | tr "\n" " "')" = ".venv LICENSE " ] \
+  || fail "/app holds more than the venv and the license"
+for pkg in krb5-libs libtirpc libnsl tcl tk; do
+  docker exec "$name" apk info -e "$pkg" >/dev/null 2>&1 && fail "$pkg is installed, and nothing here uses it"
+done
+docker exec "$name" python -c "import websockets" 2>/dev/null && fail "websockets is installed: uvicorn[standard] is back?"
+# What was removed took no library a remaining module needs, and the server keeps its fast loop and parser.
+docker exec "$name" python -c "import sqlite3, ssl, hashlib, ctypes, readline, curses, dbm.gnu, bz2, lzma, zlib, uuid" \
+  || fail "a Python module lost its library"
+docker exec "$name" python -c "import uvloop, httptools, cryptography.fernet, yaml" || fail "a compiled package doesn't load"
 
 echo "- runs hardened: read-only root, no capabilities, no new privileges"
 docker rm -f "$name" >/dev/null
@@ -74,10 +91,10 @@ for _ in $(seq 60); do [ "$(get /healthz 2>/dev/null)" = 200 ] && break; sleep 1
 [ "$(get /credentials)" = 200 ] || fail "hardened: /credentials didn't return 200"
 docker exec "$name" grep -q "^CapEff:[[:space:]]*0000000000000000" /proc/1/status || fail "hardened: capabilities left"
 docker exec "$name" ansible localhost -c local -m setup -a filter=ansible_distribution \
-  -e ansible_python_interpreter=/app/.venv/bin/python | grep -q '"Alpine"' || fail "hardened: a local Ansible task failed"
+  -e ansible_python_interpreter=/app/.venv/bin/python | grep '"Alpine"' >/dev/null || fail "hardened: a local Ansible task failed"
 docker exec "$name" ansible localhost -c local -m ansible.builtin.shell \
   -a 'set -o pipefail && echo "bash $BASH_VERSION" | cat executable=/bin/bash' \
-  -e ansible_python_interpreter=/app/.venv/bin/python | grep -q '^bash [0-9]' || fail "hardened: a local bash task failed"
+  -e ansible_python_interpreter=/app/.venv/bin/python | grep '^bash [0-9]' >/dev/null || fail "hardened: a local bash task failed"
 docker exec "$name" sh -c 'eval "$(ssh-agent -s -a /tmp/smoke-agent.sock)" >/dev/null && ssh-agent -k >/dev/null' \
   || fail "hardened: ssh-agent didn't start"
 

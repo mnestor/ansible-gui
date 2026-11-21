@@ -55,6 +55,10 @@ listens on 8080 with data in `/data`. It refuses to start without sign-in: set t
 `ANSIBLE_GUI_PUBLIC_URL`, the one name besides `localhost` it answers to. `GET /healthz` backs the healthcheck and
 answers under any name.
 
+It holds what a run needs and little else: the Python packages in `uv.lock` in one venv, with no pip or other
+installer, no source tree, and none of the base image's Python parts that have no use here (IDLE and tkinter,
+and the NIS client with the Kerberos libraries it brought along). `deploy/smoke-test.sh` checks that they stay out.
+
 Tasks a playbook runs on the controller (`delegate_to: localhost`, `connection: local`) run in this image: it has
 bash and GNU tar for them, and otherwise BusyBox's tools and musl rather than glibc. A playbook that calls a
 program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it. `deploy/` has a compose file and an env template for docker01. The compose file runs it with a

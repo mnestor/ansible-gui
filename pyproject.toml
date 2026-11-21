@@ -15,12 +15,16 @@ dependencies = [
     "croniter>=7.0.0",
     "cryptography>=50.0.2",
     "fastapi>=0.163.1",
+    "httptools>=0.9.0",
     "httpx>=0.28.1",
     "itsdangerous>=2.2.0",
     "jinja2>=3.1.6",
     "python-multipart>=0.0.34",
     "pyyaml>=6.0.3",
-    "uvicorn[standard]>=0.54.0",
+    # uvicorn with the two parts of uvicorn[standard] it uses here, the HTTP parser and the event loop.
+    # The rest of that extra (websockets, watchfiles, python-dotenv) is for things ansible-gui doesn't do.
+    "uvicorn>=0.54.0",
+    "uvloop>=0.23.0; sys_platform != 'win32'",
 ]
 
 [project.scripts]

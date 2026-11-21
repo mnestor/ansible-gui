@@ -14,7 +14,9 @@ COPY pyproject.toml uv.lock README.md LICENSE ./
 # Every compiled package in it has a musl wheel, so nothing is built here.
 RUN uv sync --frozen --no-dev --group ansible --no-install-project
 COPY src ./src
-RUN uv sync --frozen --no-dev --group ansible
+# ansible-gui itself goes into the venv as a package, not as a link back to /app/src:
+# the venv is all the next stage takes, so the image holds no source tree, lock file or uv.
+RUN uv sync --frozen --no-dev --group ansible --no-editable
 
 FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
 LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later"
@@ -22,11 +24,28 @@ ARG UID=10001
 # apk upgrade: the fixes Alpine has published since the base image was built.
 # bash and GNU tar are for playbooks, not for ansible-gui: tasks that run on the controller
 # (delegate_to: localhost) with `executable: /bin/bash`, and unarchive, which wants GNU tar where BusyBox's is.
+#
+# Then the parts of the base image's Python nothing here can use:
+# - pip and ensurepip: the venv is complete, and nothing is installed into a running container;
+# - IDLE, tkinter and turtle (there is no Tk) and lib2to3;
+# - the nis module, the only thing that needs libnsl, libtirpc and the Kerberos libraries behind them.
+# The base image notes the libraries its Python links against as .python-rundeps. They are noted again, the
+# same way, without the modules removed, and the old note is dropped: the libraries nothing needs go with it.
 RUN apk upgrade --no-cache \
  && apk add --no-cache git openssh-client tini ca-certificates bash tar \
+ && cd /usr/local/lib/python3.12 \
+ && rm -rf site-packages/pip site-packages/pip-*.dist-info ensurepip idlelib tkinter turtledemo turtle.py lib2to3 \
+           __pycache__/turtle.* lib-dynload/_tkinter.*.so lib-dynload/nis.*.so \
+ && rm -f /usr/local/bin/pip* /usr/local/bin/idle* /usr/local/bin/2to3* \
+ && find /usr/local -type f -executable -exec scanelf --needed --nobanner --format '%n#p' '{}' ';' \
+      | tr ',' '\n' | sort -u \
+      | awk 'system("[ -e /usr/local/lib/" $1 " ]") == 0 { next } { print "so:" $1 }' \
+      | xargs -rt apk add --no-network --virtual .ansible-gui-python-rundeps \
+ && apk del --no-network .python-rundeps \
  && adduser -D -u "$UID" -h /home/app -s /sbin/nologin app \
  && mkdir /data && chown app:app /data && chmod 700 /data
-COPY --from=build /app /app
+COPY --from=build /app/.venv /app/.venv
+COPY LICENSE /app/LICENSE
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     ANSIBLE_GUI_HOST=0.0.0.0 \
