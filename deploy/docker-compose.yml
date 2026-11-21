@@ -18,12 +18,11 @@
 #      ./data that Docker creates is owned by root and the app can't write to it).
 
 x-hardened: &hardened
-  # NOT YET THE RIGHT TAG. The runner below is started with --clean-between-jobs, which sha-8c42c40 doesn't
-  # know: its runner exits at start, naming the argument. Put here the tag CI publishes for the commit that
-  # added the flag, or a later one.
-  # Images before 8c42c40 don't know `ansible-gui worker` at all. They start the web app in all three
-  # containers, and the app then runs git and Ansible itself, beside every secret.
-  image: ghcr.io/mnestor/ansible-gui:sha-8c42c40
+  # An image from a66da07 on. The runner below is started with --clean-between-jobs, which earlier images don't
+  # know: their runner exits at start, naming the argument. Images before 8c42c40 don't know `ansible-gui worker`
+  # at all: they start the web app in all three containers, and the app then runs git and Ansible itself,
+  # beside every secret.
+  image: ghcr.io/mnestor/ansible-gui:sha-a66da07
   restart: unless-stopped
   # Only the volumes are writable, and nothing in a container can gain privileges. deploy/smoke-test.sh runs a
   # playbook under exactly this and checks what it can't reach.
