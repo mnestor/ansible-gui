@@ -5,15 +5,16 @@
 set -euo pipefail
 image=${1:?usage: smoke-test.sh IMAGE}
 name=agui-smoke-$$
-worker=agui-smoke-worker-$$ sock=agui-smoke-sock-$$ repos=agui-smoke-repos-$$
+fetcher=agui-smoke-fetcher-$$ runner=agui-smoke-runner-$$ repos=agui-smoke-repos-$$
+fsock=agui-smoke-fsock-$$ rsock=agui-smoke-rsock-$$
 fail() {
   echo "FAIL: $*" >&2
-  for c in "$name" "$worker"; do docker logs "$c" 2>&1 | tail -20 | sed "s/^/$c: /" >&2 || true; done
+  for c in "$name" "$fetcher" "$runner"; do docker logs "$c" 2>&1 | tail -20 | sed "s/^/$c: /" >&2 || true; done
   exit 1
 }
 cleanup() {
-  docker rm -f "$name" "$worker" >/dev/null 2>&1 || true
-  docker volume rm "$sock" "$repos" >/dev/null 2>&1 || true
+  docker rm -f "$name" "$fetcher" "$runner" >/dev/null 2>&1 || true
+  docker volume rm "$fsock" "$rsock" "$repos" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 # The hardening deploy/docker-compose.yml applies; the last check runs the image under it.
@@ -116,38 +117,46 @@ docker exec "$name" ansible localhost -c local -m ansible.builtin.shell \
 docker exec "$name" sh -c 'eval "$(ssh-agent -s -a /tmp/smoke-agent.sock)" >/dev/null && ssh-agent -k >/dev/null' \
   || fail "hardened: ssh-agent didn't start"
 
-echo "- runs split: the worker runs a hostile playbook, and reaches none of the app's secrets"
+echo "- runs split: the runner runs a hostile playbook, and reaches none of the app's secrets or the clones"
 docker rm -f "$name" >/dev/null
 docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
-  --opt o=uid=10002,gid=10010,mode=0750 "$sock" >/dev/null
-docker volume create "$repos" >/dev/null   # filled from the image's /repos: owned by the worker, 0755
-docker run -d --name "$worker" --user 10002:10010 --read-only --tmpfs /tmp:size=512m \
-  --tmpfs /home/fetcher:size=64m,uid=10002,gid=10010,mode=0700 --cap-drop ALL \
-  --security-opt no-new-privileges:true --pids-limit 512 --memory 1536m --cpus 2 \
-  --health-cmd "test -S /run/worker/worker.sock" \
-  -e ANSIBLE_GUI_REPOS_DIR=/repos -e ANSIBLE_HOME=/home/fetcher/.ansible \
-  -v "$repos:/repos" -v "$sock:/run/worker" \
-  "$image" ansible-gui worker --socket /run/worker/worker.sock --allow-uid 10001 >/dev/null
-for _ in $(seq 30); do docker exec "$worker" test -S /run/worker/worker.sock 2>/dev/null && break; sleep 1; done
-docker exec "$worker" test -S /run/worker/worker.sock || fail "split: the worker never opened its socket"
-[ "$(docker exec "$worker" stat -c %a /run/worker/worker.sock)" = 660 ] || fail "split: the socket isn't 0660"
-docker run -d --name "$name" "${HARDENED[@]}" "${RUN[@]}" --group-add 10010 \
-  -e ANSIBLE_GUI_REPOS_DIR=/repos -e ANSIBLE_GUI_FETCHER_SOCKET=/run/worker/worker.sock \
-  -e ANSIBLE_GUI_RUNNER_SOCKET=/run/worker/worker.sock -v "$repos:/repos:ro" -v "$sock:/run/worker" \
-  "$image" >/dev/null
+  --opt o=uid=10002,gid=10010,mode=0750 "$fsock" >/dev/null
+docker volume create --driver local --opt type=tmpfs --opt device=tmpfs \
+  --opt o=uid=10003,gid=10011,mode=0750 "$rsock" >/dev/null
+docker volume create "$repos" >/dev/null   # filled from the image's /repos: owned by the fetcher, 0755
+WORKER=(--read-only --tmpfs /tmp:size=512m --cap-drop ALL --security-opt no-new-privileges:true
+        --pids-limit 512 --memory 1536m --cpus 2 -e ANSIBLE_GUI_REPOS_DIR=/repos)
+docker run -d --name "$fetcher" "${WORKER[@]}" --user 10002:10010 \
+  --tmpfs /home/fetcher:size=64m,uid=10002,gid=10010,mode=0700 -e ANSIBLE_HOME=/home/fetcher/.ansible \
+  --health-cmd "test -S /run/fetcher/fetcher.sock" -v "$repos:/repos" -v "$fsock:/run/fetcher" \
+  "$image" ansible-gui worker --jobs fetcher --socket /run/fetcher/fetcher.sock --allow-uid 10001 >/dev/null
+docker run -d --name "$runner" "${WORKER[@]}" --user 10003:10011 \
+  --tmpfs /home/runner:size=64m,uid=10003,gid=10011,mode=0700 -e ANSIBLE_HOME=/home/runner/.ansible \
+  --health-cmd "test -S /run/runner/runner.sock" -v "$repos:/repos:ro" -v "$rsock:/run/runner" \
+  "$image" ansible-gui worker --jobs runner --socket /run/runner/runner.sock --allow-uid 10001 >/dev/null
+for w in fetcher runner; do
+  c=agui-smoke-$w-$$
+  for _ in $(seq 30); do docker exec "$c" test -S "/run/$w/$w.sock" 2>/dev/null && break; sleep 1; done
+  docker exec "$c" test -S "/run/$w/$w.sock" || fail "split: the $w never opened its socket"
+  [ "$(docker exec "$c" stat -c %a "/run/$w/$w.sock")" = 660 ] || fail "split: the $w socket isn't 0660"
+done
+docker run -d --name "$name" "${HARDENED[@]}" "${RUN[@]}" --group-add 10010 --group-add 10011 \
+  -e ANSIBLE_GUI_REPOS_DIR=/repos -e ANSIBLE_GUI_FETCHER_SOCKET=/run/fetcher/fetcher.sock \
+  -e ANSIBLE_GUI_RUNNER_SOCKET=/run/runner/runner.sock \
+  -v "$repos:/repos:ro" -v "$fsock:/run/fetcher" -v "$rsock:/run/runner" "$image" >/dev/null
 wait_healthy "split: "
 
-# A repository whose playbook reaches for what only the app has. Made in the worker's /tmp, so git there
-# trusts it; the app adds it by URL like any other.
-docker exec "$worker" sh -c 'git init -q -b main /tmp/src && mkdir /tmp/src/inventory'
-docker exec -i "$worker" sh -c 'cat > /tmp/src/inventory/hosts.yml' <<'YAML'
+# A repository whose playbook reaches for what only the app has, and for the clones. Made in the fetcher's
+# /tmp, so git there trusts it; the app adds it by URL like any other.
+docker exec "$fetcher" sh -c 'git init -q -b main /tmp/src && mkdir /tmp/src/inventory'
+docker exec -i "$fetcher" sh -c 'cat > /tmp/src/inventory/hosts.yml' <<'YAML'
 all:
   hosts:
     localhost:
       ansible_connection: local
       ansible_python_interpreter: /app/.venv/bin/python
 YAML
-docker exec -i "$worker" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
+docker exec -i "$fetcher" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
 - hosts: localhost
   gather_facts: false
   tasks:
@@ -157,12 +166,13 @@ docker exec -i "$worker" sh -c 'cat > /tmp/src/hostile.yml' <<'YAML'
         echo "KEY=$(r 'cat /run/secrets/ansible-gui-key')"
         echo "DB=$(r 'test -e /data/ansible-gui.db || test -e /data/secret.key')"
         echo "ENV=$(r 'cat /proc/[0-9]*/environ 2>/dev/null | tr "\000" "\n" | grep -q -e ANSIBLE_GUI_SECRET_KEY -e ANSIBLE_GUI_PUBLIC_URL')"
-        echo "REPOS=$(r 'touch /repos/hostile && rm /repos/hostile')"
+        echo "REPOS=$(r 'touch /repos/hostile || touch "$PWD/hostile"')"
+        echo "SOCKET=$(r 'test -e /run/fetcher/fetcher.sock')"
       register: reach
     - ansible.builtin.debug:
         msg: "{{ reach.stdout_lines | join(' ') }}"
 YAML
-docker exec "$worker" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm hostile'
+docker exec "$fetcher" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm hostile'
 # post PATH FORM: the status and Location of a POST from this app's own pages
 post() { docker exec "$name" python -c "
 import sys, urllib.request, urllib.error, urllib.parse
@@ -183,17 +193,15 @@ run=${out##*/runs/}
 log=/data/runs/$run/output.log
 for _ in $(seq 120); do docker exec "$name" grep -q "PLAY RECAP" "$log" 2>/dev/null && break; sleep 1; done
 docker exec "$name" grep -q "PLAY RECAP" "$log" || fail "split: the run never finished: $(docker exec "$name" cat "$log" 2>&1 | tail -5)"
-reach=$(docker exec "$name" grep -o 'KEY=[a-z]* DB=[a-z]* ENV=[a-z]* REPOS=[a-z]*' "$log" | head -1)
+reach=$(docker exec "$name" grep -o 'KEY=[a-z]* DB=[a-z]* ENV=[a-z]* REPOS=[a-z]* SOCKET=[a-z]*' "$log" | head -1)
 echo "  hostile playbook: $reach"
-case "$reach" in
-  "KEY=closed DB=closed ENV=closed "*) ;;
-  *) fail "split: the worker reached the app's secrets: $reach" ;;
-esac
-docker exec "$worker" sh -c 'ls -A /tmp' | grep agui- >/dev/null && fail "split: the run left its temp directory behind"
-# The socket takes jobs from the app's uid only: a playbook in the worker can't send one of its own.
-docker exec "$worker" python -c "
-import socket, json; s = socket.socket(socket.AF_UNIX); s.connect('/run/worker/worker.sock')
+[ "$reach" = "KEY=closed DB=closed ENV=closed REPOS=closed SOCKET=closed" ] \
+  || fail "split: the runner reached what it shouldn't: $reach"
+docker exec "$runner" sh -c 'ls -A /tmp' | grep agui- >/dev/null && fail "split: the run left its temp directory behind"
+# Each socket takes jobs from the app's uid only: a playbook in the runner can't send one of its own.
+docker exec "$runner" python -c "
+import socket, json; s = socket.socket(socket.AF_UNIX); s.connect('/run/runner/runner.sock')
 s.sendall(json.dumps({'kind': 'cli', 'job': {}}).encode() + b'\n'); print(s.makefile().readline())" \
-  | grep "takes jobs from uid 10001 only, not 10002" >/dev/null || fail "split: the worker's own uid was let in"
+  | grep "takes jobs from uid 10001 only, not 10003" >/dev/null || fail "split: the runner's own uid was let in"
 
 echo "smoke test passed"

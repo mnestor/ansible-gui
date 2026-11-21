@@ -2,10 +2,12 @@
 # (/homelab/docker01-stacks): ~/ansible-gui/, env in app.env (mode 600), its own
 # edge network, no host ports, Traefik on the LAN entrypoints only.
 #
-# Two containers from one image. The app holds every secret (the master key, the credential database,
-# the OIDC and SMTP secrets) and never runs code from a repository. The worker pulls the repositories and
-# runs Ansible: inventory plugins, previews, the settings report and runs. It gets one job at a time over a
-# Unix socket only the app may use, with only that job's credentials, and has nothing else to read.
+# Three containers from one image. The app holds every secret (the master key, the credential database,
+# the OIDC and SMTP secrets) and never runs code from a repository. The fetcher pulls the repositories and
+# installs their collections: it alone can write them, and it never runs them. The runner runs Ansible
+# (inventory plugins, previews, the settings report, runs) from a read-only mount of what the fetcher wrote.
+# Each worker gets one job at a time over its own Unix socket, which only the app may use, with only that
+# job's credentials, and has nothing else to read.
 #
 # Before the first `docker compose up -d`:
 #   1. Add the ansible-gui_edge network to ~/traefik/docker-compose.yml (next free 172.28.N.0/24).
@@ -33,15 +35,17 @@ services:
     env_file: app.env
     environment:
       ANSIBLE_GUI_REPOS_DIR: /repos
-      ANSIBLE_GUI_FETCHER_SOCKET: /run/worker/worker.sock
-      ANSIBLE_GUI_RUNNER_SOCKET: /run/worker/worker.sock
+      ANSIBLE_GUI_FETCHER_SOCKET: /run/fetcher/fetcher.sock
+      ANSIBLE_GUI_RUNNER_SOCKET: /run/runner/runner.sock
     group_add:
-      - "10010"                                            # the worker socket's group: the app may connect
+      - "10010"                                            # the fetcher socket's group
+      - "10011"                                            # the runner socket's group
     volumes:
       - ./data:/data
       - ./secret.key:/run/secrets/ansible-gui-key:ro
       - repos:/repos:ro                                    # lists playbooks, reads variables: never runs them
-      - worker-sock:/run/worker
+      - fetcher-sock:/run/fetcher
+      - runner-sock:/run/runner
     tmpfs:
       - /tmp:size=64m
       - /home/app:size=16m,uid=10001,gid=10001,mode=0700
@@ -49,7 +53,8 @@ services:
     mem_limit: 512m
     cpus: 1
     depends_on:
-      - worker
+      - fetcher
+      - runner
     networks:
       - edge                                               # Traefik in; Pocket ID and mail out
     labels:
@@ -59,39 +64,70 @@ services:
       - traefik.http.routers.ansible.entrypoints=web443,web443v6
       - traefik.http.services.ansible.loadbalancer.server.port=8080
 
-  worker:
+  fetcher:
     <<: *hardened
-    container_name: ansible-gui-worker
+    container_name: ansible-gui-fetcher
     user: "10002:10010"
-    command: ["ansible-gui", "worker", "--socket", "/run/worker/worker.sock", "--allow-uid", "10001"]
+    command: ["ansible-gui", "worker", "--jobs", "fetcher", "--socket", "/run/fetcher/fetcher.sock",
+              "--allow-uid", "10001"]
     environment:
       ANSIBLE_GUI_REPOS_DIR: /repos
       ANSIBLE_HOME: /home/fetcher/.ansible
     volumes:
       - repos:/repos                                       # bare clones, commit and collections directories
-      - worker-sock:/run/worker
+      - fetcher-sock:/run/fetcher
     tmpfs:
-      - /tmp:size=512m                                     # per-job keys, agent socket, ansible-runner
-      - /home/fetcher:size=64m,uid=10002,gid=10010,mode=0700   # ~/.ansible for local tasks, ssh's ~/.ssh
+      - /tmp:size=128m                                     # a pull's deploy key or token
+      - /home/fetcher:size=64m,uid=10002,gid=10010,mode=0700   # ansible-galaxy's cache
+    pids_limit: 256
+    mem_limit: 768m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/fetcher/fetcher.sock"]
+      interval: 30s
+      timeout: 5s
+    networks:
+      - edge                                               # the git server and Galaxy
+
+  runner:
+    <<: *hardened
+    container_name: ansible-gui-runner
+    user: "10003:10011"
+    command: ["ansible-gui", "worker", "--jobs", "runner", "--socket", "/run/runner/runner.sock",
+              "--allow-uid", "10001"]
+    environment:
+      ANSIBLE_GUI_REPOS_DIR: /repos
+      ANSIBLE_HOME: /home/runner/.ansible
+    volumes:
+      - repos:/repos:ro                                    # a playbook can't change what later runs run
+      - runner-sock:/run/runner
+    tmpfs:
+      - /tmp:size=512m                                     # per-run keys, agent socket, ansible-runner
+      - /home/runner:size=64m,uid=10003,gid=10011,mode=0700    # ~/.ansible for local tasks, ssh's ~/.ssh
     # A runaway playbook (a fork bomb in a local task, forks set too high) stops here, not at the rest of
     # docker01. The /tmp tmpfs counts against mem_limit. docker01 has 4 CPUs and 8 GB (2026-11-20).
     pids_limit: 512
     mem_limit: 1536m
     cpus: 2
     healthcheck:
-      test: ["CMD", "test", "-S", "/run/worker/worker.sock"]
+      test: ["CMD", "test", "-S", "/run/runner/runner.sock"]
       interval: 30s
       timeout: 5s
     networks:
-      - edge                                               # git server, Galaxy, SSH to the managed hosts
+      - edge                                               # SSH to the managed hosts
 
 volumes:
   repos:                                                   # rebuilt from git if lost: nothing to back up
-  worker-sock:                                             # the socket lives in memory, never on disk
+  fetcher-sock:                                            # sockets live in memory, never on disk
     driver_opts:
       type: tmpfs
       device: tmpfs
       o: "uid=10002,gid=10010,mode=0750"
+  runner-sock:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "uid=10003,gid=10011,mode=0750"
 
 networks:
   edge:

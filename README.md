@@ -23,8 +23,8 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted. Its variables are shown as vaulted, never their values |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}`. Must be `https://` or `http://` |
 | `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, and the git clones unless `ANSIBLE_GUI_REPOS_DIR` puts them elsewhere. Made 0700 at start, and everything written in it is private to the server's user |
-| `ANSIBLE_GUI_REPOS_DIR` | `data/repos` | Bare clones, commit directories and collections. With workers, the repositories volume, mounted at the same path in the app and the worker |
-| `ANSIBLE_GUI_FETCHER_SOCKET`, `ANSIBLE_GUI_RUNNER_SOCKET` | none | The Unix sockets of `ansible-gui worker` processes in other containers (both may be the same socket). Set: git and Ansible run there, not in the server. Unset: they run in the server, as its own user |
+| `ANSIBLE_GUI_REPOS_DIR` | `data/repos` | Bare clones, commit directories and collections. With workers, the repositories volume, mounted at the same path in the app and both workers |
+| `ANSIBLE_GUI_FETCHER_SOCKET`, `ANSIBLE_GUI_RUNNER_SOCKET` | none | The Unix sockets of `ansible-gui worker` processes in other containers: the fetcher pulls and installs collections, the runner runs Ansible (both may be one worker's socket). Set: git and Ansible run there, not in the server. Unset: they run in the server, as its own user |
 | `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
 | `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING` | `accept-new` | `StrictHostKeyChecking` for runs and SSH pulls where the ssh_config doesn't set it: `accept-new` trusts a new host's first answer and refuses a changed key after that, `yes` reaches only hosts listed under Known hosts, `no` trusts any answer |
 | `ANSIBLE_GUI_RUN_TIMEOUT_MINUTES` | `120` | A run whose Ansible is still going after this long is stopped and marked failed, so one hung playbook can't hold up every run queued behind it. `0` for no limit |
@@ -53,9 +53,10 @@ docker build -t ansible-gui .
 ```
 
 The image is Alpine with ansible-gui, ansible-core 2.21.4, git and OpenSSH. It runs as uid 10001 under tini and
-listens on 8080 with data in `/data`. The same image runs the worker: `ansible-gui worker --socket PATH
---allow-uid 10001`, as uid 10002, takes the app's git and Ansible jobs on a Unix socket and accepts a connection
-from uid 10001 only (the kernel reports who is on the other end). `deploy/docker-compose.yml` runs both. It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
+listens on 8080 with data in `/data`. The same image runs the workers: `ansible-gui worker --jobs fetcher|runner
+--socket PATH --allow-uid 10001` takes the app's jobs on a Unix socket and accepts a connection from uid 10001 only
+(the kernel reports who is on the other end). `deploy/docker-compose.yml` runs the app, a fetcher (uid 10002, the
+only container that can write the repositories) and a runner (uid 10003, with the repositories mounted read-only). It refuses to start without sign-in: set the `ANSIBLE_GUI_OIDC_*` variables
 (or `ANSIBLE_GUI_INSECURE_NO_AUTH=1` only when a proxy in front does the sign-in). It also refuses without
 `ANSIBLE_GUI_PUBLIC_URL`, the one name besides `localhost` it answers to. `GET /healthz` backs the healthcheck and
 answers under any name.
@@ -66,13 +67,13 @@ and the NIS client with the Kerberos libraries it brought along). `deploy/smoke-
 
 Tasks a playbook runs on the controller (`delegate_to: localhost`, `connection: local`) run in this image: it has
 bash and GNU tar for them, and otherwise BusyBox's tools and musl rather than glibc. A playbook that calls a
-program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it. `deploy/` has a compose file and an env template for docker01. The compose file runs the app and the
-worker with a read-only root filesystem, every capability dropped and `no-new-privileges`; `deploy/smoke-test.sh`
-runs a playbook in the worker under exactly that, and checks it can't reach the key, the database or the app's
-environment.
+program built for glibc, or a Python package with no musl wheel, needs an image built on this one that adds it. `deploy/` has a compose file and an env template for docker01. The compose file runs all three with
+a read-only root filesystem, every capability dropped and `no-new-privileges`; `deploy/smoke-test.sh` runs a
+playbook in the runner under exactly that, and checks it can't reach the key, the database, the app's environment,
+the repositories or the fetcher's socket.
 
 Upgrading from a single container: the repositories move from `data/repos/` to the `repos` volume. On its first
-start the app removes `data/repos/` and `data/collections/`, and the worker pulls each repository's current
+start the app removes `data/repos/` and `data/collections/`, and the fetcher pulls each repository's current
 commit again.
 
 ## Git repositories
@@ -251,18 +252,20 @@ second connection on, unless `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING=yes`).
 **Write access to any configured repository is access to the credentials of the runs that use it.** Ansible
 runs code from the repository: the inventory page and the launcher's host preview run its inventory scripts and
 plugins and read its `ansible.cfg`; a pull installs the collections it lists; a run runs its playbooks. With the
-worker (the compose file's layout), that code runs in the worker container, as another user, with only the job's
+workers (the compose file's layout), that code runs in the runner container, as another user, with only the job's
 own credentials: the run's account, become and vault passwords, its environment secrets. It can't read the master
-key, the other credentials, the OIDC and SMTP secrets or the database, and can't sign a session. What it still can:
-use the run's credentials on the hosts they reach, change the commit directories later runs read (until the runner
-is split off with a read-only mount), and stay alive in the worker to watch later jobs arrive until the container
-restarts. Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
+key, the other credentials, the OIDC and SMTP secrets or the database, can't sign a session, and can't change the
+commit directories and collections later runs read (the runner mounts them read-only). What it still can: use the
+run's credentials on the hosts they reach, and stay alive in the runner to watch later jobs arrive until the
+container restarts. The fetcher writes the repositories and is meant never to run them. That rests on git (a fetch into a
+bare clone, then `read-tree` and `checkout-index`) and `ansible-galaxy collection install` not executing what they
+fetch, which hasn't been audited: the fetcher holds a deploy key or token only for the length of a pull. Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
 access to a repository is admin access to this server. Either way: protect the branches ansible-gui pulls, give it
 read-only deploy keys or tokens, and don't add a repository you wouldn't trust with those credentials.
 
 Credentials are encrypted with a key derived from `ANSIBLE_GUI_SECRET_KEY`, which belongs outside `data/`. Nothing
-under `data/` holds a secret in plain text: runs get theirs in a temp directory of the worker's that is wiped
-afterwards, by the worker as the job ends or stops, or by its next start if it was killed. A job carries its
+under `data/` holds a secret in plain text: runs get theirs in a temp directory of the runner's that is wiped
+afterwards, by the runner as the job ends or stops, or by its next start if it was killed. A job carries its
 credentials, the known hosts and the configured ssh_config as text, never the server's environment.
 
 To report a vulnerability, see [SECURITY.md](SECURITY.md).

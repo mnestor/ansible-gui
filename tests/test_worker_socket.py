@@ -142,3 +142,30 @@ def test_a_cancel_reaches_a_job_on_the_other_side(sockdir, tmp_path):
     finally:
         server.worker.call = real
         server.close()
+
+
+def test_fetcher_and_runner_each_get_only_their_own_jobs(tmp_path, sockdir):
+    """The compose layout: pulls to the fetcher, which alone writes the repositories; everything that runs
+    them to the runner. Each socket refuses the other's kinds, so a misrouted job fails instead of running."""
+    repos = tmp_path / "repos"
+    repos.mkdir()
+    fetcher = serve(sockdir / "f.sock", repos, kinds=FETCHER, state=sockdir / "fs")
+    runner = serve(sockdir / "r.sock", repos, kinds=RUNNER, state=sockdir / "rs")
+    try:
+        app = create_app(Settings(data_dir=tmp_path / "data", secret_key="s" * 40,
+                                  public_url="https://ansible.example.test", repos_dir=repos,
+                                  fetcher_socket=sockdir / "f.sock", runner_socket=sockdir / "r.sock"))
+        c = TestClient(app, base_url="https://ansible.example.test")
+        inv, _ = make_remote(tmp_path, "inv", {"inventory/hosts.yml": FIXTURE / "inventory" / "hosts.yml"})
+        pb, _ = make_remote(tmp_path, "pb", {"site.yml": FIXTURE / "site.yml"})
+        assert add(c, name="hosts", role="inventory", url=f"file://{inv}", paths="inventory/hosts.yml").status_code == 303
+        assert add(c, name="lab", role="playbooks", url=f"file://{pb}").status_code == 303
+        lab = next(r for r in app.state.repos.all() if r.name == "lab")
+        assert not lab.last_error, lab.last_error
+        r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check",
+                                  "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
+        run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+        assert run.status == "successful", app.state.store.log_path(run.id).read_text()
+    finally:
+        fetcher.close()
+        runner.close()
