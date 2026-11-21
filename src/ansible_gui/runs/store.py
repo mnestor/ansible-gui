@@ -57,6 +57,9 @@ MIGRATIONS = {
     "template_changes": "alter table runs add column template_changes text not null default '[]'",
     "prompt_vars": "alter table runs add column prompt_vars text not null default '{}'",
     "extra_vars": "alter table runs add column extra_vars text not null default ''",
+    "same_as": "alter table runs add column same_as integer",
+    "collections": "alter table runs add column collections text",
+    "note": "alter table runs add column note text",
 }
 
 
@@ -81,7 +84,7 @@ class Run:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     rc: int | None = None
-    commit_sha: str | None = None
+    commit_sha: str | None = None  # the playbook repository's full commit hash; 12 characters before 0.2
     error: str | None = None
     host_stats: dict[str, dict[str, int]] = field(default_factory=dict)
     # {"ssh_key": {"id": 1, "name": "lab"}, ..., "env_secret": [{"id": 4, "name": "x", "env": "X"}]}
@@ -100,6 +103,9 @@ class Run:
     template_changes: list[str] = field(default_factory=list)  # "Skip tags: none → nginx"
     prompt_vars: dict = field(default_factory=dict)  # answers to the roles' prompts; secrets sealed (variables.py)
     extra_vars: str = ""  # the free-form YAML, as typed
+    same_as: int | None = None  # runs the commits this earlier run used, instead of pulling the latest
+    collections: str | None = None  # SHA-256 of the requirements file whose collections the run used
+    note: str | None = None  # something the run's page should say, e.g. that its collections were installed again
 
     @property
     def finished(self) -> bool:
@@ -160,6 +166,9 @@ def _row(r: sqlite3.Row) -> Run:
         template_changes=json.loads(r["template_changes"]),
         prompt_vars=json.loads(r["prompt_vars"]),
         extra_vars=r["extra_vars"],
+        same_as=r["same_as"],
+        collections=r["collections"],
+        note=r["note"],
     )
 
 
@@ -201,17 +210,22 @@ class RunStore:
                inventory_id: int | None = None, kind: str = "playbook", module: str = "", module_args: str = "",
                become: bool = False, template_id: int | None = None,
                template_name: str = "", template_changes: list[str] | None = None,
-               prompt_vars: dict | None = None, extra_vars: str = "") -> Run:
+               prompt_vars: dict | None = None, extra_vars: str = "", same_as: int | None = None,
+               commit_sha: str | None = None, inventory_commit: str | None = None) -> Run:
+        """same_as with commit_sha (and inventory_commit, if the inventory is the earlier run's): run those
+        commits instead of pulling."""
         with self._lock:
             cur = self._db.execute(
                 "insert into runs (playbook, target, tags, skip_tags, check_mode, diff, verbosity,"
                 " expected_hosts, status, trigger, created_at, credentials, schedule_id, repo_id, inventory_id, kind,"
                 " module, module_args, become, template_id, template_name, template_changes, prompt_vars,"
-                " extra_vars) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " extra_vars, same_as, commit_sha, inventory_commit)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (playbook, target, tags, skip_tags, int(check_mode), int(diff), verbosity,
                  json.dumps(expected_hosts), "queued", trigger, now(), json.dumps(credentials or {}), schedule_id, repo_id,
                  inventory_id, kind, module, module_args, int(become), template_id, template_name,
-                 json.dumps(template_changes or []), json.dumps(prompt_vars or {}), extra_vars),
+                 json.dumps(template_changes or []), json.dumps(prompt_vars or {}), extra_vars, same_as, commit_sha,
+                 inventory_commit),
             )
             self._db.commit()
             return self.get(cur.lastrowid)

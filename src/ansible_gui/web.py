@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-import logging
 import os
 import re
 
@@ -30,7 +29,6 @@ from .facts import FactStore
 from . import ansible_config
 from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
 
-log = logging.getLogger(__name__)
 ACCOUNT_SIDE = ("account",)  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
 from .repos import forge
@@ -162,7 +160,7 @@ def rerun_url(run: Run, mode: str) -> str:
          "inventory": "" if run.inventory_id is None else str(run.inventory_id),
          "tags": run.tags, "skip_tags": run.skip_tags, "diff": "1" if run.diff else "0",
          "verbosity": str(run.verbosity),
-         "template": "" if run.template_id is None else str(run.template_id)}
+         "template": "" if run.template_id is None else str(run.template_id), "from": str(run.id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
     # Secret answers never go in a link: a template keeps its own, anything else is typed again.
@@ -335,7 +333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             loaded=[(i, st.inventory) for i, st in entries if st.inventory],
             multi_inv=len(entries) > 1,
             merged_hosts=invs.hosts(), merged_groups=invs.groups(), duplicates=invs.duplicate_hosts(),
-            reloaded=request.query_params.get("reloaded"), busy_run=busy_run(request),
+            reloaded=request.query_params.get("reloaded"),
             last_result=lambda inv, host: last_result(results, inv, host),
             os_of=lambda host: (facts.get(host).os if facts.get(host) else ""),
             trail=group_trail,
@@ -432,56 +430,94 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
     def busy_run(request: Request) -> int | None:
-        """The run a pull was queued behind, or that kept a delete from happening, from the query string."""
+        """The run that kept a delete from happening, from the query string."""
         value = request.query_params.get("busy_run", "")
         return int(value) if value.isdigit() else None
 
-    def pull_all(role: str) -> tuple[list[tuple[Any, str | None]], int | None]:
-        """Pull every git repository with this role, now. Each pull is locked, so a run's own pull waits.
-        Returns (repo, error) for each one pulled, and the run whose clones were queued for after it ends."""
+    def pull_all(role: str) -> list[tuple[Any, str | None]]:
+        """Pull every git repository with this role, now. A running run is unaffected: it keeps its commits."""
         found = ws.inventory_repos() if role == "inventory" else ws.playbook_repos()
-        pulled, busy = [], None
-        for r in found:
-            if r.local:
-                continue
-            try:
-                pulled.append((r, ws.sync(r)))
-            except gitsync.RepoBusy as e:
-                ws.queue_pull(r.id)
-                busy = e.run_id
-        return pulled, busy
+        return [(r, ws.sync(r)) for r in found if not r.local]
 
     @app.post("/inventory/reload")
     def reload(request: Request) -> RedirectResponse:
         """Pull the inventory repositories, then have Ansible parse them again."""
-        pulled, busy = pull_all("inventory")
+        pulled = pull_all("inventory")
         failed = any(st.error for _, st in invs.reload()) or any(err for _, err in pulled)
         # Only ever return to a page of this app, whatever the Referer says.
         back = urlsplit(request.headers.get("referer", "")).path
         if not back.startswith("/inventory"):
             back = "/inventory"
         flag = "failed" if failed else datetime.now().strftime("%H:%M:%S")
-        return RedirectResponse(f"{back}?reloaded={flag}" + (f"&busy_run={busy}" if busy else ""), status_code=303)
+        return RedirectResponse(f"{back}?reloaded={flag}", status_code=303)
 
     # --- runs ------------------------------------------------------------------
-    def known_playbooks() -> list[str]:
-        return [p.key for p in ws.discover()]
+    def known_playbooks(w=ws) -> list[str]:
+        return [p.key for p in w.discover()]
 
-    def chosen_inventory(form: dict):
+    def chosen_inventory(form: dict, w=ws):
         """The form's inventory: the one asked for, or the only one there is."""
-        inv = ws.inventory_repo(int(form["inventory"])) if form.get("inventory", "").lstrip("-").isdigit() else None
-        if inv is None and len(ws.inventory_repos()) == 1:
-            inv = ws.inventory_repos()[0]
+        inv = w.inventory_repo(int(form["inventory"])) if form.get("inventory", "").lstrip("-").isdigit() else None
+        if inv is None and len(w.inventory_repos()) == 1:
+            inv = w.inventory_repos()[0]
         form["inventory"] = str(inv.id) if inv else ""
         return inv
 
-    def preview_for(key: str, target: str, inv) -> playbooks.Preview:
-        pb = ws.find(key) if key else None
+    def preview_for(key: str, target: str, inv, w=ws) -> playbooks.Preview:
+        pb = w.find(key) if key else None
         if not pb:
             return playbooks.Preview()
         if inv is None:
             return playbooks.Preview(error="Choose the inventory to run against.")
-        return playbooks.preview(ws.run_opts(pb.repo, inv), str((pb.repo.path / pb.path).resolve()), target)
+        return playbooks.preview(w.run_opts(pb.repo, inv), str((pb.repo.path / pb.path).resolve()), target)
+
+    def view_for(form: dict):
+        """(The workspace as the form's run will see it, a problem to show). With "same", the earlier run's
+        commits, written out again if pruning removed them; if they can't be had, the latest, saying why."""
+        if not form.get("same"):
+            return ws, None
+        src = store.get(int(form["same"]))
+        repo = ws.playbook_repo(src.repo_id) if src else None
+        if not src or not repo or repo.local or not gitsync.SHA.match(src.commit_sha or ""):
+            form["same"] = ""
+            return ws, "That run’s commits aren’t recorded, so this runs the latest."
+        commits, used = {repo.id: src.commit_sha}, [repo]
+        inv = ws.inventory_repo(src.inventory_id)
+        if (inv and not inv.local and gitsync.SHA.match(src.inventory_commit or "")
+                and form.get("inventory") in ("", None, str(inv.id))):
+            commits[inv.id] = src.inventory_commit
+            used.append(inv)
+        for r in used:
+            error, _ = ws.ensure_commit(r, commits[r.id])
+            if error:
+                form["same"] = ""
+                return ws, f"Can’t run the commits run #{src.id} used: {error} This runs the latest instead."
+        return ws.at(commits), None
+
+    def commit_notice(form: dict, w) -> dict | None:
+        """What the launcher says about which commits run, when it came from an earlier run and that matters:
+        {text, href, label} offering the other choice."""
+        ref = form.get("same") or form.get("from")
+        src = store.get(int(ref)) if ref else None
+        if not src or src.kind != "playbook" or not gitsync.SHA.match(src.commit_sha or ""):
+            return None
+        repo = ws.playbook_repo(src.repo_id)
+        if not repo or repo.local:
+            return None
+        inv = ws.inventory_repo(src.inventory_id)
+        inv_old = src.inventory_commit if inv and not inv.local and gitsync.SHA.match(src.inventory_commit or "") else None
+        back = rerun_url(src, form.get("mode") or ("check" if src.check_mode else "apply"))
+        if form.get("same"):
+            parts = [f"{repo.name} at {src.commit_sha[:10]}"] + ([f"{inv.name} at {inv_old[:10]}"] if inv_old else [])
+            return {"text": f"Runs the commits run #{src.id} used: {', '.join(parts)}. Nothing is pulled.",
+                    "href": back, "label": "Use the latest commits instead"}
+        moved = [(r.name, r.last_commit, old) for r, old in ((repo, src.commit_sha), (inv, inv_old))
+                 if r and old and r.last_commit and r.last_commit != old]
+        if not moved:
+            return None
+        said = "; ".join(f"{name} is at {now[:10]}, run #{src.id} used {old[:10]}" for name, now, old in moved)
+        return {"text": f"This runs the latest commits: {said}.", "href": back + f"&same={src.id}",
+                "label": f"Run the commits run #{src.id} used instead"}
 
     def read_form(src) -> dict:
         try:
@@ -503,6 +539,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "prompt_vars": stored_vars(src),
             "var_raw": variables.raw_fields(src),
             "rerun": str(src.get("rerun") or "") if str(src.get("rerun") or "").isdigit() else "",
+            "same": str(src.get("same") or "") if str(src.get("same") or "").isdigit() else "",
+            "from": str(src.get("from") or "") if str(src.get("from") or "").isdigit() else "",
             "vars_mode": "yaml" if src.get("vars_mode") == "yaml" else "fields",
         }
 
@@ -560,9 +598,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {k: v for k, v in data.items() if variables.VAR_NAME.match(str(k))
                 and not (isinstance(v, dict) and variables.SECRET in v)}
 
-    def prompts_for(key: str) -> tuple[list, list]:
+    def prompts_for(key: str, w=ws) -> tuple[list, list]:
         """The playbook's prompts, from its roles' argument specs, and the roles that declare none."""
-        pb = ws.find(key) if key else None
+        pb = w.find(key) if key else None
         if not pb:
             return [], []
         return variables.discover(pb.repo.path / pb.path, pb.repo.path)
@@ -697,17 +735,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def form_context(form: dict) -> dict:
         """What the launcher and the schedule form both need: playbooks, live host preview, credentials."""
-        books = ws.discover()
+        w, commit_problem = view_for(form)
+        books = w.discover()
         keys = [b.key for b in books]
-        form["playbook"] = ws.canonical(form["playbook"])
+        form["playbook"] = w.canonical(form["playbook"])
         if form["playbook"] not in keys:
             form["playbook"] = keys[0] if len(keys) == 1 else ""
-        inv_repo = chosen_inventory(form)
-        pv = preview_for(form["playbook"], form["target"], inv_repo)
+        inv_repo = chosen_inventory(form, w)
+        pv = preview_for(form["playbook"], form["target"], inv_repo, w)
         state = invs.get(inv_repo.id)[1] if inv_repo else None
         inv = state.inventory if state else None
         template, changes = template_changes(form)
-        prompts, bare_roles = prompts_for(form["playbook"])
+        prompts, bare_roles = prompts_for(form["playbook"], w)
         form["answers"] = form_answers(form, prompts)
         kept = form["kept"] if form.get("kept") is not None else kept_secrets(form)
         note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
@@ -715,6 +754,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return dict(
             note_names=note_names, notes=notes, overrides=overrides, run_sets=run_sets,
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
+            commit_notice=commit_notice(form, w), commit_problem=commit_problem,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
             playbooks=books, form=form, preview=pv, multi_repo=len(ws.playbook_repos()) > 1,
             playbook_about=playbook_summaries(books),
@@ -767,14 +807,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
         q = request.query_params
         return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
-                      git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"),
-                      busy_run=busy_run(request))
+                      git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"))
 
     @app.post("/runs/playbooks/pull")
     def pull_playbooks():
-        _, busy = pull_all("playbooks")
-        return RedirectResponse(f"/runs/playbooks?pulled={datetime.now().strftime('%H:%M:%S')}"
-                                + (f"&busy_run={busy}" if busy else ""), status_code=303)
+        pull_all("playbooks")
+        return RedirectResponse(f"/runs/playbooks?pulled={datetime.now().strftime('%H:%M:%S')}", status_code=303)
 
     @app.get("/runs/new", response_class=HTMLResponse)
     def new_run(request: Request):
@@ -801,13 +839,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def run_preview(request: Request):
         form = read_form(request.query_params)
         form["diff"] = request.query_params.get("diff") == "1"
-        form["playbook"] = ws.canonical(form["playbook"])
-        if form["playbook"] not in known_playbooks():
+        w, _ = view_for(form)
+        form["playbook"] = w.canonical(form["playbook"])
+        if form["playbook"] not in known_playbooks(w):
             form["playbook"] = ""
-        inv_repo = chosen_inventory(form)
-        pv = preview_for(form["playbook"], form["target"], inv_repo)
+        inv_repo = chosen_inventory(form, w)
+        pv = preview_for(form["playbook"], form["target"], inv_repo, w)
         template, changes = template_changes(form)
-        prompts = prompts_for(form["playbook"])[0]
+        prompts = prompts_for(form["playbook"], w)[0]
         note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
         overrides, run_sets = run_overrides(form, prompts, pv.hosts, inv_repo)
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
@@ -821,16 +860,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The prompt fields, redrawn when the playbook changes. Answers to names both playbooks share stay."""
         q = request.query_params
         form = read_form(q)
-        form["playbook"] = ws.canonical(form["playbook"])
-        prompts, bare_roles = prompts_for(form["playbook"])
+        w, _ = view_for(form)
+        form["playbook"] = w.canonical(form["playbook"])
+        prompts, bare_roles = prompts_for(form["playbook"], w)
         switch_view(form, prompts)
         form["answers"] = form_answers(form, prompts)
         kind, _, ref = str(q.get("kept_from") or "").partition(":")
         source = (run_templates.get(int(ref)) if kind == "template" else schedules.get(int(ref)) if kind == "schedule"
                   else None) if ref.isdigit() else None
         kept = kept_secrets(form, source)
-        inv_repo = chosen_inventory(form)
-        note_names, notes = inventory_notes(prompts, preview_for(form["playbook"], form["target"], inv_repo).hosts,
+        inv_repo = chosen_inventory(form, w)
+        note_names, notes = inventory_notes(prompts, preview_for(form["playbook"], form["target"], inv_repo, w).hosts,
                                             inv_repo)
         return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles, notes=notes,
                       kept_from=q.get("kept_from", ""),
@@ -841,13 +881,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         data = await request.form()
         form = read_form(data)
         form["diff"] = data.get("diff") == "1"
-        form["playbook"] = ws.canonical(form["playbook"])
-        if form["playbook"] not in known_playbooks():
+        w, problem = view_for(form)
+        if problem:
+            return launcher(request, form, problem, status=409)
+        form["playbook"] = w.canonical(form["playbook"])
+        if form["playbook"] not in known_playbooks(w):
             return launcher(request, form, "Choose one of the playbooks listed.", status=400)
-        inv_repo = chosen_inventory(form)
+        inv_repo = chosen_inventory(form, w)
         if inv_repo is None:
             return launcher(request, form, "Choose the inventory to run against.", status=400)
-        pv = preview_for(form["playbook"], form["target"], inv_repo)
+        pv = preview_for(form["playbook"], form["target"], inv_repo, w)
         if pv.error or not pv.hosts:
             return launcher(request, form, "Nothing to run: the targets match no hosts.", status=400)
         expected = sorted(data.getlist("expected"))
@@ -861,12 +904,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             return launcher(request, form, problem, 400)
         template, changes = template_changes(form)
-        form.update(effective(form, prompts_for(form["playbook"])[0]))  # the YAML view stores like the fields
+        form.update(effective(form, prompts_for(form["playbook"], w)[0]))  # the YAML view stores like the fields
         prompt_vals, problem = vars_for(form, kept_secrets(form))
         if problem:
             return launcher(request, form, problem, 400)
+        pb = w.find(form["playbook"])
+        same = store.get(int(form["same"])) if form["same"] else None
+        if same and pb.repo.id != same.repo_id:  # another repository's playbook: nothing of the earlier run's applies
+            same = None
         run = store.create(
-            playbook=ws.find(form["playbook"]).path, repo_id=ws.find(form["playbook"]).repo.id,
+            playbook=pb.path, repo_id=pb.repo.id,
+            same_as=same.id if same else None, commit_sha=same.commit_sha if same else None,
+            inventory_commit=same.inventory_commit if same and inv_repo.id == same.inventory_id
+            and inv_repo.last_commit == same.inventory_commit else None,
             target=form["target"], tags=form["tags"], skip_tags=form["skip_tags"],
             check_mode=form["mode"] != "apply", diff=form["diff"], verbosity=form["verbosity"],
             expected_hosts=pv.hosts, trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
@@ -1233,8 +1283,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       inventories=ws.inventory_repos(), playbook_repos=ws.playbook_repos(),
                       ssh_keys={c.id: c for c in creds.all()},
                       saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"),
-                      kept=q.get("kept"), busy_run=busy_run(request),
-                      queued={rid: gitsync.user(rid) for rid in ws.queued_pulls()})
+                      kept=q.get("kept"), busy_run=busy_run(request))
 
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
@@ -1286,11 +1335,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repo = repos.save(form, auth.display_name(auth.current_user(request)), rid)
         except RepoInvalid as e:
             return repo_form(request, repos.get(rid) if rid else None, form, e.errors, status=400)
-        try:
-            ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
-        except gitsync.RepoBusy as e:
-            ws.queue_pull(repo.id)
-            return RedirectResponse(f"/repos?saved={repo.id}&busy_run={e.run_id}", status_code=303)
+        ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
         if repo.role == "inventory":
             invs.reload(repo.id)
         return RedirectResponse(f"/repos?saved={repo.id}", status_code=303)
@@ -1307,11 +1352,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def pull_repo(rid: int):
         repo = repos.get(rid)
         if repo:
-            try:
-                ws.sync(repo)
-            except gitsync.RepoBusy as e:
-                ws.queue_pull(rid)
-                return RedirectResponse(f"/repos?pulled={rid}&busy_run={e.run_id}", status_code=303)
+            ws.sync(repo)
             if repo.role == "inventory":
                 invs.reload(repo.id)
         return RedirectResponse(f"/repos?pulled={rid}", status_code=303)
@@ -1319,14 +1360,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/repos/{rid}/delete")
     def delete_repo(rid: int):
         repo = repos.get(rid)
-        if repo and (busy := gitsync.user(rid)):
+        if repo and (busy := ws.user(rid)):  # its files would go from under the playbook
             return RedirectResponse(f"/repos?kept={rid}&busy_run={busy}", status_code=303)
         if repo:
             repos.delete(rid)
-            try:
-                gitsync.remove_clone(repo)
-            except gitsync.RepoBusy:  # a run claimed it a moment ago; its own checks stop it, the clone stays
-                log.warning("kept the clone of deleted repository %s: a run started using it", repo.name)
+            ws.remove(repo)
             if repo.role == "inventory":
                 invs.reload(repo.id)
         return RedirectResponse(f"/repos?deleted={repo.name if repo else ''}", status_code=303)

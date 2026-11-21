@@ -7,6 +7,8 @@
   {% if from_template %}<p class="subject-meta">From template <a class="mono" href="/runs/templates/{{ from_template.id }}">{{ from_template.name }}</a>{% if from_template.note %}: {{ from_template.note }}{% endif %}. Change anything below; the run records what you changed.</p>
   {% else %}<p class="subject-meta">Or start from a <a href="/runs/templates">template</a>.</p>{% endif %}
 </header>
+{% if commit_problem %}<p class="banner banner-warn" role="status">{{ commit_problem }}</p>{% endif %}
+{% if commit_notice %}<p class="banner banner-changed" role="status">{{ commit_notice.text }} <a href="{{ commit_notice.href }}">{{ commit_notice.label }}</a></p>{% endif %}
 
 {% if not playbooks %}
   <p class="empty">No playbooks found in <span class="mono">{{ settings.playbook_dir }}</span> under <span class="mono">{{ settings.project_dir }}</span>. A playbook is a YAML file whose top level is a list of plays with <span class="mono">hosts:</span>. Set <span class="mono">ANSIBLE_GUI_PLAYBOOK_DIR</span> if they live elsewhere.</p>
@@ -16,6 +18,8 @@
   <div class="launcher-fields">
 
   <input type="hidden" name="template" value="{{ form.template }}">
+  <input type="hidden" name="same" value="{{ form.same }}">
+  <input type="hidden" name="from" value="{{ form['from'] }}">
   {% include "_run_fields.html" %}
 
   </div>

@@ -194,7 +194,7 @@ class Notifier:
         if run.duration is not None:
             lines.append(f"Took:      {int(run.duration)}s")
         if run.commit_sha:
-            lines.append(f"Commit:    {run.commit_sha}")
+            lines.append(f"Commit:    {run.commit_sha[:12]}")
         if run.host_stats:
             lines += ["", "Hosts:"]
             width = max(len(h) for h in run.host_stats)

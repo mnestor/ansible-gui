@@ -244,10 +244,6 @@ class Executor:
                 self._cancel.discard(run_id)
                 self.workspace.release_run(run_id)
                 try:
-                    self.workspace.pull_queued()  # pulls asked for from the web UI while this run held the clones
-                except Exception:
-                    log.exception("pulling the repositories queued behind run %s", run_id)
-                try:
                     run = self.store.get(run_id)
                     if run and run.finished:
                         self.on_finish(run_id)
@@ -275,13 +271,12 @@ class Executor:
         if inv_repo is None:
             return stop("Didn’t start: its inventory repository was removed, or there are several and the run "
                         "doesn’t say which. Pick one and run again.")
-        # Before its own pull, so no pull or delete from the web UI changes the clones under the playbook.
-        self.workspace.claim_for_run(run_id, repo, inv_repo)
-        failed = self.workspace.sync_for_run(repo, inv_repo, lambda line: log_file.write(line + "\n"), run_id)
+        failed, commits = self._commits(run, repo, inv_repo, lambda line: log_file.write(line + "\n"))
         if failed:
             return stop(failed)
-        repo = self.workspace.playbook_repo(run.repo_id)
-        inv_repo = self.workspace.inventory_repo(inv_repo.id)
+        # From here on the run reads only these commits' directories, which nothing changes until it ends.
+        repo = repo.at(commits[repo.id]) if repo.id in commits else repo
+        inv_repo = inv_repo.at(commits[inv_repo.id]) if inv_repo.id in commits else inv_repo
         project = repo.run_dir
         opts = self.workspace.run_opts(repo, inv_repo)
         facts_run = run.kind == "facts"
@@ -305,9 +300,9 @@ class Executor:
         self._live[run_id] = live
         final: dict[str, dict[str, int]] = {}
         self.store.update(run_id, expected_hosts=pv.hosts, inventory_id=inv_repo.id,
-                          commit_sha=(repo.last_commit or "")[:12] if not repo.local else git_commit(repo.path),
-                          inventory_commit=None if not inv_repo else
-                          ((inv_repo.last_commit or "")[:12] if not inv_repo.local else None))
+                          commit_sha=repo.last_commit if not repo.local else git_commit(repo.path),
+                          inventory_commit=inv_repo.last_commit if not inv_repo.local else None,
+                          collections=self.workspace.collections_digest(repo))
         run = self.store.get(run_id)
         if run_id in self._cancel:
             log_file.write("[ansible-gui] Canceled before Ansible started.\n")
@@ -408,11 +403,11 @@ class Executor:
             cmdline = ["--playbook-dir", opts.playbook_dir, *(["--become"] if run.become else []), *cmdline]
             what = dict(module="ansible.builtin.setup", host_pattern=run.target) if facts_run else dict(
                 module=run.module, module_args=run.module_args or None, host_pattern=run.target)
-            log_file.write(f"$ ansible {shlex.join(self._args(run, cmdline))}\n\n")
+            log_file.write(f"$ ansible {shlex.join(self._args(run, cmdline, inv_repo))}\n\n")
         else:
             what = dict(playbook=playbook, limit=run.target or None, tags=run.tags or None,
                         skip_tags=run.skip_tags or None)
-            log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline))}\n\n")
+            log_file.write(f"$ ansible-playbook {shlex.join(self._args(run, cmdline, inv_repo))}\n\n")
         self._prepared = prepared
         if self.run_timeout:
             deadline.append(time.monotonic() + self.run_timeout)
@@ -459,6 +454,35 @@ class Executor:
         if status == "successful" and any(host_result(s) in ("failed", "unreachable") for s in stats.values()):
             status = "failed"
         self.store.update(run_id, status=status, finished_at=now(), rc=result.rc, host_stats=stats)
+
+    def _commits(self, run: Run, repo, inv_repo, log_line) -> tuple[str | None, dict[int, str]]:
+        """The commits the run executes, kept for it until it ends: what a fresh pull lands on, or, for a run of
+        an earlier run's commits, those. (None, {repo id: commit}), or (why it can't start, {})."""
+        ws = self.workspace
+        if not (run.same_as and run.commit_sha) or repo.local:
+            return ws.sync_for_run(repo, inv_repo, log_line, run.id)
+        log_line(f"[ansible-gui] Running the commits run #{run.same_as} used, not the latest")
+        wanted = {repo.id: run.commit_sha}
+        if run.inventory_commit and not inv_repo.local:
+            wanted[inv_repo.id] = run.inventory_commit
+        elif not inv_repo.local:  # another inventory than the earlier run's: its latest
+            failed, _ = ws.sync_for_run(inv_repo, None, log_line, run.id)
+            if failed:
+                return failed, {}
+        for r in {r.id: r for r in (inv_repo, repo) if r.id in wanted}.values():
+            commit = wanted[r.id]
+            error, reinstalled = ws.ensure_commit(r, commit, pin_for=run.id, on_wait=lambda r=r: log_line(
+                f"[ansible-gui] Waiting for a pull of {r.name} started from the web UI to finish"))
+            if error:
+                log_line(f"[ansible-gui] {error}")
+                return f"Didn’t start: {error} Run again to use the latest commit instead.", {}
+            log_line(f"[ansible-gui] {r.name} at {commit[:10]}, as in run #{run.same_as}")
+            if reinstalled:
+                note = (f"The collections run #{run.same_as} used had been removed since, so they were installed "
+                        "again from the same requirements file. Unless it pins exact versions, they may be newer.")
+                log_line(f"[ansible-gui] {note}")
+                self.store.update(run.id, note=note)
+        return None, ws.pinned(run.id)
 
     def _timeout_message(self) -> str:
         minutes = self.run_timeout / 60
@@ -535,10 +559,10 @@ class Executor:
             p.cleanup()
             raise
 
-    def _args(self, run, cmdline: list[str]) -> list[str]:
+    def _args(self, run, cmdline: list[str], inv_repo) -> list[str]:
         """The command line shown at the top of the log."""
         args = []
-        for s in self.workspace.inventory_sources(self.workspace.inventory_repo(run.inventory_id)):
+        for s in self.workspace.inventory_sources(inv_repo):
             args += ["-i", s]
         if run.kind == "facts":
             return [run.target, "-m", "ansible.builtin.setup", *args, *cmdline]

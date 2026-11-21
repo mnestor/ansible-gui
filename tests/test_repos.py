@@ -183,7 +183,7 @@ def test_run_pulls_latest_commit_first(app, c, remotes):
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert run.status == "successful", run.error
     newer = app.state.repos.get(lab.id).last_commit
-    assert newer != first and run.commit_sha == newer[:12] and run.inventory_commit
+    assert newer != first and run.commit_sha == newer and run.inventory_commit
     assert "Pulling lab" in app.state.store.log_path(run.id).read_text()
 
 
@@ -226,14 +226,12 @@ def test_delete_removes_clone(app, c, remotes):
 
 
 
-def test_a_running_playbooks_clones_are_left_alone(app, c, remotes, tmp_path):
-    """Pull, Reload inventory, saving or deleting a repository while a run uses its clone would change the
-    files under the playbook: a later include would come from a commit the run doesn't name, or be gone."""
+def start_slow_run(app, c, remotes, tmp_path):
+    """A run of slow.yml from its own repository, waited on until its 20 s pause is under way."""
     slow, slow_work = make_remote(tmp_path, "slow", {"slow.yml": FIXTURE / "slow.yml"})
     assert add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
     assert add(c, name="lab", role="playbooks", url=f"file://{slow}").status_code == 303
     lab = next(r for r in app.state.repos.all() if r.name == "lab")
-    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
     r = c.post("/runs", data={"playbook": f"{lab.id}:slow.yml", "target": "box1", "mode": "apply", "verbosity": "0",
                               "expected": ["box1"]}, follow_redirects=False)
     run_id = int(r.headers["location"].rsplit("/", 1)[1])
@@ -242,47 +240,102 @@ def test_a_running_playbooks_clones_are_left_alone(app, c, remotes, tmp_path):
     while "TASK [Wait]" not in (log.read_text() if log.exists() else ""):
         assert time.time() < end, "the pause task never started"
         time.sleep(0.2)
-    ran_from = app.state.repos.get(lab.id).last_commit
-    (slow_work / "slow.yml").write_text((slow_work / "slow.yml").read_text() + "\n# newer\n")
-    git("commit", "-qam", "newer", cwd=slow_work)
-    git("push", "-q", "origin", "HEAD:main", cwd=slow_work)
+    return lab, slow_work, run_id
+
+
+def push_change(work: Path, rel: str, line: str) -> None:
+    (work / rel).write_text((work / rel).read_text() + f"\n{line}\n")
+    git("commit", "-qam", line, cwd=work)
+    git("push", "-q", "origin", "HEAD:main", cwd=work)
+
+
+def test_a_pull_during_a_run_leaves_the_runs_files_alone(app, c, remotes, tmp_path):
+    """Each commit has its own directory: a pull lands on a new one at once, and the run keeps reading its own."""
+    lab, slow_work, run_id = start_slow_run(app, c, remotes, tmp_path)
+    ran_from = app.state.repos.get(lab.id)
+    assert ran_from.path == lab.home / "commits" / ran_from.last_commit and not (ran_from.path / ".git").exists()
+    push_change(slow_work, "slow.yml", "# newer")
 
     r = c.post(f"/repos/{lab.id}/pull", follow_redirects=False)
-    assert r.headers["location"] == f"/repos?pulled={lab.id}&busy_run={run_id}"
-    assert f"Pull of lab queued: run <a href=\"/runs/{run_id}\">#{run_id}</a> is using its clone" in c.get(r.headers["location"]).text
-    assert app.state.repos.get(lab.id).last_commit == ran_from and not app.state.repos.get(lab.id).last_error
-    assert f"Pull queued behind run <a href=\"/runs/{run_id}\">#{run_id}</a>" in c.get("/repos").text
-    assert "# newer" not in (lab.path / "slow.yml").read_text()
+    assert r.headers["location"] == f"/repos?pulled={lab.id}"
+    now = app.state.repos.get(lab.id)
+    assert now.last_commit != ran_from.last_commit and "# newer" in (now.path / "slow.yml").read_text()
+    assert "# newer" not in (ran_from.path / "slow.yml").read_text()  # still there, unchanged, under the run
 
     r = c.post(f"/repos/{lab.id}/delete", follow_redirects=False)
     assert r.headers["location"] == f"/repos?kept={lab.id}&busy_run={run_id}"
-    assert "Didn’t delete lab" in c.get(r.headers["location"]).text
-    assert app.state.repos.get(lab.id) and lab.path.is_dir()
-
-    r = c.post("/inventory/reload", follow_redirects=False)
-    assert r.headers["location"].endswith(f"&busy_run={run_id}")
-    assert "The pull is queued for when that run finishes" in c.get(r.headers["location"]).text
-    r = c.post("/runs/playbooks/pull", follow_redirects=False)
-    assert "its pull is queued for when that run finishes" in c.get(r.headers["location"]).text
-    r = c.post(f"/repos/{hosts.id}", data={"name": "hosts", "role": "inventory", "url": f"file://{remotes['inv']}",
-                                           "branch": "main", "paths": "inventory/hosts.yml"}, follow_redirects=False)
-    assert "Saved hosts. Its pull is queued" in c.get(r.headers["location"]).text
+    assert "Didn’t delete lab: run" in c.get(r.headers["location"]).text
+    assert app.state.repos.get(lab.id) and ran_from.path.is_dir()
 
     c.post(f"/runs/{run_id}/cancel")
     assert wait(app, run_id).status == "canceled"
-    app.state.executor.wait_idle()  # the queued pulls happen as the run ends, before the worker is idle
-    assert "# newer" in (lab.path / "slow.yml").read_text()
-    assert app.state.repos.get(lab.id).last_commit != ran_from
-    assert "Pull queued" not in c.get("/repos").text
-    assert c.post(f"/repos/{lab.id}/pull", follow_redirects=False).headers["location"] == f"/repos?pulled={lab.id}"
+    app.state.executor.wait_idle()
+    assert app.state.store.get(run_id).commit_sha == ran_from.last_commit
+    # Once the run is over its commit goes; the current one stays.
+    assert not ran_from.path.exists() and now.path.is_dir()
+    assert sorted(p.name for p in (lab.home / "commits").iterdir()) == [now.last_commit]
 
+
+def test_running_the_same_commits_again(app, c, remotes):
+    setup_repos(c, remotes)
+    lab = next(r for r in app.state.repos.all() if r.name == "lab")
+    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
+    r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check", "verbosity": "0",
+                              "expected": ["box1"]}, follow_redirects=False)
+    first = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert first.status == "successful" and len(first.commit_sha) == 40 and len(first.inventory_commit) == 40
+    app.state.executor.wait_idle()
+    push_change(remotes["pb_work"], "site.yml", "# newer")
+    c.post(f"/repos/{lab.id}/pull")
+    latest = app.state.repos.get(lab.id).last_commit
+    assert latest != first.commit_sha and not (lab.home / "commits" / first.commit_sha).exists()  # pruned
+
+    # Run again: the latest, and the launcher says what moved, offering the earlier commits.
+    page = c.get(f"/runs/new?playbook={lab.id}:site.yml&target=box1&inventory={hosts.id}&from={first.id}").text
+    assert f"This runs the latest commits: lab is at {latest[:10]}, run #{first.id} used {first.commit_sha[:10]}" in page
+    assert f"&amp;same={first.id}" in page
+
+    # Run the same commits: written out again from the bare clone, and nothing pulled.
+    page = c.get(f"/runs/new?playbook={lab.id}:site.yml&target=box1&inventory={hosts.id}&same={first.id}").text
+    assert f"Runs the commits run #{first.id} used: lab at {first.commit_sha[:10]}" in page and "Use the latest" in page
+    r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check", "verbosity": "0",
+                              "inventory": str(hosts.id), "same": str(first.id), "expected": ["box1"]},
+               follow_redirects=False)
+    again = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    log = app.state.store.log_path(again.id).read_text()
+    assert again.status == "successful", log
+    assert again.same_as == first.id and again.commit_sha == first.commit_sha
+    assert again.inventory_commit == first.inventory_commit
+    assert "Pulling" not in log and f"Running the commits run #{first.id} used" in log
+    assert f"as in run #{first.id}" in c.get(f"/runs/{again.id}").text
+    assert app.state.repos.get(lab.id).last_commit == latest  # the current commit didn't move
+
+
+def test_running_a_commit_gone_upstream_again_says_so(app, c, remotes, tmp_path):
+    setup_repos(c, remotes)
+    lab = next(r for r in app.state.repos.all() if r.name == "lab")
+    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
+    r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check", "verbosity": "0",
+                              "expected": ["box1"]}, follow_redirects=False)
+    first = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    app.state.executor.wait_idle()
+    # The branch is rewritten and the old commit is gone from the server and from the bare clone.
+    work = remotes["pb_work"]
+    git("commit", "-q", "--amend", "-m", "rewritten", cwd=work)
+    git("push", "-q", "--force", "origin", "HEAD:main", cwd=work)
+    c.post(f"/repos/{lab.id}/pull")
+    subprocess.run(["git", "--git-dir", str(lab.home / "git"), "reflog", "expire", "--expire=now", "--all"], check=True)
+    subprocess.run(["git", "--git-dir", str(lab.home / "git"), "gc", "-q", "--prune=now"], check=True)
+    page = c.get(f"/runs/new?playbook={lab.id}:site.yml&target=box1&inventory={hosts.id}&same={first.id}").text
+    assert f"Can’t run the commits run #{first.id} used" in page and "force-pushed" in page
+    assert 'name="same" value=""' in page
 
 
 def test_a_runs_pull_says_when_it_waits_for_one_from_the_web_ui(app, c, remotes):
     from ansible_gui.repos import git as gitsync
     setup_repos(c, remotes)
     lab = next(r for r in app.state.repos.all() if r.name == "lab")
-    lock = gitsync._lock(lab.id)
+    lock = gitsync._lock(lab.home)
     lock.acquire()  # as a Pull now pressed a moment before the run would
     try:
         r = c.post("/runs", data={"playbook": f"{lab.id}:site.yml", "target": "box1", "mode": "check",
@@ -408,7 +461,7 @@ def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, rem
         assert lab.last_commit and not lab.last_error, lab.last_error
         assert any(a.startswith("Basic ") for a in seen)
         # the token is nowhere in the clone
-        for f in lab.path.joinpath(".git").rglob("*"):
+        for f in lab.home.rglob("*"):
             if f.is_file():
                 assert b"s3cret-token" not in f.read_bytes(), f
         assert "s3cret-token" not in c.get("/repos").text and "s3cret-token" not in c.get(f"/repos/{lab.id}").text
@@ -475,12 +528,19 @@ def test_run_dir_config_and_collections_apply(app, c, remotes, tmp_path):
 
 
 def test_broken_collections_file_cancels_the_run(app, c, remotes, tmp_path):
-    bad, _ = make_remote(tmp_path, "bad", {"site.yml": FIXTURE / "site.yml",
-                                            "requirements.yml": "collections:\n  - name: /nonexistent.tar.gz\n    type: file\n"})
+    bad, work = make_remote(tmp_path, "bad", {"site.yml": FIXTURE / "site.yml"})
     add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml")
     add(c, name="bad", role="playbooks", url=f"file://{bad}")
     repo = next(r for r in app.state.repos.all() if r.name == "bad")
+    good = repo.last_commit
+    (work / "requirements.yml").write_text("collections:\n  - name: /nonexistent.tar.gz\n    type: file\n")
+    git("add", "-A", cwd=work)
+    git("commit", "-qm", "broken requirements", cwd=work)
+    git("push", "-q", "origin", "HEAD:main", cwd=work)
+    c.post(f"/repos/{repo.id}/pull")
+    repo = app.state.repos.get(repo.id)
     assert repo.last_error and "Installing its collections failed" in repo.last_error
+    assert repo.last_commit == good  # the commit that works stays the current one
     r = c.post("/runs", data={"playbook": f"{repo.id}:site.yml", "target": "box1", "mode": "check",
                               "verbosity": "0", "expected": ["box1"]}, follow_redirects=False)
     assert r.status_code == 303

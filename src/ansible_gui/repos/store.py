@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
 import re
-import sqlite3
-import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -56,7 +55,7 @@ class Repo:
     ssh_key_id: int | None
     paths: str
     edit_url: str
-    path: Path  # the working copy
+    path: Path  # the files to read: the current commit's directory, or the local directory
     requirements: str = ""  # collections requirements file in the repo; empty means look for the usual places
     last_fetch_at: datetime | None = None
     last_commit: str | None = None
@@ -64,6 +63,13 @@ class Repo:
     last_error: str | None = None
     local: bool = False  # a directory from ANSIBLE_GUI_PROJECT_DIR, not a clone
     forge: str = ""  # "" detects from the address; see forge.FORGES
+    home: Path | None = None  # the bare clone and its commit directories; None for a local directory
+
+    def at(self, commit: str) -> "Repo":
+        """This repository as of another commit: its files are that commit's directory."""
+        if self.local or self.home is None:
+            return self
+        return dataclasses.replace(self, last_commit=commit, path=self.home / "commits" / commit)
 
     @property
     def link_template(self) -> str | None:
@@ -94,8 +100,8 @@ class Repo:
 
 
 class RepoStore:
-    def __init__(self, data_dir: Path):
-        self.root = data_dir / "repos"
+    def __init__(self, data_dir: Path, repos_dir: Path | None = None):
+        self.root = repos_dir or data_dir / "repos"
         self._db = Database(data_dir / "ansible-gui.db")
         self._lock = self._db.lock
         self._db.executescript(SCHEMA)
@@ -107,9 +113,11 @@ class RepoStore:
 
     def _row(self, r) -> Repo:
         dt = lambda v: datetime.fromisoformat(v) if v else None  # noqa: E731
+        home = self.root / str(r["id"])
         return Repo(id=r["id"], name=r["name"], role=r["role"], url=r["url"], branch=r["branch"],
                     ssh_key_id=r["ssh_key_id"], paths=r["paths"], edit_url=r["edit_url"], forge=r["forge"],
-                    path=self.root / str(r["id"]), requirements=r["requirements"], last_fetch_at=dt(r["last_fetch_at"]),
+                    path=home / "commits" / (r["last_commit"] or "none"), home=home,
+                    requirements=r["requirements"], last_fetch_at=dt(r["last_fetch_at"]),
                     last_commit=r["last_commit"], last_subject=r["last_subject"], last_error=r["last_error"])
 
     def all(self) -> list[Repo]:

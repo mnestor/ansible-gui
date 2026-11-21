@@ -22,7 +22,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_PLAYBOOK_DIR` | `.` | Where playbook-adjacent `group_vars/` and `host_vars/` live |
 | `ANSIBLE_GUI_VAULT_PASSWORD_FILE` | none | Needed only if a vars file is fully vault-encrypted. Its variables are shown as vaulted, never their values |
 | `ANSIBLE_GUI_EDIT_URL` | none | Link template for "open in git", e.g. `https://git.example/me/ansible/src/branch/main/{path}#L{line}`. Must be `https://` or `http://` |
-| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, git clones. Made 0700 at start, and everything written in it is private to the server's user |
+| `ANSIBLE_GUI_DATA_DIR` | `./data` | Run history, credentials (SQLite), run logs, `ssh/known_hosts`, git clones and their commit directories. Made 0700 at start, and everything written in it is private to the server's user |
 | `ANSIBLE_GUI_SSH_CONFIG` | none | The only ssh_config runs and git pulls read, relative to the project dir (absolute without one). Unset means none at all |
 | `ANSIBLE_GUI_SSH_HOST_KEY_CHECKING` | `accept-new` | `StrictHostKeyChecking` for runs and SSH pulls where the ssh_config doesn't set it: `accept-new` trusts a new host's first answer and refuses a changed key after that, `yes` reaches only hosts listed under Known hosts, `no` trusts any answer |
 | `ANSIBLE_GUI_RUN_TIMEOUT_MINUTES` | `120` | A run whose Ansible is still going after this long is stopped and marked failed, so one hung playbook can't hold up every run queued behind it. `0` for no limit |
@@ -70,8 +70,10 @@ under exactly that.
 
 Set up on the Repositories page: any number of inventory and playbook repositories,
 each with a branch and, for private repositories, a deploy key picked from the stored SSH keys.
-ansible-gui keeps its own clones in `data/repos/`, and resets each to the tip of its branch on every pull,
-discarding local changes.
+ansible-gui keeps a bare clone of each in `data/repos/<id>/git/`, and writes each commit a pull lands on out once,
+into its own directory, `data/repos/<id>/commits/<full hash>/`, which nothing writes into again. A pull lands on a
+new directory and a running playbook keeps reading its own, so a run executes one commit from its first task to its
+last. Directories no repository's current commit and no running run uses are removed.
 
 Private repositories sign in with a git token (HTTPS) or an SSH deploy key, both stored encrypted on the
 Credentials page. A token goes to git through `GIT_ASKPASS` only: never into the URL, `.git/config` or a credential
@@ -82,16 +84,24 @@ then asks Ansible again which hosts the targets match. If a pull fails, the run 
 touches a host, and an email goes out even for a run started by hand or a schedule set to never email.
 If the hosts changed since the preview, a run started by hand is canceled too; a schedule follows the inventory.
 
-Each run records the playbook commit and the inventory commit. A playbook repository has a **Run from**
+Each run records the full playbook commit, the full inventory commit and the collections it used. A playbook repository has a **Run from**
 directory: Ansible starts there, so that directory's `ansible.cfg` applies, and the playbooks directly in it
 are listed under their full path from the repository root (`lxc/site.yml`, never just `site.yml`). To run
 two directories of one repository, add it twice with different Run from directories.
 
-Collections: after a pull, if the repository's requirements file changed, `ansible-galaxy collection install`
-puts its collections in `data/collections/<repo>/`, which runs and previews of that repository use. The file
+Collections: after a pull, `ansible-galaxy collection install` puts the collections the commit's requirements file
+lists in `data/repos/collections/<SHA-256 of the file>/`, unless that directory is already there; runs and previews
+of that commit use it. The file
 is the one named on the repository, or else the first of `collections/requirements.yml` and `requirements.yml`
-in the Run from directory, then at the top level. A failed install cancels the run like a failed pull. Roles
-listed in the file are not installed.
+in the Run from directory, then at the top level. A failed install cancels the run like a failed pull, and the
+repository stays at the commit it was at. Roles listed in the file are not installed.
+
+**Run again…** on a finished run opens the launcher filled in from it, and runs the latest commits. When a
+repository has moved since, the launcher says so and offers **Run the commits run #N used instead**: nothing is
+pulled, and the earlier run's playbook and inventory commits are written out again from the bare clone if they were
+removed. If the branch was force-pushed and a commit is gone, the launcher says that and runs the latest. If the
+collections that run used were removed, they are installed again from the same requirements file, and the run's
+page notes that unless the file pins exact versions they may be newer. Schedules always run the latest.
 
 An inventory repository can name several inventory files (`lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml`);
 Ansible merges them into one inventory.
@@ -120,11 +130,8 @@ Runs go through [ansible-runner](https://github.com/ansible/ansible-runner), one
 project directory as the working directory (so its `ansible.cfg` applies). The launcher asks
 `ansible-playbook --list-hosts` which hosts the playbook and `--limit` pattern match, and the run is
 refused if that list changed between the preview and the click. Dry run (`--check`) is the default.
-While a run is going, nothing else changes the clones it uses, so the playbook runs entirely from the commit its
-run names. A pull asked for in the meantime (Pull, Reload inventory, saving the repository) is queued and happens
-as soon as that run finishes, and the repository's row says so meanwhile; deleting one of its
-repositories is refused until then. A run whose own pull has to wait for one started from the web UI says so in
-its log.
+Pulling while a run is going changes nothing under it. Deleting a repository a run is using is refused until the
+run ends. A run whose own pull has to wait for one started from the web UI says so in its log.
 
 ansible-runner's own directory (where it writes the run's environment, the become password and every event) is
 inside the run's temp directory and wiped with the keys when the run ends; only `output.log` stays in

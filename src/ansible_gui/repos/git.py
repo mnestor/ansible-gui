@@ -1,12 +1,17 @@
-"""Keeps each clone at the tip of its branch: fetch, then a forced detached checkout.
+"""One bare clone per repository, and each commit written out once into its own directory.
 
-The clones belong to ansible-gui. Local edits and untracked files in them are thrown
-away on every sync, so what runs is always exactly what is in git.
+    <home>/git/                 the bare clone: git's objects, no working files
+    <home>/commits/<sha>/       one commit, whole, never written again; no .git inside
+
+A commit directory is built under a temporary name beside it and renamed into place when it is complete,
+so a directory that exists is whole. Nothing ever writes into one again: a pull lands on a new commit
+in a new directory, and a run keeps reading the one it started with. Pruning removes the ones nobody uses.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,56 +21,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..scratch import Scratch
-from .store import Repo
 
-_locks: dict[int, threading.Lock] = {}
+SHA = re.compile(r"^[0-9a-f]{40}$")
+
+_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
-# Repo id -> the run whose Ansible is using that clone. A pull checks out over the clone and a delete removes
-# it, so neither may happen under a running playbook: its includes, roles and collections would come from
-# a commit the run doesn't name, or be gone.
-_in_use: dict[int, int] = {}
 
 
-def _lock(rid: int) -> threading.Lock:
+def _lock(home: Path) -> threading.Lock:
     with _locks_guard:
-        return _locks.setdefault(rid, threading.Lock())
-
-
-class GitError(Exception):
-    pass
-
-
-class RepoBusy(GitError):
-    """The clone is in use by a run. Nothing was changed."""
-
-    def __init__(self, run_id: int):
-        super().__init__(f"run #{run_id} is using its clone")
-        self.run_id = run_id
-
-
-def claim(repo_ids, run_id: int) -> None:
-    """Mark these clones as in use by run_id, before its own pull, so no other pull or delete starts after it."""
-    with _locks_guard:
-        for rid in repo_ids:
-            _in_use[rid] = run_id
-
-
-def release(run_id: int) -> None:
-    with _locks_guard:
-        for rid in [rid for rid, owner in _in_use.items() if owner == run_id]:
-            del _in_use[rid]
-
-
-def user(repo_id: int) -> int | None:
-    """The run using this clone, if any."""
-    with _locks_guard:
-        return _in_use.get(repo_id)
+        return _locks.setdefault(str(home), threading.Lock())
 
 
 @contextmanager
-def _locked(repo_id: int, on_wait=None):
-    """Hold the repo's lock, calling on_wait() first if someone else holds it."""
-    lock = _lock(repo_id)
+def locked(home: Path, on_wait=None):
+    """Hold the repository's lock, calling on_wait() first if someone else holds it: fetches into one bare
+    clone take turns, and so do writing out and pruning its commit directories."""
+    lock = _lock(home)
     if not lock.acquire(blocking=False):
         if on_wait:
             on_wait()
@@ -76,18 +48,18 @@ def _locked(repo_id: int, on_wait=None):
         lock.release()
 
 
-def _check_free(repo_id: int, for_run: int | None) -> None:
-    """Under the repo's lock: refuse if another run holds the clone. A run's own pull goes ahead."""
-    owner = user(repo_id)
-    if owner is not None and owner != for_run:
-        raise RepoBusy(owner)
+class GitError(Exception):
+    pass
+
+
+class CommitGone(GitError):
+    """The bare clone doesn't have this commit, not even after fetching: it was force-pushed away."""
 
 
 @dataclass
-class Synced:
+class Fetched:
     commit: str
     subject: str
-    changed: bool
 
 
 def _git(args: list[str], cwd: Path, env: dict, timeout: int = 180) -> str:
@@ -107,57 +79,120 @@ def is_https(url: str) -> bool:
     return url.startswith(("https://", "http://"))
 
 
-def sync(repo: Repo, ssh_config: Path, private_key: str | None = None,
-         token: tuple[str, str] | None = None, *, scratch: Scratch, for_run: int | None = None,
-         on_wait=None) -> Synced:
-    """Fetch the branch and check out its tip. Raises GitError with a one-line reason, or RepoBusy if
-    a run other than for_run is using the clone. on_wait() is called first if another pull of this repo
-    is in progress and this one has to wait for it.
+def _base_env() -> dict:
+    return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
+            "LC_ALL": "C",
+            # No credential helpers (osxkeychain, store, a manager): nothing is saved or read from them.
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""}
 
-    private_key signs in over SSH; token is (user, token) for HTTPS, handed to git
-    through GIT_ASKPASS so it never lands in the URL, .git/config or a credential helper.
-    The temp directory holding the key is noted in scratch, so that a server killed
-    mid-pull has it wiped by the next start."""
-    if token and not repo.url.startswith("https://"):
+
+def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str | None = None,
+          token: tuple[str, str] | None = None, *, scratch: Scratch) -> Fetched:
+    """Fetch the branch, whole, into the bare clone. Call it holding locked(home). Raises GitError.
+
+    private_key signs in over SSH; token is (user, token) for HTTPS, handed to git through GIT_ASKPASS so it
+    never lands in the URL, the clone's config or a credential helper. The temp directory holding either is
+    noted in scratch, so a server killed mid-pull has it wiped by the next start."""
+    if token and not url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
-    with _locked(repo.id, on_wait):
-        _check_free(repo.id, for_run)
-        workdir = scratch.make("git-")
-        try:
-            ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
-            if private_key:
-                key = workdir / "id"
-                fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
-                with os.fdopen(fd, "w") as f:
-                    f.write(private_key)
-                ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
-            env = {**os.environ, "GIT_SSH_COMMAND": shlex.join(ssh), "GIT_TERMINAL_PROMPT": "0",
-                   "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false", "LC_ALL": "C",
-                   # No credential helpers (osxkeychain, store, a manager): nothing is saved or read from them.
-                   "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""}
-            if token:
-                askpass = workdir / "askpass"
-                fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
-                with os.fdopen(fd, "w") as f:
-                    f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
-                env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
-            path = repo.path
-            path.mkdir(parents=True, exist_ok=True)
-            if not (path / ".git").exists():
-                _git(["init", "-q"], path, env)
-                _git(["remote", "add", "origin", repo.url], path, env)
-            else:
-                _git(["remote", "set-url", "origin", repo.url], path, env)
-            before = _head(path, env)
-            _git(["fetch", "-q", "--prune", "--depth", "50", "origin",
-                  f"+refs/heads/{repo.branch}:refs/remotes/origin/{repo.branch}"], path, env)
-            _git(["checkout", "-q", "--force", "--detach", f"origin/{repo.branch}"], path, env)
-            _git(["clean", "-q", "-ffdx"], path, env)
-            commit = _git(["rev-parse", "HEAD"], path, env)
-            subject = _git(["log", "-1", "--format=%s"], path, env)
-            return Synced(commit=commit, subject=subject, changed=commit != before)
-        finally:
-            scratch.drop(workdir)
+    bare = home / "git"
+    if (home / ".git").exists():  # a working copy from before commit directories: start again
+        shutil.rmtree(home)
+    workdir = scratch.make("git-")
+    try:
+        ssh = ["ssh", "-F", str(ssh_config), "-o", "BatchMode=yes"]
+        if private_key:
+            key = workdir / "id"
+            fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(private_key)
+            ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
+        env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
+        if token:
+            askpass = workdir / "askpass"
+            fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
+            with os.fdopen(fd, "w") as f:
+                f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
+            env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
+        if not (bare / "HEAD").exists():
+            shutil.rmtree(bare, ignore_errors=True)
+            bare.mkdir(parents=True)
+            _git(["init", "-q", "--bare"], bare, env)
+            _git(["remote", "add", "origin", url], bare, env)
+        else:
+            _git(["remote", "set-url", "origin", url], bare, env)
+        # The whole branch, not the last few commits: running an older run's commits again needs them.
+        _git(["fetch", "-q", "--prune", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"], bare, env)
+        commit = _git(["rev-parse", f"refs/remotes/origin/{branch}^{{commit}}"], bare, env)
+        subject = _git(["log", "-1", "--format=%s", commit], bare, env)
+        return Fetched(commit=commit, subject=subject)
+    finally:
+        scratch.drop(workdir)
+
+
+def has_commit(home: Path, commit: str) -> bool:
+    if not SHA.match(commit or "") or not (home / "git" / "HEAD").exists():
+        return False
+    try:
+        _git(["cat-file", "-e", f"{commit}^{{commit}}"], home / "git", _base_env(), timeout=30)
+    except GitError:
+        return False
+    return True
+
+
+def commit_dir(home: Path, commit: str) -> Path:
+    if not SHA.match(commit or ""):
+        raise ValueError(f"not a full commit hash: {commit!r}")
+    return home / "commits" / commit
+
+
+def materialize(home: Path, commit: str) -> Path:
+    """The commit's directory, written out from the bare clone if it isn't there. Call it holding
+    locked(home). Raises CommitGone if the bare clone doesn't have the commit.
+
+    Written through a temporary index, file for file as git checks it out: symlinks and executable bits
+    kept, and nothing left out the way .gitattributes export-ignore would leave it out of an archive."""
+    dest = commit_dir(home, commit)
+    if dest.is_dir():
+        return dest
+    if not has_commit(home, commit):
+        raise CommitGone(f"commit {commit[:12]} isn’t in the repository any more")
+    tmp = dest.with_name(f".{commit}.partial")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    index = dest.with_name(f".{commit}.index")
+    env = {**_base_env(), "GIT_INDEX_FILE": str(index), "GIT_DIR": str(home / "git"), "GIT_WORK_TREE": str(tmp)}
+    try:
+        _git(["read-tree", commit], tmp, env)
+        _git(["checkout-index", "--all", "--force"], tmp, env)
+    except GitError:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    finally:
+        index.unlink(missing_ok=True)
+    tmp.rename(dest)
+    return dest
+
+
+def prune(home: Path, keep: set[str]) -> list[str]:
+    """Remove every commit directory not in keep, and anything half-written. Call it holding locked(home)."""
+    gone = []
+    commits = home / "commits"
+    if not commits.is_dir():
+        return gone
+    for d in commits.iterdir():
+        if d.name in keep:
+            continue
+        shutil.rmtree(d, ignore_errors=True) if d.is_dir() else d.unlink(missing_ok=True)
+        if SHA.match(d.name):
+            gone.append(d.name)
+    return gone
+
+
+def remove(home: Path) -> None:
+    """Delete the bare clone and every commit directory."""
+    with locked(home):
+        shutil.rmtree(home, ignore_errors=True)
 
 
 _PLAIN = [
@@ -176,17 +211,3 @@ def _plain(line: str) -> str:
         if needle in line:
             return f"{says} (git: {line.removeprefix('fatal: ')})"
     return line.removeprefix("fatal: ")
-
-
-def _head(path: Path, env: dict) -> str | None:
-    try:
-        return _git(["rev-parse", "-q", "--verify", "HEAD"], path, env)
-    except GitError:
-        return None
-
-
-def remove_clone(repo: Repo) -> None:
-    """Delete the clone. Raises RepoBusy, leaving it in place, while a run is using it."""
-    with _lock(repo.id):
-        _check_free(repo.id, None)
-        shutil.rmtree(repo.path, ignore_errors=True)
