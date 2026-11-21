@@ -329,6 +329,9 @@ def test_the_yaml_view_carries_values_both_ways_and_stores_like_the_fields(app, 
     to_yaml = c.get("/runs/vars", params={**base, "vars_mode": "yaml", "var.build_host": "web3", "var.build_size": "large",
                                           "var.build_token": "", "extra_vars": "free_var: x"}).text
     assert 'name="var.build_host"' not in to_yaml and 'type="password" name="var.build_token"' in to_yaml
+    # The secret sits below the YAML, under its own heading saying why.
+    assert to_yaml.index('name="extra_vars"') < to_yaml.index("Secrets</span>") < to_yaml.index('name="var.build_token"')
+    assert "marked <span class=\"mono\">no_log</span>" in to_yaml
     text = html.unescape(to_yaml.split('name="extra_vars"')[1].split(">", 1)[1].split("</textarea>")[0])
     assert text == "build_host: web3\nbuild_size: large\nfree_var: x"
     back = c.get("/runs/vars", params={**base, "vars_mode": "fields", "extra_vars": text}).text

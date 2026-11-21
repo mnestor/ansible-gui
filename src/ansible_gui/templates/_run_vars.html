@@ -73,13 +73,13 @@
     {% endif %}
   </div>
 
-  {% set roles = [] %}{% for p in visible %}{% if p.role not in roles %}{% set _ = roles.append(p.role) %}{% endif %}{% endfor %}
+  {% set roles = [] %}{% for p in (visible if mode == "fields" else []) %}{% if p.role not in roles %}{% set _ = roles.append(p.role) %}{% endif %}{% endfor %}
   {% for role in roles %}
   {% set group = visible | selectattr("role", "equalto", role) | list %}
   {% set shown = [] %}{% set rest = [] %}
   {% for p in group %}{% if p.required or form.answers.get(p.name) or p.name in saved_secrets or mode == "yaml" %}{% set _ = shown.append(p) %}{% else %}{% set _ = rest.append(p) %}{% endif %}{% endfor %}
   <div class="prompt-role">
-    <p class="prompt-role-head"><span class="help">Role</span> <span class="mono prompt-role-name">{{ role }}</span> <span class="help">· <span class="mono">meta/argument_specs.yml</span>{% if mode == "yaml" %} · secrets stay as fields{% endif %}</span></p>
+    <p class="prompt-role-head"><span class="help">Role</span> <span class="mono prompt-role-name">{{ role }}</span> <span class="help">· <span class="mono">meta/argument_specs.yml</span></span></p>
     {% for p in shown %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}
     {% if rest %}
     <details class="more prompt-more" {% if not shown %}open{% endif %}>
@@ -107,5 +107,12 @@
               placeholder="build_host: web3&#10;packages: [git, curl]" aria-describedby="extra_vars-help">{{ form.extra_vars }}</textarea>
     <p class="help" id="extra_vars-help">YAML, one <span class="mono">name: value</span> per line.{% if prompts %} Declared variables ({{ prompts | rejectattr("kind", "equalto", "secret") | map(attribute="name") | join(", ") }}) are sent as plain text, like their fields; anything else may use Jinja.{% else %} Jinja works here.{% endif %} Saved as typed, so put secrets in a secret field or a credential.</p>
   </div>
+  {% if mode == "yaml" and visible %}
+  <div class="prompt-role">
+    <p class="prompt-role-head"><span class="prompt-role-name">Secrets</span> <span class="help">· not in the YAML</span></p>
+    <p class="help">{{ "These variables are" if visible | length > 1 else "This variable is" }} marked <span class="mono">no_log</span> by {{ "their roles" if visible | length > 1 else "its role" }}. It stays out of the YAML above, which is saved as typed.</p>
+    {% for p in visible %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}
+  </div>
+  {% endif %}
   {% endif %}
 </section>
