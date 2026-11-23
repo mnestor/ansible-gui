@@ -56,7 +56,7 @@
     function options() {
       return [...list.querySelectorAll('[role="option"]:not([aria-disabled="true"])')];
     }
-    function render() {
+    function renderList() {
       list.replaceChildren();
       [...sel.children].forEach((node) => {
         const group = node.tagName === "OPTGROUP" ? node : null;
@@ -79,6 +79,9 @@
           list.append(li);
         });
       });
+    }
+    function render() {
+      renderList();
       btn.replaceChildren(body(sel.selectedOptions[0], "picker-current-body"));
       const chev = document.createElement("span");
       chev.className = "picker-chevron";
@@ -94,7 +97,9 @@
       }
     }
     function open() {
-      render();
+      // Only the list: the click that opens it is usually on the text inside the button, and replacing
+      // that text mid-click would leave the click pointing at an element no longer on the page.
+      renderList();
       list.hidden = false;
       box.classList.add("is-open");
       btn.setAttribute("aria-expanded", "true");
@@ -169,9 +174,11 @@
     render();
   }
 
-  // One listener for every dropdown: a click outside an open one closes it.
+  // One listener for every dropdown: a click outside an open one closes it. By the path the click took, not
+  // by where its target is now: a handler on the way up may have re-rendered the element that was clicked.
   document.addEventListener("click", (e) => {
-    document.querySelectorAll(".picker-select.is-open").forEach((b) => { if (!b.contains(e.target)) b.closeList(); });
+    const path = e.composedPath();
+    document.querySelectorAll(".picker-select.is-open").forEach((b) => { if (!path.includes(b)) b.closeList(); });
   });
 
   function all(root) {
