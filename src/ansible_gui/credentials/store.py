@@ -31,6 +31,8 @@ USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\$?$", re.I)
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
+# What `ssoossh --server` takes: a host (https assumed), with a port and a path if need be.
+SSOOSSH_RE = re.compile(r"^(https://)?[A-Za-z0-9]([A-Za-z0-9.-]{0,252})(:\d{1,5})?(/[\w./~-]*)?$", re.I)
 RESERVED_ENV = {"PATH", "HOME", "USER", "SHELL", "PWD", "TMPDIR", "LANG", "SSH_AUTH_SOCK", "SSH_AGENT_PID",
                 "PYTHONPATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "DYLD_INSERT_LIBRARIES"}
 
@@ -143,10 +145,11 @@ class CredentialStore:
                 errors["username"] = "Use a login name like ansible or deploy: letters, digits, dot, dash, underscore."
             meta["username"] = login
             if values.get("remove_key"):
-                for k in ("type", "fingerprint", "comment", "public_key", "certificate", "cert"):
+                for k in ("type", "fingerprint", "comment", "public_key", "certificate", "cert", "ssoossh"):
                     meta.pop(k, None)
-                old = {k: v for k, v in old.items() if k != "private_key"}
+                old = {k: v for k, v in old.items() if k not in ("private_key", "ssoossh_code")}
             self._key(values, old, meta, secret, errors, existing, required=False)
+            self._ssoossh(values, old, meta, secret, errors)
             pw = values.get("become_password", "")
             if values.get("remove_become"):
                 pass
@@ -252,6 +255,37 @@ class CredentialStore:
         elif cert_text == "" and existing and "private_key" in secret and secret["private_key"] != old.get("private_key"):
             # A new key makes the old certificate useless.
             meta.pop("certificate", None)
+            meta.pop("cert", None)
+
+    @staticmethod
+    def _ssoossh(values, old, meta, secret, errors) -> None:
+        """An account's certificate fetched from ssoossh at every run, with an enrollment code from
+        `ssoossh service enroll` for this key. It takes the place of a pasted certificate. An empty server
+        stops it."""
+        server = values.get("ssoossh_server", "").strip().rstrip("/")
+        code = values.get("ssoossh_code", "").strip()
+        if (values.get("remove_key") and "private_key" not in secret) or not (server or code):
+            meta.pop("ssoossh", None)
+            return
+        key_changed = secret.get("private_key") != old.get("private_key")
+        kept = old.get("ssoossh_code") if not key_changed else None  # an enrollment is for one key
+        if not server:
+            errors["ssoossh_server"] = "Enter the ssoossh server the enrollment code is from."
+        elif server.lower().startswith("http://"):
+            errors["ssoossh_server"] = "Use https: the enrollment code is sent to this server."
+        elif not SSOOSSH_RE.match(server):
+            errors["ssoossh_server"] = "Enter the server’s address, like https://ssoossh.example.com."
+        if not (code or kept):
+            errors["ssoossh_code"] = ("Paste the enrollment code again: it was for the key this account had."
+                                      if old.get("ssoossh_code") else "Paste the enrollment code.")
+        if "private_key" not in secret and "private_key" not in errors:
+            errors["ssoossh_code"] = "Add the private key this enrollment code is for."
+        if values.get("certificate", "").strip() and "certificate" not in errors:
+            errors["certificate"] = "Paste a certificate or fetch one from ssoossh, not both."
+        if not errors:
+            meta["ssoossh"] = {"server": server}
+            secret["ssoossh_code"] = code or kept
+            meta.pop("certificate", None)  # ssoossh's replaces it at every run
             meta.pop("cert", None)
 
     def delete(self, cred_id: int) -> None:

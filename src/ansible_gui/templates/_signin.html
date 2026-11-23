@@ -3,7 +3,7 @@
 {# All three parts, said either way, so a missing one is visible: "user deploy · SSH certificate · no become password". #}
 {% macro account_summary(c) -%}
   {{- ("user " ~ c.meta.username) if c.meta.username else "no user: the inventory’s" -}}
-  {{- " · " ~ (("SSH certificate" if c.meta.cert else "SSH key") if c.meta.has_key else "no SSH key") -}}
+  {{- " · " ~ (("ssoossh certificate" if c.meta.ssoossh else "SSH certificate" if c.meta.cert else "SSH key") if c.meta.has_key else "no SSH key") -}}
   {{- " · " ~ ("become password" if c.meta.has_become else "no become password") -}}
 {%- endmacro %}
 

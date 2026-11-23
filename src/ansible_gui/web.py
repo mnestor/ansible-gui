@@ -1227,7 +1227,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return RedirectResponse("/credentials", status_code=303)
         return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
                                                            "env": cred.meta.get("env", ""),
-                                                           "username": cred.meta.get("username", "")})
+                                                           "username": cred.meta.get("username", ""),
+                                                           "ssoossh_server": (cred.meta.get("ssoossh") or {}).get("server", "")})
 
     def list_for(kind: str) -> str:
         return "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets"
@@ -1238,13 +1239,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         src = creds.get(int(values["copy_key_from"])) if str(values["copy_key_from"]).isdigit() else None
         if src and src.kind == "ssh_key" and src.readable and not values["private_key"].strip():
             values["private_key"] = creds.secret(src)["private_key"]
-            values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
+            if not values["ssoossh_server"].strip():  # else ssoossh's certificate takes its place
+                values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
 
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
         values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token",
-                                                "become_password", "copy_key_from")}
+                                                "become_password", "copy_key_from", "ssoossh_server", "ssoossh_code")}
         for flag in ("remove_certificate", "remove_key", "remove_become"):
             values[flag] = data.get(flag) == "1"
         if kind == "account":
@@ -1257,7 +1259,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             # Secrets are never echoed back into the page; the form asks for them again.
             keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
                     "certificate": values["certificate"] if not values["copy_key_from"] else "",
-                    "copy_key_from": values["copy_key_from"]}
+                    "copy_key_from": values["copy_key_from"], "ssoossh_server": values["ssoossh_server"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
         return RedirectResponse(f"{list_for(cred.kind)}?saved={cred.id}", status_code=303)

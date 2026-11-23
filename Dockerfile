@@ -23,6 +23,15 @@ COPY src ./src
 # the venv is all the next stage takes, so the image holds no source tree, lock file or uv.
 RUN uv sync --frozen --no-dev --group ansible --no-editable
 
+# The ssoossh client, for accounts that fetch their certificate at every run (`ssoossh service retrieve`):
+# a static Go binary from its release, checked against the release's checksum. Bump the version and the sum
+# together (ssoossh_<version>_checksums.txt).
+FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS ssoossh
+ARG SSOOSSH_VERSION=1.6.2
+ADD --checksum=sha256:a9cc0d69f3045fcc4c5165fccbae0be25ae3d2ce9d97795f4a852fd960b64991 \
+    https://github.com/mnestor/ssoossh/releases/download/v${SSOOSSH_VERSION}/ssoossh-client_${SSOOSSH_VERSION}_linux_amd64.tar.gz /ssoossh.tar.gz
+RUN tar -xzf /ssoossh.tar.gz -C / ssoossh && chmod 755 /ssoossh
+
 FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
 LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later"
 # apk upgrade: the fixes Alpine has published since the base image was built.
@@ -52,6 +61,7 @@ RUN apk upgrade --no-cache \
  && mkdir /data && chown app:app /data && chmod 700 /data \
  && mkdir /repos && chown fetcher:fetcher /repos && chmod 755 /repos
 COPY --from=build /app/.venv /app/.venv
+COPY --from=ssoossh /ssoossh /usr/local/bin/ssoossh
 COPY LICENSE /app/LICENSE
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

@@ -139,7 +139,7 @@ run interrupted. Stopping a worker cancels its jobs and kills Ansible's process 
 | `collections` | fetcher | none |
 | `prune`, `prune_collections`, `remove` | fetcher | none |
 | `cli` (inventory, preview, settings) | runner | vault password, if one is set |
-| `run` (playbook, ad hoc command, facts) | runner | the account's key and certificate, become password, vault password, environment secrets |
+| `run` (playbook, ad hoc command, facts) | runner | the account's key and certificate (or its ssoossh enrollment code, which the runner redeems for one), become password, vault password, environment secrets |
 
 Rules every job follows (`src/ansible_gui/worker/jobs.py`):
 

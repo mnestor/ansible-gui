@@ -248,7 +248,13 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
 - Each run gets its own ssh-agent, holding only the SSH key (and certificate) chosen for it, or nothing.
   `Match exec` commands run with that agent's `SSH_AUTH_SOCK`, so a command that fetches a certificate and
   `ssh-add`s it works.
-- Stored credentials (Fernet-encrypted in SQLite): SSH keys with optional certificates (no passphrases),
+- An account can fetch its certificate from [ssoossh](https://github.com/mnestor/ssoossh) instead of holding a
+  pasted one: enroll the key once with `ssoossh service enroll --key <file>`, then give the account that key,
+  the server and the enrollment code. Before each run the runner calls `ssoossh service retrieve` for the run's
+  copy of the key and loads the certificate into the run's agent with it; the run's log names the certificate.
+  The runner (`ansible-gui_hosts` in the compose layout) has to reach the ssoossh server.
+- Stored credentials (Fernet-encrypted in SQLite): SSH keys with optional certificates or ssoossh enrollment
+  codes (no passphrases),
   vault passwords, become passwords, and environment secrets, which every run gets as `$NAME` and
   `$NAME_FILE`. They are written to a 0700 temp dir for the run and wiped after it. Values are never shown
   back in the UI.

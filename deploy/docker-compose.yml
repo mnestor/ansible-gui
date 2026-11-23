@@ -123,7 +123,7 @@ services:
       interval: 30s
       timeout: 5s
     networks:
-      - hosts                                              # SSH to the managed hosts, and any jump host
+      - hosts                                              # SSH to the managed hosts, any jump host, and ssoossh
 
 volumes:
   repos:                                                   # rebuilt from git if lost: nothing to back up

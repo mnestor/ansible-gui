@@ -133,6 +133,7 @@ class Prepared:
     passwords: dict[str, str] = field(default_factory=dict)
     key: str | None = None  # the file in files to load into the run's ssh-agent
     user: str = ""  # the account's login, if the run signs in with one
+    ssoossh: dict | None = None  # {"server", "code"}: the runner fetches the key's certificate before loading it
 
 
 class Executor:
@@ -331,12 +332,15 @@ class Executor:
             shown = f"$ ansible-playbook {shlex.join(self._args(run, cmdline, inv_repo))}\n\n"
         job = {"project_dir": str(project), "inventory": opts.sources, "what": what, "verbosity": run.verbosity,
                "cmdline": cmdline, "files": files, "key": prepared.key, "passwords": prepared.passwords,
+               "ssoossh": prepared.ssoossh,
                "env": {"ANSIBLE_NOCOLOR": "1", "ANSIBLE_FORCE_COLOR": "0", **opts.env, **prepared.env},
                "ssh": self.workspace.ssh_job()}
 
         def on_message(msg: dict) -> None:
             if "scratch" in msg:  # the runner's temp directory is ready: the command line can name its files
                 log_file.write(shown.replace(SCRATCH, str(msg["scratch"])))
+            elif isinstance(msg.get("log"), str):  # a step of the runner's own, like fetching the certificate
+                log_file.write(f"[ansible-gui] {msg['log']}\n")
             elif isinstance(msg.get("event"), dict):
                 on_event(msg["event"])
             elif isinstance(msg.get("oversized"), int):  # from the socket, not the runner: see MAX_REPLY
@@ -500,7 +504,12 @@ class Executor:
         if "ssh_key" in loaded:
             cred, secret = loaded["ssh_key"]
             p.files["id"] = secret["private_key"]
-            if cred.meta.get("certificate"):  # ssh-add picks up id-cert.pub beside id by itself
+            if cred.meta.get("ssoossh") and secret.get("ssoossh_code"):
+                # The runner writes id-cert.pub with `ssoossh service retrieve` before it loads the key.
+                p.ssoossh = {"server": cred.meta["ssoossh"]["server"], "code": secret["ssoossh_code"]}
+                if cred.meta.get("public_key"):
+                    p.files["id.pub"] = cred.meta["public_key"].strip() + "\n"
+            elif cred.meta.get("certificate"):  # ssh-add picks up id-cert.pub beside id by itself
                 p.files["id-cert.pub"] = cred.meta["certificate"].strip() + "\n"
             p.key = "id"
             p.env["ANSIBLE_PRIVATE_KEY_FILE"] = f"{SCRATCH}/id"

@@ -220,11 +220,43 @@ def cli(job: dict, ctx: Context) -> dict:
             ctx.scratch.drop(d)
 
 
+SSOOSSH_TIMEOUT = 60  # seconds for `ssoossh service retrieve`: the CA key and one certificate
+
+
+def _ssoossh_cert(key: Path, conf: dict, ctx: Context) -> None:
+    """Write key-cert.pub with ssoossh, from the enrollment code the account holds, so that ssh-add loads the
+    certificate with the key. The scratch directory starts empty, so this asks the server once per run."""
+    server, code = str(conf.get("server") or ""), str(conf.get("code") or "")
+    if not server or not code or server.startswith("-"):
+        raise Refused("the account’s ssoossh server or enrollment code is missing")
+    try:
+        # The code is an argument: ssoossh takes it no other way. Nothing else runs in this container yet.
+        out = subprocess.run(["ssoossh", "--server", server, "service", "retrieve", "--key", str(key),
+                              "--code", code], capture_output=True, text=True, timeout=SSOOSSH_TIMEOUT,
+                             stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        raise Refused("this image has no ssoossh, which the account fetches its certificate with") from None
+    except subprocess.TimeoutExpired:
+        raise Refused(f"ssoossh didn’t get a certificate from {server} within {SSOOSSH_TIMEOUT} s") from None
+    cert = key.with_name(key.name + "-cert.pub")
+    if out.returncode != 0 or not cert.is_file():
+        why = (out.stderr or out.stdout).strip().splitlines()
+        raise Refused(f"ssoossh couldn’t get a certificate from {server}: "
+                      f"{why[-1].removeprefix('Error: ') if why else f'exit status {out.returncode}'}")
+    try:
+        info = ssh.inspect_cert(cert.read_text())
+        about = f"{info.key_id} · principals {', '.join(info.principals) or 'any'} · valid {info.valid}"
+    except ssh.InvalidKey as e:
+        raise Refused(f"ssoossh wrote a certificate OpenSSH can’t use: {e}") from None
+    ctx.send({"log": f"Certificate from ssoossh ({server}): {about}"})
+
+
 def run(job: dict, ctx: Context) -> dict:
     """A playbook, an ad hoc command or a fact gathering, through ansible-runner.
 
     The job's files (key, certificate, vault password, answers) go into a private temp directory, with its
-    ssh_config and known_hosts; the key is loaded into an ssh-agent that serves this run only. Sends
+    ssh_config and known_hosts; the key is loaded into an ssh-agent that serves this run only, with the
+    certificate ssoossh fetches first if the account has one from there. Sends
     {"scratch": dir} once that is ready, then {"event": ...} for every event, and returns the status.
     Canceling kills Ansible's whole process tree at once."""
     import ansible_runner  # slow to import, and only runs need it
@@ -247,9 +279,11 @@ def run(job: dict, ctx: Context) -> dict:
         _ssh(d, job["ssh"])
         agent = ssh.Agent(d)
         ctx.scratch.note(d, "agent", agent.pid)
-        if job.get("key"):
-            agent.add(d / job["key"])
         ctx.send({"scratch": str(d)})
+        if job.get("key"):
+            if job.get("ssoossh"):
+                _ssoossh_cert(d / job["key"], job["ssoossh"], ctx)
+            agent.add(d / job["key"])
         ctx.cancel.on_cancel(kill)
         project = ctx.path(job["project_dir"])
         what = dict(job["what"])

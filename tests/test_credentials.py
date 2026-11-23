@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import time
@@ -409,3 +410,136 @@ def test_the_key_note_is_folded_on_secrets_only(tmp_path):
     c = TestClient(create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path)))
     assert 'class="key-note"' in c.get("/credentials/secrets").text
     assert 'class="key-note"' not in c.get("/credentials").text
+
+
+# --- certificates from ssoossh ----------------------------------------------------------------------------
+
+FAKE_SSOOSSH = """#!/bin/sh
+# Stands in for `ssoossh --server S service retrieve --key K --code C`: signs K.pub with a test CA.
+while [ $# -gt 0 ]; do
+  case "$1" in --server) server=$2; shift ;; --key) key=$2; shift ;; --code) code=$2; shift ;; esac
+  shift
+done
+echo "$server $code" >> "$SSOOSSH_CALLS"
+[ "$code" = "expired-code" ] && { echo "Error: the server refused this enrollment code (expired)" >&2; exit 1; }
+ssh-keygen -q -s "$SSOOSSH_CA" -I "svc-ansible" -n ansible -V +1h "$key.pub" 2>/dev/null
+"""
+
+
+@pytest.fixture
+def fake_ssoossh(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "ssoossh").write_text(FAKE_SSOOSSH)
+    (bin_dir / "ssoossh").chmod(0o755)
+    ca = tmp_path / "sso-ca"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(ca)], check=True)
+    calls = tmp_path / "ssoossh-calls"
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("SSOOSSH_CA", str(ca))
+    monkeypatch.setenv("SSOOSSH_CALLS", str(calls))
+    return calls
+
+
+def test_an_account_can_fetch_its_certificate_from_ssoossh(store, keypair, tmp_path):
+    key, cert = keypair
+    c = store.save(kind="account", name="svc", values={"username": "ansible", "private_key": key, "certificate": cert},
+                   is_default=False, user="t")
+    assert c.meta["cert"]
+    c = store.save(kind="account", name="svc", values={"username": "ansible", "ssoossh_server": "https://sso.lab/",
+                                                       "ssoossh_code": "code-1"},
+                   is_default=False, user="t", cred_id=c.id)
+    assert c.meta["ssoossh"] == {"server": "https://sso.lab"}
+    assert "cert" not in c.meta and "certificate" not in c.meta  # ssoossh's replaces the pasted one
+    assert store.secret(c)["ssoossh_code"] == "code-1" and "code-1" not in str(c.meta)
+
+    # Left empty, the code is kept; the server can change.
+    c = store.save(kind="account", name="svc", values={"username": "ansible", "ssoossh_server": "sso2.lab"},
+                   is_default=False, user="t", cred_id=c.id)
+    assert c.meta["ssoossh"]["server"] == "sso2.lab" and store.secret(c)["ssoossh_code"] == "code-1"
+
+    # The code was for the old key: a new key needs a new one.
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(tmp_path / "new")], check=True)
+    with pytest.raises(Invalid) as e:
+        store.save(kind="account", name="svc", values={"private_key": (tmp_path / "new").read_text(),
+                                                       "ssoossh_server": "sso2.lab"},
+                   is_default=False, user="t", cred_id=c.id)
+    assert "code again" in e.value.errors["ssoossh_code"]
+
+    # Clearing the server stops it.
+    c = store.save(kind="account", name="svc", values={"username": "ansible"}, is_default=False, user="t",
+                   cred_id=c.id)
+    assert "ssoossh" not in c.meta
+
+
+def test_ssoossh_needs_https_a_code_a_key_and_no_pasted_certificate(store, keypair):
+    key, cert = keypair
+    cases = [
+        ({"private_key": key, "ssoossh_server": "http://sso.lab", "ssoossh_code": "x"}, "ssoossh_server", "https"),
+        ({"private_key": key, "ssoossh_server": "sso.lab; rm -rf /", "ssoossh_code": "x"}, "ssoossh_server", "address"),
+        ({"private_key": key, "ssoossh_code": "x"}, "ssoossh_server", "Enter the ssoossh server"),
+        ({"private_key": key, "ssoossh_server": "sso.lab"}, "ssoossh_code", "Paste the enrollment code"),
+        ({"username": "u", "ssoossh_server": "sso.lab", "ssoossh_code": "x"}, "ssoossh_code", "private key"),
+        ({"private_key": key, "certificate": cert, "ssoossh_server": "sso.lab", "ssoossh_code": "x"},
+         "certificate", "not both"),
+    ]
+    for values, field, says in cases:
+        with pytest.raises(Invalid) as e:
+            store.save(kind="account", name="svc", values=values, is_default=False, user="t")
+        assert says in e.value.errors.get(field, ""), (values, e.value.errors)
+
+
+def test_the_account_form_shows_ssoossh_and_never_the_code(app, keypair):
+    c = TestClient(app)
+    key, _ = keypair
+    r = c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
+                                     "ssoossh_server": "sso.lab", "ssoossh_code": "s3cret-code"},
+               follow_redirects=False)
+    assert r.status_code == 303, r.text
+    acct = app.state.creds.by_kind("account")[0]
+    form = c.get(f"/credentials/{acct.id}").text
+    assert 'value="sso.lab"' in form and "s3cret-code" not in form and "<details class=\"more\" open>" in form
+    listing = c.get("/credentials").text
+    assert "certificate from ssoossh" in listing and "s3cret-code" not in listing
+    launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
+    assert "user ansible · ssoossh certificate · no become password" in launcher
+
+    bad = c.post("/credentials", data={"kind": "account", "name": "svc2", "private_key": key,
+                                       "ssoossh_server": "http://sso.lab", "ssoossh_code": "s3cret-code"})
+    assert bad.status_code == 400 and 'value="http://sso.lab"' in bad.text and "s3cret-code" not in bad.text
+
+
+@needs_ansible
+def test_a_run_loads_the_certificate_ssoossh_fetched(app, keypair, fake_ssoossh):
+    c = TestClient(app)
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
+                                 "ssoossh_server": "https://sso.lab", "ssoossh_code": "s3cret-code",
+                                 "is_default": "1"})
+    c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})  # env.yml reads it
+    acct = app.state.creds.by_kind("account")[0]
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                              "account": str(acct.id)}, follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful", log
+    assert "[ansible-gui] Certificate from ssoossh (https://sso.lab): svc-ansible · principals ansible" in log
+    assert "ED25519-CERT" in log  # loaded into the run's agent with the key
+    assert "s3cret-code" not in log
+    assert fake_ssoossh.read_text() == "https://sso.lab s3cret-code\n"  # once per run
+
+
+@needs_ansible
+def test_a_run_stops_when_ssoossh_refuses_the_code(app, keypair, fake_ssoossh):
+    c = TestClient(app)
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
+                                 "ssoossh_server": "sso.lab", "ssoossh_code": "expired-code"})
+    acct = app.state.creds.by_kind("account")[0]
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                              "account": str(acct.id)}, follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.status == "error"
+    assert run.error == ("Didn’t start: ssoossh couldn’t get a certificate from sso.lab: "
+                         "the server refused this enrollment code (expired)")
+    assert "expired-code" not in app.state.store.log_path(run.id).read_text()
