@@ -129,7 +129,7 @@
     root.querySelectorAll("template[data-log-append]").forEach((t) => {
       if (logEl) {
         const pinned = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
-        logEl.append(t.content.textContent);
+        logEl.append(t.content);  // the lines as the server marked them up (ok, changed, failed…), not their text alone
         if (pinned) logEl.scrollTop = logEl.scrollHeight;
       }
       t.remove();

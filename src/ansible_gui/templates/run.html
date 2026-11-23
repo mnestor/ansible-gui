@@ -44,10 +44,10 @@
     <h2 id="log-h" class="section-title">Output</h2>
     <a class="quiet-link" href="/runs/{{ run.id }}/log.txt" hx-boost="false">Download log</a>
   </div>
-  <pre class="well log" id="log" data-follow tabindex="0" aria-label="Run output">{{ log_text }}</pre>
+  <pre class="well log" id="log" data-follow tabindex="0" aria-label="Run output">{{ log_html }}</pre>
   <p id="poll-lost" class="banner banner-warn" role="status" hidden>Lost contact with ansible-gui. Retrying every second; the run carries on on the server.</p>
   {% if not run.finished %}
-    <div hx-get="/runs/{{ run.id }}/live?offset={{ log_offset }}" hx-trigger="every 1s" hx-swap="outerHTML" id="poller"></div>
+    <div hx-get="/runs/{{ run.id }}/live?offset={{ log_offset }}&state={{ log_state }}" hx-trigger="every 1s" hx-swap="outerHTML" id="poller"></div>
   {% endif %}
 </section>
 {% endblock %}

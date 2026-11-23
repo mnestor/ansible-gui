@@ -153,6 +153,12 @@ refused if that list changed between the preview and the click. Dry run (`--chec
 Pulling while a run is going changes nothing under it. Deleting a repository a run is using is refused until the
 run ends. A run whose own pull has to wait for one started from the web UI says so in its log.
 
+The run page colours the output by what each line reports: ok, changed, failed, unreachable, skipped, the lines
+a `--diff` added and removed, warnings, and the PLAY and TASK headings. Ansible's own colours stay off: they are
+escape codes, and `output.log` (what **Download log** and the email hand out) stays plain text. The page works the
+colour out from how Ansible's default output starts each line: with a custom `stdout_callback` that lays its
+output out differently, the lines it doesn't recognise are left uncoloured.
+
 ansible-runner's own directory (where it writes the run's environment, the become password and every event) is
 inside the run's temp directory and wiped with the keys when the run ends; only `output.log` stays in
 `data/runs/<id>/`. Runs older than `ANSIBLE_GUI_RUN_RETENTION_DAYS` are deleted at start and every six hours.

@@ -561,6 +561,16 @@ select.input { appearance: auto; }
   border-radius: var(--radius-card); padding: var(--s4) var(--s5); box-shadow: var(--shadow-card);
 }
 @media (max-width: 639px) { .log { white-space: pre-wrap; } }
+/* What each line reports, in Ansible's own terms (logview.py). The log is dark in both themes, so the status
+   colours here are the dark theme's whichever is on: on --nav-bg they clear 7:1 or more. Every coloured line
+   also says its status in words ("ok:", "changed:", "fatal:"), so the colour is never the only sign. */
+.log { --ok: #2ee48a; --changed: #fbbf24; --danger: #ff8a8a; --unreachable: #f075b5; --ink-muted: #9aa1b3; }
+.ll-ok, .ll-add { color: var(--ok); }
+.ll-changed, .ll-warn { color: var(--changed); }
+.ll-failed, .ll-del { color: var(--danger); }
+.ll-unreachable { color: var(--unreachable); }
+.ll-skipped, .ll-note { color: var(--ink-muted); }
+.ll-head { font-weight: 700; color: var(--nav-ink-strong); }
 
 /* ---------------------------------------------------------------- Sign-in, credentials */
 .help-block { color: var(--ink-muted); max-width: 80ch; margin-bottom: var(--s3); }

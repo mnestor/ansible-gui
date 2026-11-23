@@ -43,7 +43,7 @@ from .repos.store import Invalid as RepoInvalid
 from .repos.store import RepoStore
 from . import repofiles
 from .repos.workspace import Workspace
-from .runs import playbooks, variables
+from .runs import logview, playbooks, variables
 from .runs.executor import Executor
 from .worker.socket import SocketWorker
 from .runs.schedules import Invalid as ScheduleInvalid
@@ -1106,15 +1106,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not run:
             return render(request, "run_missing.html", status=404, section="runs", run_id=run_id)
         text, offset = read_log(run_id)
-        return render(request, "run.html", section="runs", log_text=text, **run_context(run, offset))
+        log_html, log_state = logview.render(text)
+        return render(request, "run.html", section="runs", log_html=log_html, log_state=log_state,
+                      **run_context(run, offset))
 
     @app.get("/runs/{run_id}/live", response_class=HTMLResponse)
-    def run_live(request: Request, run_id: int, offset: int = 0):
+    def run_live(request: Request, run_id: int, offset: int = 0, state: str = ""):
         run = store.get(run_id)
         if not run:
             return HTMLResponse("", status_code=404)
         chunk, offset = read_log(run_id, offset)
-        resp = render(request, "_run_live.html", section="runs", chunk=chunk, **run_context(run, offset))
+        chunk, state = logview.render(chunk, state)  # coloured on from where the page's last piece ended
+        resp = render(request, "_run_live.html", section="runs", chunk=chunk, log_state=state,
+                      **run_context(run, offset))
         if run.finished:
             resp.headers["HX-Refresh"] = "true"  # reload once for the final actions and full log
         return resp

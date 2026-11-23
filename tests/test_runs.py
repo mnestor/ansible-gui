@@ -167,6 +167,29 @@ def test_live_endpoint_streams_from_offset(app, c):
     assert "data-log-append" not in rest
 
 
+def test_the_log_is_coloured_by_what_each_line_reports_and_the_file_stays_plain(app, c):
+    r = c.post("/runs", data={"playbook": "site.yml", "target": "box2", "mode": "apply", "expected": ["box2"]},
+               follow_redirects=False)
+    run_id = int(r.headers["location"].rsplit("/", 1)[1])
+    wait(app, run_id)
+    raw = app.state.store.log_path(run_id).read_bytes()
+    log = raw.decode()
+    assert "<span" not in log and "\x1b[" not in log  # what Download log and the email hand out
+    assert c.get(f"/runs/{run_id}/log.txt").content == raw
+    page = c.get(f"/runs/{run_id}").text
+    assert '<span class="ll ll-head">PLAY [' in page and '<span class="ll ll-head">PLAY RECAP' in page
+    assert 'class="ll ll-note">$ ansible-playbook ' in page and "ll-ok" in page
+    # Pieces carry on in the state the last one ended in, which the page hands back.
+    cut = log.index("PLAY RECAP")
+    cut = log.index("\n", cut) + 1  # just under the recap heading
+    live = c.get(f"/runs/{run_id}/live", params={"offset": len(log[:cut].encode()), "state": ""}).text
+    assert "data-log-append" in live and 'class="ll ll-' in live and "PLAY RECAP" not in live
+    with app.state.store.log_path(run_id).open("ab") as f:
+        f.write(b'    "msg": "the rest of a result"\n')
+    under = c.get(f"/runs/{run_id}/live", params={"offset": len(raw), "state": "failed"}).text
+    assert '<span class="ll ll-failed">    &#34;msg&#34;: &#34;the rest of a result&#34;' in under
+
+
 def test_history_and_inventory_last_result(app, c):
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
                follow_redirects=False)

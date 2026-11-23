@@ -68,7 +68,7 @@ Accent badges are only for the winning source. "Running", "default" and the acti
 
 ## Components
 - Button: primary (accent fill, accent-fg text, soft shadow, one per screen), secondary (`--well` fill, 1px `--rule-strong` border), quiet (text only). 36px tall, 8px radius.
-- Run log: a terminal card. `--nav-bg` background and `--nav-text` in both themes, `--radius-card`. Destructive is danger text on danger tint, never next to primary.
+- Run log: a terminal card. `--nav-bg` background and `--nav-text` in both themes, `--radius-card`. Lines take the status they report, in the dark theme's status colours whichever theme is on (the card is dark in both): ok and a diff's added lines `#2ee48a` (11.2:1 on the light theme's `--nav-bg`, 11.9:1 on the dark one's), changed and warnings `#fbbf24` (11.2 / 11.9), failed and removed lines `#ff8a8a` (8.2 / 8.8), unreachable `#f075b5` (7.1 / 7.5), skipped and ansible-gui's own lines `#9aa1b3` (7.2 / 7.7); PLAY, TASK and recap headings are `--nav-ink-strong` at 700. The words stay ("ok:", "changed:", "fatal:"): colour is never the only sign. Destructive is danger text on danger tint, never next to primary.
 - Source chip: mono file path; the winning layer in `--accent-ink`, overridden layers in `--ink-muted` struck through.
 - Badge: status text on status tint, 12px, 600. `badge-lg` (15px) only for the run status on a run page.
 - Danger-quiet button: danger text, no fill; destructive controls on a screen (Cancel run). Needs a second click within 4s to confirm.
