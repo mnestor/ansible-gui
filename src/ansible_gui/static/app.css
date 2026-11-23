@@ -450,6 +450,10 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 /* The same look over a native <select> (select.js); on touch screens the native picker stays. */
 .picker-select .picker-current { width: 100%; min-height: 38px; padding: var(--s2) var(--s3); font: inherit; color: var(--ink); text-align: left; }
 .picker-small { max-width: 280px; }
+.picker-medium { max-width: 440px; }
+/* The Targets box (suggest.js): a dropdown's list under a text field. One line a name, a group's host count
+   at the end of its line. */
+.picker-combo .picker-option-body { flex-direction: row; align-items: baseline; justify-content: space-between; gap: var(--s4); }
 .picker-title { font-weight: 500; overflow-wrap: anywhere; }
 .picker-select .picker-about { font-size: var(--fs-xs); }
 .picker-chevron { display: inline-flex; color: var(--ink-muted); }
@@ -850,7 +854,7 @@ table.repos th[scope=row] { white-space: normal; }
 .repo-strip-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); min-width: 0; overflow-wrap: anywhere; }
 
 /* In forms, fields span their card: one clean right edge rather than a ragged one. */
-.launcher .input-small, .launcher .input-medium, .launcher .picker-small { max-width: none; }
+.launcher .input-small, .launcher .input-medium, .launcher .picker-small, .launcher .picker-medium { max-width: none; }
 .launcher .reveal .input { flex: 1 1 auto; }
 .launcher .picker-select .picker-list { right: 0; width: auto; max-width: none; }
 

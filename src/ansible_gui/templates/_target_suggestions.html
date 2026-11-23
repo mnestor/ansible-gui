@@ -1,0 +1,8 @@
+{# What the Targets box offers: the inventory's groups, each with how many hosts it reaches, then its hosts.
+   suggest.js shows them under the box in the app's own list; a touch screen keeps the browser's, which reads
+   the label. Expects groups, group_sizes and hosts. #}
+<datalist id="target-suggestions">
+  {% for g in groups %}<option value="{{ g }}" data-kind="group" data-count="{{ group_sizes[g] }}" label="{{ g }} · group, {{ group_sizes[g] }} host{{ 's' if group_sizes[g] != 1 }}">{% endfor %}
+  {% if hosts %}<option value="all" data-kind="group" data-count="{{ hosts | length }}" label="all · every host, {{ hosts | length }}">{% endif %}
+  {% for h in hosts %}<option value="{{ h }}" data-kind="host">{% endfor %}
+</datalist>

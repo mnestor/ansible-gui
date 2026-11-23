@@ -48,11 +48,8 @@
 
   <div class="field">
     <label class="label" for="target">Targets</label>
-    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions">
-    <datalist id="target-suggestions">
-      {% for g in groups %}<option value="{{ g }}">{% endfor %}
-      {% for h in hosts %}<option value="{{ h }}">{% endfor %}
-    </datalist>
+    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions" data-suggest>
+    {% include "_target_suggestions.html" %}
     <p class="help" id="target-help">A host, a group, or any <span class="mono">--limit</span> pattern, like <span class="mono">web:!web2</span>. Leave empty to use the playbook’s own hosts.</p>
   </div>
 </section>

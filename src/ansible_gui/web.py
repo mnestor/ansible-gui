@@ -770,7 +770,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             playbook_repos=ws.playbook_repos(), inventory_repo=inv_repo, inventories=ws.inventory_repos(),
             cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
             env_secrets=creds.by_kind("env_secret"),
-            hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [],
+            **target_suggestions(inv),
         )
 
     def default_credentials(form: dict, given) -> None:
@@ -802,6 +802,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/runs", response_class=HTMLResponse)
     def runs(request: Request):
         return render(request, "runs.html", section="runs", runs=store.recent())
+
+    def target_suggestions(inv) -> dict:
+        """What the Targets box offers: every group that reaches a host, but all (which the box adds, last),
+        with how many it reaches through its children too, and every host."""
+        if not inv:
+            return {"hosts": [], "groups": [], "group_sizes": {}}
+        sizes = {name: len(g.all_hosts) for name, g in inv.groups.items()}
+        return {"hosts": sorted(inv.hosts), "groups": sorted(g for g in inv.groups if g != "all" and sizes[g]),
+                "group_sizes": sizes}
 
     def playbook_summaries(books) -> dict[str, str]:
         return {b.key: variables.summary(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
@@ -970,7 +979,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       has_playbook_repo=bool(ws.playbook_repos()),
                       cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
                       env_secrets=creds.by_kind("env_secret"),
-                      hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [])
+                      **target_suggestions(inv))
 
     @app.get("/runs/command", response_class=HTMLResponse)
     def new_command(request: Request):

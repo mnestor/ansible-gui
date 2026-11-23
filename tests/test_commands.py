@@ -144,3 +144,30 @@ def test_an_account_user_cant_carry_anything_but_a_user_name(client):
         r = c.post("/credentials", data={"kind": "account", "name": "bad", "username": bad})
         assert r.status_code == 400, bad
     assert app.state.creds.by_kind("account") == []
+
+
+@needs_ansible
+def test_the_targets_box_is_told_which_names_are_groups_and_how_many_hosts_each_reaches(tmp_path):
+    """The suggestions were one flat list, groups then hosts, in the browser's own popup: nothing said which
+    was which, and a group widens what a run touches."""
+    p = tmp_path / "proj"
+    (p / "inventory").mkdir(parents=True)
+    (p / "inventory" / "hosts.yml").write_text(
+        "all:\n  children:\n    lab:\n      hosts:\n        box1:\n"
+        "    prod:\n      children:\n        web:\n          hosts:\n            web1:\n            web2:\n"
+        "        db:\n          hosts:\n            db1:\n")
+    (p / "site.yml").write_text("- hosts: all\n  gather_facts: false\n  tasks: []\n")
+    app = create_app(Settings(project_dir=p, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              secret_key="s" * 40))
+    c = TestClient(app)
+    for page in (c.get("/runs/command").text, c.get("/runs/new", params={"playbook": "site.yml"}).text):
+        box = page.split('<datalist id="target-suggestions">')[1].split("</datalist>")[0]
+        names = [(o.split('"')[1], "group" if 'data-kind="group"' in o else "host") for o in box.split("<option ")[1:]]
+        assert names == [("db", "group"), ("lab", "group"), ("prod", "group"), ("web", "group"), ("all", "group"),
+                         ("box1", "host"), ("db1", "host"), ("web1", "host"), ("web2", "host")]
+        # A group counts the hosts of its children; one that reaches none (ungrouped, here) isn't offered.
+        assert 'value="prod" data-kind="group" data-count="3" label="prod · group, 3 hosts"' in box
+        assert 'value="lab" data-kind="group" data-count="1" label="lab · group, 1 host"' in box
+        assert 'value="all" data-kind="group" data-count="4"' in box and "ungrouped" not in box
+        assert 'list="target-suggestions" data-suggest' in page  # suggest.js draws the list from these
+        assert "/static/suggest.js?v=" in page
