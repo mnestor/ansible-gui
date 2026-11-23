@@ -77,6 +77,25 @@ def test_ping_with_become_is_logged_with_become(client):
 
 
 @needs_ansible
+def test_a_command_can_be_run_verbosely_to_see_the_connection(client):
+    """Gather facts said "unreachable" and nothing more: there was no way to ask Ansible, or ssh, for detail."""
+    app, c = client
+    page = c.get("/runs/command", params={"target": "box1", "module": "ansible.builtin.ping", "verbosity": "4"}).text
+    assert '<details class="more" open>' in page and 'name="verbosity" value="4" checked' in page
+    assert 'name="verbosity" value="0" checked' in c.get("/runs/command", params={"verbosity": "9"}).text  # not a level
+    run = finish(app, c.post("/runs/command", data={"target": "box1", "module": "ansible.builtin.ping",
+                                                    "verbosity": "3", "expected": ["box1"]}, follow_redirects=False))
+    log = app.state.store.log_path(run.id).read_text()
+    assert run.status == "successful" and run.verbosity == 3, log
+    assert log.startswith("$ ansible box1 -m ansible.builtin.ping -i ") and " -vvv " in log.splitlines()[0]
+    assert "ESTABLISH LOCAL CONNECTION" in log  # what -vvv adds: how each host was reached
+    assert "verbosity=3" in c.get(f"/runs/{run.id}").text  # Run again… keeps it
+    # A host's page offers the test beside Gather facts: a ping, with what ssh itself says.
+    host = c.get("/inventory/hosts/box1").text
+    assert "module=ansible.builtin.ping&amp;verbosity=4" in host and "Test the connection" in host
+
+
+@needs_ansible
 def test_a_command_is_refused_when_the_hosts_changed_since_the_preview(client):
     app, c = client
     r = c.post("/runs/command", data={"target": "lab", "module": "shell", "args": "true", "expected": ["box1"]})

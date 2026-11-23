@@ -3,11 +3,15 @@
   <div class="section-head">
     <h2 id="facts-h" class="section-title">Facts</h2>
     {% if inv_repo %}
-    <form method="post" action="/facts/gather" hx-boost="false">
-      <input type="hidden" name="target" value="{{ name }}">
-      <input type="hidden" name="inventory" value="{{ inv_repo.id }}">
-      <button class="btn btn-secondary" type="submit" data-busy-label="Starting…">Gather facts</button>
-    </form>
+    <div class="actions">
+      {# A ping with ssh's own account of the connection: what to reach for when Gather facts says unreachable. #}
+      <a class="btn btn-quiet" href="/runs/command?{{ {'target': name, 'inventory': inv_repo.id, 'module': 'ansible.builtin.ping', 'verbosity': 4} | urlencode }}">Test the connection…</a>
+      <form method="post" action="/facts/gather" hx-boost="false">
+        <input type="hidden" name="target" value="{{ name }}">
+        <input type="hidden" name="inventory" value="{{ inv_repo.id }}">
+        <button class="btn btn-secondary" type="submit" data-busy-label="Starting…">Gather facts</button>
+      </form>
+    </div>
     {% endif %}
   </div>
   {% if not facts %}

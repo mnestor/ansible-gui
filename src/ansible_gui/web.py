@@ -152,7 +152,8 @@ COMMON_MODULES = ["ansible.builtin.shell", "ansible.builtin.command", "ansible.b
 
 def command_url(run: Run) -> str:
     q = {"target": run.target, "module": run.module, "args": run.module_args, "become": "1" if run.become else "",
-         "inventory": "" if run.inventory_id is None else str(run.inventory_id)}
+         "inventory": "" if run.inventory_id is None else str(run.inventory_id),
+         "verbosity": str(run.verbosity) if run.verbosity else ""}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
     return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
@@ -938,9 +939,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- ad hoc commands ------------------------------------------------------------
     def read_command(src) -> dict:
+        verbosity = str(src.get("verbosity") or "0")
         return {"target": (src.get("target") or "").strip(),
                 "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
                 "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
+                "verbosity": int(verbosity) if verbosity in ("0", "1", "2", "3", "4") else 0,
                 "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
 
     def command_hosts(form: dict) -> playbooks.Preview:
@@ -1001,7 +1004,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run = store.create(kind="command", playbook="", module=form["module"], module_args=form["args"],
                            become=form["become"], repo_id=ws.command_repo(chosen_inventory(form)).id,
                            target=form["target"], tags="",
-                           skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=pv.hosts,
+                           skip_tags="", check_mode=False, diff=False, verbosity=form["verbosity"],
+                           expected_hosts=pv.hosts,
                            trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
                            inventory_id=int(form["inventory"]))
         executor.submit(run.id)

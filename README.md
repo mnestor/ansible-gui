@@ -192,6 +192,11 @@ when there is no playbook repository. There is no dry run: `shell` and
 the button needs a second click (except for `ping` and `setup`), and the run is refused if the hosts changed
 since the list was shown. Commands appear in run history with **Run again…**; they can't be scheduled.
 
+To see why a host can't be reached, raise **Verbosity** under More options: `-vvv` shows the ssh command Ansible
+runs, `-vvvv` also what ssh itself says (the config files it read, the name it looked up, the keys it offered).
+**Test the connection…**, beside Gather facts on a host's page, opens the form with `ansible.builtin.ping` at
+`-vvvv`. For Gather facts with that detail, run `ansible.builtin.setup` here: its facts are saved all the same.
+
 ## Ansible settings
 
 **Ansible settings**, next to each playbook repository on Repositories, shows what `ansible-config dump

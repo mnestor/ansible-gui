@@ -542,16 +542,16 @@ class Executor:
         args = []
         for s in self.workspace.inventory_sources(inv_repo):
             args += ["-i", s]
+        verbose = ["-" + "v" * run.verbosity] if run.verbosity else []
         if run.kind == "facts":
-            return [run.target, "-m", "ansible.builtin.setup", *args, *cmdline]
+            return [run.target, "-m", "ansible.builtin.setup", *args, *verbose, *cmdline]
         if run.kind == "command":
-            return [run.target, "-m", run.module, *(["-a", run.module_args] if run.module_args else []), *args, *cmdline]
+            return [run.target, "-m", run.module, *(["-a", run.module_args] if run.module_args else []), *args,
+                    *verbose, *cmdline]
         if run.target:
             args += ["--limit", run.target]
         if run.tags:
             args += ["--tags", run.tags]
         if run.skip_tags:
             args += ["--skip-tags", run.skip_tags]
-        if run.verbosity:
-            args.append("-" + "v" * run.verbosity)
-        return [*args, *cmdline, run.playbook]
+        return [*args, *verbose, *cmdline, run.playbook]
