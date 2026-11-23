@@ -33,6 +33,10 @@ _RECAP = re.compile(r"^\S+\s*:\s+ok=(\d+)\s+changed=(\d+)\s+unreachable=(\d+)\s+
 _ADHOC = re.compile(r"^\S+ \| (SUCCESS|CHANGED|FAILED|UNREACHABLE|SKIPPED)\b")
 _ADHOC_KIND = {"SUCCESS": "ok", "CHANGED": "changed", "FAILED": "failed", "UNREACHABLE": "unreachable",
                "SKIPPED": "skipped"}
+# The only markup there is. Everything else that goes into the page is the log's text, escaped: the pieces
+# are joined as Markup, which escapes whatever isn't Markup already.
+_OPEN = Markup('<span class="ll ll-%s">')
+_CLOSE = Markup("</span>")
 
 
 def _said(line: str) -> str:
@@ -57,7 +61,7 @@ def render(text: str, state: str = "") -> tuple[Markup, str]:
     """text (whole lines) as HTML, and the state to render what follows it with. state is "" at the top of a
     log; otherwise only what an earlier call returned means anything."""
     under, in_diff = _parse(state)  # the result the next lines belong to; inside a --diff block
-    out: list[str] = []
+    out: list[Markup] = []
     open_kind = ""
     for line in text.splitlines(keepends=True):
         body = line.rstrip("\r\n")
@@ -78,11 +82,11 @@ def render(text: str, state: str = "") -> tuple[Markup, str]:
                 kind = under
         if kind != open_kind:
             if open_kind:
-                out.append("</span>")
+                out.append(_CLOSE)
             if kind:
-                out.append(f'<span class="ll ll-{kind}">')
+                out.append(_OPEN % kind)
             open_kind = kind
-        out.append(str(escape(line)))
+        out.append(escape(line))
     if open_kind:
-        out.append("</span>")
-    return Markup("".join(out)), f"{under}~d" if in_diff else under
+        out.append(_CLOSE)
+    return Markup("").join(out), f"{under}~d" if in_diff else under
