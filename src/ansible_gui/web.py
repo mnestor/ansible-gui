@@ -401,7 +401,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         neighbours = (names[at - 1] if at > 0 else None, names[at + 1] if 0 <= at < len(names) - 1 else None)
         return inventory_page(request, "host.html", name=name, found=found, selected=("host", name),
                               neighbours=neighbours, position=(at + 1, len(names)),
-                              facts=facts.get(name), can_gather=bool(ws.playbook_repos()))
+                              facts=facts.get(name))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
     def group(request: Request, name: str):
@@ -415,14 +415,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/facts/gather")
     async def gather_facts(request: Request):
         """A read-only run: ansible TARGET -m setup, with the default credentials. Its facts are saved like
-        any run's. It uses the first playbook repository's ansible.cfg and group_vars."""
+        any run's. It starts where a command does: see Workspace.command_repo()."""
         data = await request.form()
         target = str(data.get("target") or "").strip()
         inv_repo = chosen_inventory({"inventory": str(data.get("inventory") or "")})
-        books = ws.playbook_repos()
-        if not target or target.startswith("-") or inv_repo is None or not books:
-            return PlainTextResponse("Gather facts needs a host or group, an inventory and a playbook repository.",
-                                     status_code=400)
+        if not target or target.startswith("-") or inv_repo is None:
+            return PlainTextResponse("Gather facts needs a host or group and an inventory.", status_code=400)
         chosen: dict = {}
         for kind in PER_RUN:
             cred = creds.default(kind)
@@ -432,9 +430,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     chosen[kind]["user"] = cred.meta.get("username", "")
         chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
                                 for c in creds.by_kind("env_secret")]
-        run = store.create(kind="facts", playbook="", repo_id=books[0].id, target=target, tags="", skip_tags="",
-                           check_mode=False, diff=False, verbosity=0, expected_hosts=[], credentials=chosen,
-                           trigger=auth.display_name(auth.current_user(request)), inventory_id=inv_repo.id)
+        run = store.create(kind="facts", playbook="", repo_id=ws.command_repo(inv_repo).id, target=target, tags="",
+                           skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=[],
+                           credentials=chosen, trigger=auth.display_name(auth.current_user(request)),
+                           inventory_id=inv_repo.id)
         executor.submit(run.id)
         return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
@@ -946,17 +945,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def command_hosts(form: dict) -> playbooks.Preview:
         """Which hosts the command would reach. It runs with the first playbook repository's ansible.cfg and the
-        group_vars next to its playbooks, as Gather facts does."""
+        group_vars next to its playbooks, as Gather facts does; without a playbook repository, from the top of
+        the inventory's own."""
         inv = chosen_inventory(form)
-        books = ws.playbook_repos()
         if not form["target"]:
             return playbooks.Preview()
         if inv is None:
             return playbooks.Preview(error="Choose the inventory to run against.")
-        if not books:
-            return playbooks.Preview(error="Add a playbook repository first: commands use its ansible.cfg.")
-        opts = dataclasses.replace(ws.run_opts(books[0], inv),
-                                   playbook_dir=str((books[0].path / books[0].playbook_dir).resolve()))
+        repo = ws.command_repo(inv)
+        opts = dataclasses.replace(ws.run_opts(repo, inv),
+                                   playbook_dir=str((repo.path / repo.playbook_dir).resolve()))
         return playbooks.list_hosts(opts, form["target"])
 
     def command_page(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
@@ -966,6 +964,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         inv = state.inventory if state else None
         return render(request, "run_command.html", status, section="runs", form=form, form_error=form_error,
                       preview=pv, inventories=ws.inventory_repos(), modules=COMMON_MODULES,
+                      has_playbook_repo=bool(ws.playbook_repos()),
                       cred_choices={kind: creds.by_kind(kind) for kind in PER_RUN}, kinds=KINDS,
                       env_secrets=creds.by_kind("env_secret"),
                       hosts=sorted(inv.hosts) if inv else [], groups=sorted(g for g in inv.groups if g != "all") if inv else [])
@@ -1000,7 +999,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if problem:
             return command_page(request, form, problem, 400)
         run = store.create(kind="command", playbook="", module=form["module"], module_args=form["args"],
-                           become=form["become"], repo_id=ws.playbook_repos()[0].id, target=form["target"], tags="",
+                           become=form["become"], repo_id=ws.command_repo(chosen_inventory(form)).id,
+                           target=form["target"], tags="",
                            skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=pv.hosts,
                            trigger=auth.display_name(auth.current_user(request)), credentials=chosen,
                            inventory_id=int(form["inventory"]))

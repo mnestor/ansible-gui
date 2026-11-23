@@ -470,6 +470,49 @@ def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, rem
         srv.shutdown()
 
 
+def test_commands_and_facts_run_with_only_an_inventory_repository(app, c, remotes):
+    """Without a playbook repository a command was refused ("Add a playbook repository first"). It starts at
+    the top of the inventory's repository instead; with a playbook repository it uses that one, as before."""
+    assert add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml").status_code == 303
+    inv = app.state.repos.all()[0]
+    where = {"target": "lab", "inventory": str(inv.id)}
+    preview = c.get("/runs/command/preview", params=where).text
+    assert "Add a playbook repository" not in preview and "box1" in preview and "box2" in preview
+    assert "runs from the top of the inventory repository" in c.get("/runs/command", params=where).text
+
+    def command(args):
+        r = c.post("/runs/command", data={**where, "module": "ansible.builtin.shell", "args": args,
+                                          "expected": ["box1", "box2"]}, follow_redirects=False)
+        assert r.status_code == 303, r.text
+        run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+        log = app.state.store.log_path(run.id).read_text()
+        assert run.status == "successful", log
+        return run, log
+
+    run, log = command("echo hello")
+    inv = app.state.repos.get(inv.id)
+    assert run.repo_id == inv.id == run.inventory_id and run.commit_sha == run.inventory_commit == inv.last_commit
+    shown = next(line for line in log.splitlines() if line.startswith("$ ansible "))
+    assert f"--playbook-dir {(inv.home / 'commits' / run.commit_sha).resolve()}" in shown  # the inventory's top
+    assert log.count("hello") >= 2
+    status = c.get(f"/runs/{run.id}").text
+    assert "Inventory commit" in status and "Playbook commit" not in status
+
+    assert 'action="/facts/gather"' in c.get("/inventory/hosts/box1").text
+    r = c.post("/facts/gather", data={"target": "box1", "inventory": str(inv.id)}, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    facts_run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert facts_run.status == "successful", app.state.store.log_path(facts_run.id).read_text()
+    assert facts_run.repo_id == inv.id
+
+    assert add(c, name="lab", role="playbooks", url=f"file://{remotes['pb']}").status_code == 303
+    book = next(r for r in app.state.repos.all() if r.role == "playbooks")
+    assert "first playbook repository" in c.get("/runs/command", params=where).text
+    run, _ = command("echo again")
+    assert run.repo_id == book.id and run.inventory_id == inv.id
+    assert "Playbook commit" in c.get(f"/runs/{run.id}").text
+
+
 def test_a_token_reaches_git_with_no_file_to_run_and_only_for_its_server(remotes, tmp_path, monkeypatch):
     """A worker's temp directory is a tmpfs mounted noexec: git can't run a GIT_ASKPASS script written there,
     and every HTTPS pull with a token then failed as if there were no token."""

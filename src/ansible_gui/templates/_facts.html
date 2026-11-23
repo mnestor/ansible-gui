@@ -1,8 +1,8 @@
-{# The latest facts of one host. Expects name, facts (Facts or None), can_gather, and inv_repo for the run. #}
+{# The latest facts of one host. Expects name, facts (Facts or None), and inv_repo for the run. #}
 <section class="section" id="facts" aria-labelledby="facts-h">
   <div class="section-head">
     <h2 id="facts-h" class="section-title">Facts</h2>
-    {% if can_gather and inv_repo %}
+    {% if inv_repo %}
     <form method="post" action="/facts/gather" hx-boost="false">
       <input type="hidden" name="target" value="{{ name }}">
       <input type="hidden" name="inventory" value="{{ inv_repo.id }}">

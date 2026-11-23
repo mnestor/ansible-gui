@@ -240,10 +240,14 @@ class Executor:
             log_file.close()
             self.store.update(run_id, status="error", finished_at=now(), error=message)
 
-        repo = self.workspace.playbook_repo(run.repo_id)
-        if repo is None:
-            return stop("Didn’t start: the playbook’s repository was removed.")
         inv_repo = self.workspace.inventory_repo(run.inventory_id)
+        facts_run = run.kind == "facts"
+        adhoc = run.kind in ("facts", "command")
+        # A command or a fact gathering starts in a playbook repository, or without one in its inventory's.
+        repo = (self.workspace.command_repo(inv_repo, run.repo_id) if adhoc and inv_repo
+                else self.workspace.playbook_repo(run.repo_id))
+        if repo is None and not (adhoc and inv_repo is None):
+            return stop("Didn’t start: the playbook’s repository was removed.")
         if inv_repo is None:
             return stop("Didn’t start: its inventory repository was removed, or there are several and the run "
                         "doesn’t say which. Pick one and run again.")
@@ -255,8 +259,6 @@ class Executor:
         inv_repo = inv_repo.at(commits[inv_repo.id]) if inv_repo.id in commits else inv_repo
         project = repo.run_dir
         opts = self.workspace.run_opts(repo, inv_repo)
-        facts_run = run.kind == "facts"
-        adhoc = run.kind in ("facts", "command")
         if adhoc:  # absolute: Ansible starts in run_dir, which may already be the playbook directory
             opts = dataclasses.replace(opts, playbook_dir=str((repo.path / repo.playbook_dir).resolve()))
         playbook = str((repo.path / run.playbook).resolve())

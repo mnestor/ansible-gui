@@ -11,7 +11,7 @@ import copy
 import hashlib
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import repofiles
@@ -99,6 +99,22 @@ class Workspace:
 
     def playbook_repo(self, rid: int) -> Repo | None:
         return next((r for r in self.playbook_repos() if r.id == rid), None)
+
+    def command_repo(self, inv: Repo | None, rid: int | None = None) -> Repo | None:
+        """The repository an ad hoc command or a fact gathering starts in: a playbook repository when there
+        is one (the first, or the one a run already names with rid), for its ansible.cfg and the group_vars
+        beside its playbooks. With none, the inventory repository itself, from its top: its own ansible.cfg
+        applies, if it has one, as it already does on the inventory page."""
+        books = self.playbook_repos()
+        if rid is None:
+            found = books[0] if books else None
+        else:
+            found = next((r for r in books if r.id == rid), None)
+            if not found and (inv is None or inv.id != rid):
+                return None  # the run named a playbook repository, and it was removed
+        if found or inv is None:
+            return found
+        return replace(inv, paths="")  # no playbook directory in it: it runs from the top
 
     # --- ansible options ------------------------------------------------------------
     @staticmethod

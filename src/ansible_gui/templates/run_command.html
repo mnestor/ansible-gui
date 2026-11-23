@@ -58,7 +58,7 @@
     <summary>More options <span class="summary-note">· {{ "also " ~ others | join(", ") if others else "vault password" }}</span></summary>
     <div class="more-body">
       {{ other_credentials(form, cred_choices, kinds, settings) }}
-      <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.</p>
+      <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}{% if has_playbook_repo %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.{% else %}There is no playbook repository, so the command runs from the top of the inventory repository, with its <span class="mono">ansible.cfg</span> if it has one.{% endif %}</p>
     </div>
   </details>
 
