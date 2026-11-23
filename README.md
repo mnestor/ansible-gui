@@ -89,8 +89,9 @@ new directory and a running playbook keeps reading its own, so a run executes on
 last. Directories no repository's current commit and no running run uses are removed.
 
 Private repositories sign in with a git token (HTTPS) or an SSH deploy key, both stored encrypted on the
-Credentials page. A token goes to git through `GIT_ASKPASS` only: never into the URL, `.git/config` or a credential
-helper. Give it read-only access to repository contents.
+Credentials page. A token goes to git from the environment, through a credential helper set for that one server
+and for that pull only: never into the URL or `.git/config`, never saved, and not offered to another server a
+redirect names. Give it read-only access to repository contents.
 
 Every run, by hand or scheduled, first pulls its inventory repository and the playbook's repository,
 then asks Ansible again which hosts the targets match. If a pull fails, the run is canceled before anything

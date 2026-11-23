@@ -290,4 +290,18 @@ docker exec "$fetcher" sh -c 'ls -A /repos' | grep planted >/dev/null \
 docker exec "$fetcher" sh -c 'for d in /repos/*/commits/*/; do touch "$d/planted" 2>/dev/null && exit 0; done; exit 1' \
   && fail "split: the fetcher can still write into a finished commit directory"
 
+echo "- runs split: a git token reaches git in the fetcher, whose temp directory can't run a file"
+# /tmp there is a tmpfs, which Docker mounts noexec: a GIT_ASKPASS script written into it can't run, and every
+# HTTPS pull with a token failed. `git credential fill` asks for the sign-in the way a server's 401 does.
+docker exec "$fetcher" sh -c 'grep " /tmp " /proc/mounts' | grep noexec >/dev/null \
+  || fail "split: the fetcher's /tmp isn't noexec any more: this check no longer tests what production runs"
+docker exec -w /tmp "$fetcher" python -c '
+import subprocess, sys
+from ansible_gui.repos import git
+env = {**git._base_env(), **git.token_env("https://git.example.test/pb.git", ("smoke", "smoke-token"))}
+out = subprocess.run(["git", "credential", "fill"], input="protocol=https\nhost=git.example.test\n\n", env=env,
+                     capture_output=True, text=True)
+sys.exit(0 if "password=smoke-token" in out.stdout else out.stderr or "no password")' \
+  || fail "split: a git token doesn't reach git in the fetcher"
+
 echo "smoke test passed"

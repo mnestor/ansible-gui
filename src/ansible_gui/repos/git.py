@@ -24,6 +24,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
@@ -114,13 +115,37 @@ def _base_env() -> dict:
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": ""}
 
 
+# Answers git's request for a user name and password from the environment, and nothing else (git also tells
+# a helper to store or erase). A shell function in git's configuration, so there is no file to run.
+_TOKEN_HELPER = ('!f() { test "$1" = get && printf \'username=%s\\npassword=%s\\n\' '
+                 '"$AGUI_GIT_USER" "$AGUI_GIT_TOKEN"; }; f')
+
+
+def token_env(url: str, token: tuple[str, str]) -> dict:
+    """What git's environment needs to sign in to url's server with (user, token), on top of _base_env().
+
+    The token reaches git through a credential helper for that one server, so it never lands in the URL or
+    the clone's config, nothing is saved, and a redirect to another server isn't offered it. Not through a
+    GIT_ASKPASS script: the temp directory a worker has is a tmpfs mounted noexec, where git can't run one."""
+    if not url.startswith("https://"):
+        raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
+    if any(ord(ch) < 32 for ch in "".join(token)):
+        raise GitError("The git token has a line break or control character in it. Enter it again under Secrets.")
+    parts = urlsplit(url)
+    if not parts.hostname:
+        raise GitError("The clone URL has no server name in it.")
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    server = f"https://{host}" + (f":{parts.port}" if parts.port else "")
+    return {"GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_1": f"credential.{server}.helper",
+            "GIT_CONFIG_VALUE_1": _TOKEN_HELPER, "AGUI_GIT_USER": token[0], "AGUI_GIT_TOKEN": token[1]}
+
+
 def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str | None = None,
           token: tuple[str, str] | None = None, *, workdir: Path) -> Fetched:
     """Fetch the branch, whole, into the bare clone. Raises GitError.
 
-    private_key signs in over SSH; token is (user, token) for HTTPS, handed to git through GIT_ASKPASS so it
-    never lands in the URL, the clone's config or a credential helper. Either is written into workdir, a
-    private temp directory the caller wipes."""
+    private_key signs in over SSH, from a file in workdir, a private temp directory the caller wipes; token
+    is (user, token) for HTTPS, handed to git as token_env() says."""
     if token and not url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     bare = home / "git"
@@ -135,11 +160,7 @@ def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str 
         ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
     env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
     if token:
-        askpass = workdir / "askpass"
-        fd = os.open(askpass, os.O_WRONLY | os.O_CREAT, 0o700)
-        with os.fdopen(fd, "w") as f:
-            f.write('#!/bin/sh\ncase "$1" in Username*) printf %s "$AGUI_GIT_USER";; *) printf %s "$AGUI_GIT_TOKEN";; esac\n')
-        env.update(GIT_ASKPASS=str(askpass), AGUI_GIT_USER=token[0], AGUI_GIT_TOKEN=token[1])
+        env.update(token_env(url, token))
     if not (bare / "HEAD").exists():
         remove_tree(bare)
         bare.mkdir(parents=True)

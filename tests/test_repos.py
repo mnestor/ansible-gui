@@ -470,6 +470,41 @@ def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, rem
         srv.shutdown()
 
 
+def test_a_token_reaches_git_with_no_file_to_run_and_only_for_its_server(remotes, tmp_path, monkeypatch):
+    """A worker's temp directory is a tmpfs mounted noexec: git can't run a GIT_ASKPASS script written there,
+    and every HTTPS pull with a token then failed as if there were no token."""
+    from ansible_gui.repos import git as gitsync
+
+    env = {**gitsync._base_env(), **gitsync.token_env("https://git.example.test:8443/me/pb.git", ("mike", "s3cret"))}
+
+    def asked(host):  # what git gets when a server at host answers 401
+        return subprocess.run(["git", "credential", "fill"], input=f"protocol=https\nhost={host}\n\n", env=env,
+                              cwd=tmp_path, capture_output=True, text=True)
+
+    mine = asked("git.example.test:8443")
+    assert "username=mike" in mine.stdout and "password=s3cret" in mine.stdout, mine.stderr
+    for elsewhere in ("git.example.test", "git.example.test:9443", "evil.example.test"):  # a redirect, say
+        other = asked(elsewhere)
+        assert other.returncode != 0 and "s3cret" not in other.stdout + other.stderr
+    with pytest.raises(gitsync.GitError, match="line break"):
+        gitsync.token_env("https://git.example.test/pb.git", ("mike", "tok\nurl=https://evil.example.test"))
+
+    # A real pull: nothing it leaves in its temp directory is a program.
+    tls = self_signed(tmp_path)
+    monkeypatch.setenv("GIT_SSL_CAINFO", str(tls[0]))
+    srv, seen = http_git_server(tmp_path, "mike", "s3cret-token", tls)
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "ssh_config").write_text("")
+    try:
+        got = gitsync.fetch(tmp_path / "home", f"https://127.0.0.1:{srv.server_address[1]}/pb.git", "main",
+                            work / "ssh_config", token=("mike", "s3cret-token"), workdir=work)
+    finally:
+        srv.shutdown()
+    assert got.commit and any(a.startswith("Basic ") for a in seen)
+    assert [f.name for f in work.iterdir() if f.stat().st_mode & 0o111] == []
+
+
 def test_edit_link_must_be_a_web_address(app, c, remotes):
     r = add(c, name="lab", role="playbooks", url=str(remotes["pb"]), edit_url="javascript:alert(document.cookie)")
     assert r.status_code == 400 and "Use a web address starting with https://" in r.text
