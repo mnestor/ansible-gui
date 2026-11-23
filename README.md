@@ -248,6 +248,10 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
   changed). The file's text travels with each job, so the workers need no mount for it; a file it `Include`s
   doesn't. Your file wins wherever it sets an option. An
   inventory `ansible_ssh_common_args` replaces the `-F`; the Credentials page lists hosts that do this.
+- The app reads `ANSIBLE_GUI_SSH_CONFIG` as the user it runs as (uid 10001 in the image). If the file is missing or
+  that user can't read it, no run starts and no pull over SSH is made: the run, the repository and the overview say
+  why. Nothing connects without it, since the hosts would be reached as if the file were empty: none of its
+  jump hosts, names or host key rules.
 - With the default `accept-new`, a new host's key is recorded under **Known hosts** on the Credentials page
   on its first connection, and a different key is refused after that. Whoever answers that first connection
   is trusted, impostor or not. When a host is rebuilt with a new key, delete its line there. The worker reports

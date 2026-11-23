@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from .credentials import ssh as sshtools
 from .notify import PROBLEMS, classify
 from .runs.store import Run, host_result
 
@@ -122,9 +123,10 @@ def setup_issues(settings, entries, creds, repos=()) -> list[SetupIssue]:
                 f"{what} didn’t load" if not state.inventory else f"{what} reload failed",
                 "Runs and previews use the inventory as Ansible reads it now; the error is on the inventory page.",
                 "/inventory", "See the error"))
-    if settings.ssh_config and not settings.ssh_config.is_file():
-        out.append(SetupIssue("SSH config is missing", f"{settings.ssh_config} doesn’t exist, so every run fails to connect.",
-                              "/credentials", "Open credentials"))
+    if problem := sshtools.config_problem(settings.ssh_config):
+        out.append(SetupIssue("SSH config is missing" if "doesn’t exist" in problem else "SSH config can’t be read",
+                              f"{problem}, so no run starts: runs connect only the way it says.",
+                              "/credentials/ssh", "Open SSH settings"))
     unreadable = [c.name for c in creds.all() if not c.readable]
     if unreadable:
         out.append(SetupIssue("Credentials can’t be decrypted",

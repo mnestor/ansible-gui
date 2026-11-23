@@ -141,6 +141,24 @@ def write_ssh_config(data_dir: Path, user_config: Path | None, host_key_checking
     return path
 
 
+def config_problem(user_config: Path | None) -> str | None:
+    """Why the configured ssh_config can't be used, as "<path> doesn't exist" or "<path> can't be read (why)";
+    None when it can, or none is set.
+
+    Nothing may connect while this says something. The job would carry no text, only an Include of a path the
+    runner's container doesn't have, and ssh skips an Include that matches no file without a word: every host
+    would be reached as if the file were empty, with none of its jump hosts, names or host key rules."""
+    if not user_config:
+        return None
+    try:
+        user_config.read_text()
+    except FileNotFoundError:
+        return f"{user_config} doesn’t exist"
+    except OSError as e:
+        return f"{user_config} can’t be read ({e.strerror or e})"
+    return None
+
+
 def for_job(data_dir: Path, user_config: Path | None, host_key_checking: str) -> dict:
     """What a job needs to write its own ssh_config: the configured file's text (a worker in another
     container can't read it), the known hosts, and StrictHostKeyChecking."""
@@ -148,7 +166,7 @@ def for_job(data_dir: Path, user_config: Path | None, host_key_checking: str) ->
     if user_config:
         try:
             text = user_config.read_text()
-        except OSError:  # ssh then fails on the Include, as it always has: the overview says why
+        except OSError:  # config_problem() says why, and keeps runs and SSH pulls from starting
             pass
     return {"config": text, "include": str(user_config) if user_config and text is None else None,
             "known_hosts": read_known_hosts(data_dir), "checking": host_key_checking}

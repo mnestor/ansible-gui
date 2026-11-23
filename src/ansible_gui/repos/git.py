@@ -108,6 +108,13 @@ def is_https(url: str) -> bool:
     return url.startswith(("https://", "http://"))
 
 
+def is_ssh(url: str) -> bool:
+    """A URL git reaches through ssh: ssh://host/path, or the scp-like user@host:path."""
+    if "://" in url:
+        return url.startswith(("ssh://", "git+ssh://", "ssh+git://"))
+    return ":" in url.split("/", 1)[0] and not url.startswith(("/", "."))
+
+
 def _base_env() -> dict:
     return {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "/bin/false", "SSH_ASKPASS": "/bin/false",
             "LC_ALL": "C",

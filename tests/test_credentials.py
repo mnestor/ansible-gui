@@ -381,6 +381,44 @@ def test_env_secret_names_are_capitalised_and_deletes_sit_in_a_danger_zone(app):
     assert '<button class="btn btn-danger" type="submit"' in page and ">Delete environment secret</button>" in page
 
 
+def test_an_ssh_config_that_cant_be_read_stops_runs_and_says_so(tmp_path):
+    """Set but unreadable (owned by another user on the server, say), it was sent to no job, and ssh skipped the
+    Include of a file the runner doesn't have: every run connected as if the file were empty, saying nothing."""
+    conf = tmp_path / "ssh_config"
+    conf.write_text("Host *\n  CanonicalizeHostname always\n")
+    conf.chmod(0)
+    if os.access(conf, os.R_OK):
+        pytest.skip("this user reads any file (root)")
+    app = create_app(Settings(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              ssh_config=conf, secret_key="s" * 40))
+    c = TestClient(app)
+    assert ssh.config_problem(conf) == f"{conf} can’t be read (Permission denied)"
+    home = c.get("/").text
+    assert "SSH config can’t be read" in home and "so no run starts" in home and 'href="/credentials/ssh"' in home
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
+               follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.status == "error" and run.error.startswith(f"Didn’t start: the SSH config {conf} can’t be read")
+    assert "PLAY" not in app.state.store.log_path(run.id).read_text()  # nothing connected anywhere
+
+    conf.unlink()
+    assert ssh.config_problem(conf) == f"{conf} doesn’t exist" and "SSH config is missing" in c.get("/").text
+    conf.write_text("Host *\n  ConnectTimeout 5\n")
+    assert ssh.config_problem(conf) is None and ssh.config_problem(None) is None
+    home = c.get("/").text
+    assert "SSH config is missing" not in home and "SSH config can’t be read" not in home
+
+
+def test_only_urls_git_reaches_through_ssh_wait_for_the_ssh_config():
+    from ansible_gui.repos import git
+
+    for url in ("git@github.com:me/lab.git", "ssh://git@git.example.test:2222/me/lab.git", "deploy@host:lab.git"):
+        assert git.is_ssh(url), url
+    for url in ("https://git.example.test/me/lab.git", "http://git.example.test/lab.git", "file:///srv/git/lab.git",
+                "/srv/git/lab.git", "./lab.git", "C:/git/lab.git".replace("C:", "/c")):
+        assert not git.is_ssh(url), url
+
+
 def test_an_account_says_what_it_lacks(app):
     c = TestClient(app)
     c.post("/credentials", data={"kind": "account", "name": "plain", "username": "ansible"})

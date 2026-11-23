@@ -251,6 +251,9 @@ class Executor:
         if inv_repo is None:
             return stop("Didn’t start: its inventory repository was removed, or there are several and the run "
                         "doesn’t say which. Pick one and run again.")
+        if problem := self.workspace.ssh_config_problem():
+            return stop(f"Didn’t start: the SSH config {problem}. Runs connect only the way it says, so nothing "
+                        "ran. Make it readable by the user ansible-gui runs as, then run again.")
         failed, commits = self._commits(run, repo, inv_repo, lambda line: log_file.write(line + "\n"))
         if failed:
             return stop(failed)

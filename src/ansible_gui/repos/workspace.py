@@ -144,6 +144,10 @@ class Workspace:
         s = self.settings
         return sshtools.for_job(s.data_dir, s.ssh_config, s.ssh_host_key_checking)
 
+    def ssh_config_problem(self) -> str | None:
+        """Why ANSIBLE_GUI_SSH_CONFIG can't be used right now, or None: see sshtools.config_problem()."""
+        return sshtools.config_problem(self.settings.ssh_config)
+
     def learn_host_keys(self, result: dict) -> None:
         """Keep the host keys a job's ssh met for the first time, held to what ssh itself would add."""
         keys = result.get("host_keys")
@@ -288,6 +292,8 @@ class Workspace:
         key, token, error = self._git_auth(repo)
         if error:
             raise git.GitError(error)
+        if git.is_ssh(repo.url) and (problem := self.ssh_config_problem()):
+            raise git.GitError(f"The SSH config {problem}. SSH pulls connect only the way it says.")
         res = self.fetcher.call("fetch", {"home": str(repo.home), "url": repo.url, "branch": repo.branch,
                                           "private_key": key, "token": list(token) if token else None,
                                           "ssh": self.ssh_job()})
