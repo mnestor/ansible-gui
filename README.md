@@ -93,6 +93,9 @@ Credentials page. A token goes to git from the environment, through a credential
 and for that pull only: never into the URL or `.git/config`, never saved, and not offered to another server a
 redirect names. Give it read-only access to repository contents.
 
+Adding or saving a repository, and **Pull now** on the Repositories page, start the pull in the background and
+answer at once: the page shows the pull going and reloads when it ends, with the commit or the reason it failed.
+
 Every run, by hand or scheduled, first pulls its inventory repository and the playbook's repository,
 then asks Ansible again which hosts the targets match. If a pull fails, the run is canceled before anything
 touches a host, and an email goes out even for a run started by hand or a schedule set to never email.

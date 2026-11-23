@@ -56,6 +56,9 @@ class Workspace:
         self._lock = threading.Lock()
         self._pins: dict[int, set[tuple[int, str]]] = {}  # run id -> {(repo id, commit)} it is using
         self._fresh: set[str] = set()  # collections just installed, not yet named by a recorded commit
+        # Pulls started from the web UI and still going: repo id -> the repo to pull once more when this one
+        # ends (it was saved again meanwhile), or None.
+        self._pulling: dict[int, tuple[Repo, object] | None] = {}
         self._digest_locks: dict[str, threading.Lock] = {}
         self._at: dict[int, str] = {}  # in a view from at(): {repo id: commit} to read instead of the current one
 
@@ -339,6 +342,51 @@ class Workspace:
         if repo.role == "inventory" and fetched.commit != previous:
             self.on_inventory_changed(repo.id)
         return None
+
+    # --- pulls the web UI asks for ----------------------------------------------------------
+    @staticmethod
+    def _spawn(work) -> None:
+        threading.Thread(target=work, name="pull", daemon=True).start()
+
+    def sync_in_background(self, repo: Repo, then=None) -> None:
+        """sync(repo) on a thread of its own, returning at once: a big clone or a collections install takes
+        minutes, and the request that asks for it has a browser waiting. then(repo) is called after each pull,
+        whatever came of it. If a pull started this way is still going, this one follows it rather than
+        running beside it: the repository may have been saved with another address since."""
+        if repo.local:
+            return
+        with self._lock:
+            if repo.id in self._pulling:
+                self._pulling[repo.id] = (repo, then)
+                return
+            self._pulling[repo.id] = None
+
+        def work(repo=repo, then=then):
+            while True:
+                try:
+                    self.sync(repo)
+                except Exception as e:  # a worker that went away, a full disk: say so where pulls are shown
+                    log.exception("pulling %s in the background", repo.name)
+                    self.repos.record_fetch(repo.id, None, None, f"The pull stopped: {e}")
+                try:
+                    if then:
+                        then(repo)
+                except Exception:
+                    log.exception("after pulling %s", repo.name)
+                with self._lock:
+                    again = self._pulling[repo.id]
+                    if again is None:
+                        del self._pulling[repo.id]
+                        return
+                    self._pulling[repo.id] = None
+                repo, then = again
+
+        self._spawn(work)
+
+    def pulling(self) -> set[int]:
+        """The repositories a pull from the web UI is running for right now."""
+        with self._lock:
+            return set(self._pulling)
 
     def ensure_commit(self, repo: Repo, commit: str, pin_for: int | None = None,
                       on_wait=None) -> tuple[str | None, bool]:

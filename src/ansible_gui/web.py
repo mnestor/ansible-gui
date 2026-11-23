@@ -17,7 +17,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import yaml
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -1294,7 +1294,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                       inventories=ws.inventory_repos(), playbook_repos=ws.playbook_repos(),
                       ssh_keys={c.id: c for c in creds.all()},
                       saved=q.get("saved"), pulled=q.get("pulled"), deleted=q.get("deleted"),
-                      kept=q.get("kept"), busy_run=busy_run(request))
+                      kept=q.get("kept"), busy_run=busy_run(request), pulling=ws.pulling())
+
+    @app.get("/repos/pulling")
+    def repos_pulling(ids: str = ""):
+        """Asked every 2 s by the Repositories page while a pull started there is going: nothing to show until
+        one ends (or another starts), then the page reloads once, for the commit or the error."""
+        changed = ids != ",".join(str(i) for i in sorted(ws.pulling()))
+        return Response(status_code=204, headers={"HX-Refresh": "true"} if changed else None)
 
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
@@ -1325,6 +1332,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return RedirectResponse("/repos", status_code=303)
         return repo_form(request, repo, values=vars(repo))
 
+    def after_pull(repo) -> None:
+        if repo.role == "inventory":
+            invs.reload(repo.id)
+
     async def save_repo(request: Request, rid: int | None):
         data = await request.form()
         form = {k: data.get(k, "") for k in ("name", "role", "url", "branch", "ssh_key_id", "paths", "edit_url", "forge",
@@ -1347,9 +1358,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             repo = repos.save(form, auth.display_name(auth.current_user(request)), rid)
         except RepoInvalid as e:
             return repo_form(request, repos.get(rid) if rid else None, form, e.errors, status=400)
-        ws.sync(repo)  # a first pull right away, so a wrong URL or key shows up now, not at 03:00
-        if repo.role == "inventory":
-            invs.reload(repo.id)
+        # A first pull right away, so a wrong URL or key shows up now, not at 03:00. In the background: a big
+        # clone takes minutes, and this request would hold the whole server until it was done.
+        ws.sync_in_background(repo, after_pull)
         return RedirectResponse(f"/repos?saved={repo.id}", status_code=303)
 
     @app.post("/repos")
@@ -1364,9 +1375,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def pull_repo(rid: int):
         repo = repos.get(rid)
         if repo:
-            ws.sync(repo)
-            if repo.role == "inventory":
-                invs.reload(repo.id)
+            ws.sync_in_background(repo, after_pull)
         return RedirectResponse(f"/repos?pulled={rid}", status_code=303)
 
     @app.post("/repos/{rid}/delete")
@@ -1374,6 +1383,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         repo = repos.get(rid)
         if repo and (busy := ws.user(rid)):  # its files would go from under the playbook
             return RedirectResponse(f"/repos?kept={rid}&busy_run={busy}", status_code=303)
+        if repo and rid in ws.pulling():  # the pull would write its clone back after it was removed
+            return RedirectResponse(f"/repos?kept={rid}", status_code=303)
         if repo:
             repos.delete(rid)
             ws.remove(repo)

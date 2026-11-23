@@ -327,7 +327,7 @@
   // A live poll that fails (server restarting, network gone) says so instead of freezing silently.
   function pollTrouble(e, lost) {
     const id = e.detail.elt && e.detail.elt.id;
-    if (id !== "poller" && id !== "home-active") return;
+    if (id !== "poller" && id !== "home-active" && id !== "repos-pulling") return;
     const banner = document.getElementById("poll-lost");
     if (banner) banner.hidden = !lost;
   }

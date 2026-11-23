@@ -470,6 +470,68 @@ def test_private_https_repo_pulls_with_a_token_kept_out_of_the_clone(app, c, rem
         srv.shutdown()
 
 
+@pytest.mark.background_pulls
+def test_a_pull_from_the_web_runs_in_the_background_and_the_page_follows_it(app, c, remotes, monkeypatch):
+    """Adding a repository pulled it before answering: on a big clone the form hung, and the whole server with
+    it, since that request ran on the server's one event loop."""
+    ws = app.state.workspace
+    real, gate, pulled = ws.sync, threading.Event(), []
+
+    def slow(repo, *args, **kwargs):
+        pulled.append(repo.name)
+        gate.wait(20)
+        return real(repo, *args, **kwargs)
+
+    monkeypatch.setattr(ws, "sync", slow)
+    try:
+        r = add(c, name="lab", role="playbooks", url=f"file://{remotes['pb']}")
+        assert r.status_code == 303  # answered while the pull is still going
+        lab = app.state.repos.all()[0]
+        assert ws.pulling() == {lab.id} and not lab.last_commit
+        page = c.get(r.headers["location"]).text
+        assert "Saved lab. Pulling it now" in page and 'badge badge-neutral">pulling</span>' in page
+        assert "first clone" in page and "disabled>Pulling…" in page and "Pull now" not in page
+        assert f'hx-get="/repos/pulling?ids={lab.id}"' in page
+        going = c.get(f"/repos/pulling?ids={lab.id}")
+        assert going.status_code == 204 and "hx-refresh" not in going.headers
+
+        # Not deleted from under its pull, which would write the clone back.
+        r = c.post(f"/repos/{lab.id}/delete", follow_redirects=False)
+        assert r.headers["location"] == f"/repos?kept={lab.id}"
+        assert "Didn’t delete lab: a pull of it was running" in c.get(r.headers["location"]).text
+        assert app.state.repos.get(lab.id)
+
+        # Saved again meanwhile: pulled once more afterwards, as it was saved, not beside the first.
+        r = c.post(f"/repos/{lab.id}", data={"name": "lab2", "role": "playbooks", "url": f"file://{remotes['pb']}",
+                                             "branch": "main"}, follow_redirects=False)
+        assert r.status_code == 303 and pulled == ["lab"]
+    finally:
+        gate.set()
+    for _ in range(200):
+        if not ws.pulling():
+            break
+        time.sleep(0.05)
+    assert not ws.pulling() and pulled == ["lab", "lab2"]
+    assert c.get(f"/repos/pulling?ids={lab.id}").headers.get("hx-refresh") == "true"  # the page reloads once
+    page = c.get(f"/repos?saved={lab.id}").text
+    assert "Saved and pulled lab2: now at" in page and "repos-pulling" not in page and "Pull now" in page
+    assert app.state.repos.get(lab.id).last_commit
+
+
+def test_a_background_pull_that_breaks_says_so_on_the_repository(app, c, remotes, monkeypatch):
+    assert add(c, name="lab", role="playbooks", url=f"file://{remotes['pb']}").status_code == 303
+    lab = app.state.repos.all()[0]
+
+    def gone(repo, *args, **kwargs):
+        raise RuntimeError("the fetcher went away")
+
+    monkeypatch.setattr(app.state.workspace, "sync", gone)
+    c.post(f"/repos/{lab.id}/pull")
+    assert app.state.repos.get(lab.id).last_error == "The pull stopped: the fetcher went away"
+    assert not app.state.workspace.pulling()
+    assert "Last pull failed: The pull stopped: the fetcher went away" in c.get("/repos").text
+
+
 def test_commands_and_facts_run_with_only_an_inventory_repository(app, c, remotes):
     """Without a playbook repository a command was refused ("Add a playbook repository first"). It starts at
     the top of the inventory's repository instead; with a playbook repository it uses that one, as before."""

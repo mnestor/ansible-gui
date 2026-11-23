@@ -160,6 +160,7 @@ ul, ol { padding: 0; list-style: none; }
   border: 1px solid color-mix(in oklab, var(--changed) 25%, transparent); border-radius: var(--radius-control); }
 .banner-changed strong { color: var(--changed); }
 .banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ok); font-weight: 600; }
+.banner-neutral { background: color-mix(in oklab, var(--ink-muted) 12%, var(--canvas)); color: var(--ink); }
 
 /* Layout */
 .layout { display: grid; grid-template-columns: minmax(0, 1fr); }

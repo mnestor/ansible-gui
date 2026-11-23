@@ -210,10 +210,20 @@ class Stay(urllib.request.HTTPRedirectHandler):
 req = urllib.request.Request('http://127.0.0.1:8080$1', data=sys.argv[1].encode(), headers={'Host': '127.0.0.1:8080'})
 try: r = urllib.request.build_opener(Stay).open(req, timeout=120); print(r.status, r.headers.get('Location', ''))
 except urllib.error.HTTPError as e: print(e.code, e.headers.get('Location', ''))" "$2"; }
+# pulled: wait for the pulls the app started. Adding a repository and Pull now answer at once and pull in the
+# background; the Repositories page asks this address to learn when they are done.
+pulled() { docker exec "$name" python -c "
+import time, urllib.request
+for _ in range(240):
+    req = urllib.request.Request('http://127.0.0.1:8080/repos/pulling?ids=', headers={'Host': '127.0.0.1:8080'})
+    if 'HX-Refresh' not in urllib.request.urlopen(req, timeout=30).headers: break
+    time.sleep(0.5)
+else: raise SystemExit('still pulling after two minutes')"; }
 out=$(post /repos "name=hosts&role=inventory&url=file:///tmp/src&branch=main&paths=inventory/hosts.yml")
 [ "${out%% *}" = 303 ] || fail "split: adding the inventory repository: $out"
 out=$(post /repos "name=lab&role=playbooks&url=file:///tmp/src&branch=main")
 [ "${out%% *}" = 303 ] || fail "split: adding the playbook repository: $out"
+pulled || fail "split: the first pulls didn't finish"
 docker exec "$name" sh -c 'ls /repos/2/commits/' | grep -E '^[0-9a-f]{40}$' >/dev/null \
   || fail "split: the pull wrote no commit directory the app can see"
 out=$(post /runs "playbook=2:hostile.yml&target=localhost&mode=apply&verbosity=0&expected=localhost")
@@ -280,6 +290,7 @@ collections:
 YAML
 docker exec "$fetcher" sh -c 'cd /tmp/src && git add -A && git -c user.name=s -c user.email=s@s commit -qm config'
 post /repos/2/pull "" >/dev/null
+pulled || fail "split: the pull didn't finish"
 docker exec "$name" python -c "
 import urllib.request
 req = urllib.request.Request('http://127.0.0.1:8080/repos', headers={'Host': '127.0.0.1:8080'})

@@ -75,7 +75,7 @@ Accent badges are only for the winning source. "Running", "default" and the acti
 - Segmented radio (`segmented-inline`): 2–5 mutually exclusive options (Dry run / Apply, verbosity), selected option on `--well`.
 - Preview panel: card with the accent-gradient left rail that holds the live result of a form (matched hosts) and the form's one primary button, whose label states the count and mode ("Dry run on 3 hosts").
 - Status dot: 8px core with a 3px halo at 22% of its colour; failed and unreachable pulse.
-- Page banner: `banner-ok` (ok tint, ink text) for a completed save, `banner-warn` (changed text on changed tint, 5.4:1 / 6.4:1) for a standing risk. 8px radius inside a page.
+- Page banner: `banner-ok` (ok tint, ink text) for a completed save, `banner-warn` (changed text on changed tint, 5.4:1 / 6.4:1) for a standing risk, `banner-neutral` (ink on a 12% `--ink-muted` tint) for work still going, like a pull started from the page; the ok or warn banner takes its place when it ends. 8px radius inside a page.
 - Kind switch: segmented links (`aria-current`) choosing what a form creates, same look as the segmented radio.
 - Secret field: write-only. Never pre-filled; on an edit, empty means "keep". Password inputs have a Show/Hide quiet button (`aria-pressed`) and `autocomplete="off"`. Every field opts out of password managers (`data-1p-ignore`, `data-lpignore`, `data-bwignore`, `data-form-type="other"`, set by early.js): nothing here is the person's own login.
 - Issue card: card with the inset left rail in the status colour (danger, unreachable, changed), a badge, a one-line count, host chips, and at most two actions (secondary, then quiet). Used only on the Overview's "Needs attention".
