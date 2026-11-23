@@ -262,10 +262,17 @@ docker exec "$name" grep "failed=0" "/data/runs/$again/output.log" >/dev/null \
 docker exec "$name" sh -c 'cat /data/ssh/known_hosts 2>/dev/null' | grep cert-authority >/dev/null \
   && fail "split: the playbook's certificate authority was kept in the app's known hosts"
 # Each socket takes jobs from the app's uid only: a playbook in the runner can't send one of its own.
-docker exec "$runner" python -c "
+# The second run has just ended and the runner is cleaning up after it, which kills every other process in
+# its container, this one included: ask until one gets its answer.
+for _ in $(seq 20); do
+  said=$(docker exec "$runner" python -c "
 import socket, json; s = socket.socket(socket.AF_UNIX); s.connect('/run/runner/runner.sock')
-s.sendall(json.dumps({'kind': 'cli', 'job': {}}).encode() + b'\n'); print(s.makefile().readline())" \
-  | grep "takes jobs from uid 10001 only, not 10003" >/dev/null || fail "split: the runner's own uid was let in"
+s.sendall(json.dumps({'kind': 'cli', 'job': {}}).encode() + b'\n'); print(s.makefile().readline())" 2>/dev/null) || true
+  [ -n "$said" ] && break
+  sleep 1
+done
+grep "takes jobs from uid 10001 only, not 10003" <<<"$said" >/dev/null \
+  || fail "split: the runner's own uid was let in: ${said:-no answer from its socket}"
 
 echo "- the worker cleans between jobs only where every process is its own"
 out=$(docker run --rm --user 0 -e ANSIBLE_GUI_REPOS_DIR=/repos "$image" ansible-gui worker --socket /tmp/w.sock \
