@@ -349,7 +349,7 @@ def test_the_default_shown_is_the_one_defaults_main_sets(project):
 def test_the_playbook_list_says_what_each_does_and_offers_its_actions(c):
     page = c.get("/runs/playbooks").text
     row = page.split('href="/runs/new?playbook=0%3Acommented.yml"')[1].split("</tr>")[0]
-    assert "Patches every host. Reboots only if needed." in row
+    assert "Patches every host.\nReboots only if needed." in row  # the comment's two lines, as written
     assert "Builds a lab box from the cloud image" in page.split("0%3Abuild.yml")[1].split("</tr>")[0]  # its role
     assert "Lab check" in page.split("0%3Asite.yml")[1].split("</tr>")[0]  # no comment, no roles: play names
     assert 'href="/runs/templates/new?playbook=0%3Asite.yml"' in page and 'href="/schedules/new?playbook=0%3Asite.yml"' in page
@@ -403,3 +403,31 @@ def test_a_preview_sent_mid_switch_keeps_the_field_values(c):
     page = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "box1", "vars_mode": "yaml",
                                           "var.build_count": "5", "extra_vars": ""}).text
     assert "build_count" in page.split('class="override-list"')[1]
+
+
+def test_a_playbooks_top_comment_keeps_its_lines_and_indentation(tmp_path):
+    """The comment was joined into one line, so a list in it, or a command to copy, ran together."""
+    (tmp_path / "inventory").mkdir()
+    (tmp_path / "inventory" / "hosts.yml").write_text("all:\n  hosts:\n    box1:\n")
+    (tmp_path / "site.yml").write_text(
+        "---\n"
+        "# Sets up the lab:\n"
+        "#   - installs the packages\n"
+        "#   - writes the motd\n"
+        "#\n"
+        "#\n"
+        "# Try it first:  ansible-playbook site.yml --check <b>\n"
+        "# vim: ft=yaml\n"
+        "#\n"
+        "- name: Lab\n  hosts: all\n  tasks: []\n")
+    written = "Sets up the lab:\n  - installs the packages\n  - writes the motd\n\nTry it first:  ansible-playbook site.yml --check <b>"
+    assert variables.summary(variables.describe(tmp_path / "site.yml", tmp_path)) == written
+    app = create_app(Settings(project_dir=tmp_path, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              secret_key="s" * 40))
+    c = TestClient(app)
+    shown = html.escape(written, quote=False)
+    assert f'<span class="playbook-about">{shown}</span>' in c.get("/runs/playbooks").text  # the catalogue
+    assert f'<span class="picker-about">{shown}</span>' in c.get("/runs/new").text  # the launcher's picker
+    css = (Path(variables.__file__).parent.parent / "static" / "app.css").read_text()
+    for rule in (".playbook-about {", ".picker-about {"):  # the browser keeps the breaks only if told to
+        assert "white-space: pre-wrap" in css[css.index(rule):css.index("}", css.index(rule))]

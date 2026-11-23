@@ -442,7 +442,8 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .picker-current:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
 .picker-current-body, .picker-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .picker-path { font-weight: 600; overflow-wrap: anywhere; }
-.picker-about { color: var(--ink-muted); font-size: var(--fs-sm); }
+/* A playbook's description is its top comment as written: its line breaks and indentation are kept. */
+.picker-about { color: var(--ink-muted); font-size: var(--fs-sm); white-space: pre-wrap; }
 .picker-change { display: inline-flex; align-items: center; gap: var(--s1); color: var(--accent-ink); font: 600 var(--fs-sm)/1 var(--font-text); white-space: nowrap; }
 .picker-change .icon { width: 16px; height: 16px; transition: transform var(--ease); }
 .picker[open] .picker-change .icon { transform: rotate(180deg); }
@@ -482,7 +483,7 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
   tbody tr:has(> td > .row-actions) .row-actions { justify-content: flex-start; }
   thead:has(+ tbody > tr > td > .row-actions) th:last-child { display: none; }
 }
-.playbook-about { display: block; margin-top: var(--s1); font-weight: 400; color: var(--ink-muted); font-size: var(--fs-sm); max-width: 60ch; }
+.playbook-about { display: block; margin-top: var(--s1); font-weight: 400; color: var(--ink-muted); font-size: var(--fs-sm); max-width: 60ch; white-space: pre-wrap; }
 /* The first targeted hosts, each with the inventory values this run overrides on it. */
 .target-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
 .target-host { font-weight: 600; }

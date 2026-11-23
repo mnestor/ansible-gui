@@ -476,7 +476,10 @@ class About:
 
 
 def _top_comment(path: Path) -> str:
-    lines = []
+    """The comment block at the top of the file, as it was written: its line breaks and the indentation inside
+    it stay (a list, a command to copy), and only the "#" and the one space after it go. A run of empty comment
+    lines is one blank line; there is none at the start or the end."""
+    lines: list[str] = []
     try:
         text = repofiles.read_text(path)
     except (OSError, UnicodeDecodeError):
@@ -487,11 +490,18 @@ def _top_comment(path: Path) -> str:
             continue
         if not s.startswith("#"):
             break
-        body = s.lstrip("#").strip()
-        if re.match(r"^(-\*-|vim?:|yaml-language-server|code:|noqa|yamllint)", body):
+        body = s.lstrip("#")
+        body = (body[1:] if body.startswith(" ") else body).rstrip()
+        if re.match(r"^(-\*-|vim?:|yaml-language-server|code:|noqa|yamllint)", body.strip()):
+            continue
+        if not body.strip():
+            if lines and lines[-1]:
+                lines.append("")
             continue
         lines.append(body)
-    return " ".join(" ".join(lines).split())
+    while lines and not lines[-1]:
+        lines.pop()
+    return "\n".join(lines)
 
 
 def _role_description(role_dir: Path) -> str:
@@ -535,7 +545,7 @@ def describe(playbook: Path, repo_dir: Path) -> About:
 
 
 def summary(about: About) -> str:
-    """One line on what a playbook does: its top comment, else its roles' descriptions, else its play names."""
+    """What a playbook does: its top comment as written, else its roles' descriptions, else its play names."""
     if about.comment:
         return about.comment
     described = [f"{role}: {desc}" for role, desc in about.roles if desc]
