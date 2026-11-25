@@ -615,13 +615,16 @@ select.input { appearance: auto; }
 @media (max-width: 639px) { .log { white-space: pre-wrap; } }
 /* What each line reports, in Ansible's own terms (logview.py). The log is dark in both themes, so the status
    colours here are the dark theme's whichever is on: on --nav-bg they clear 7:1 or more. Every coloured line
-   also says its status in words ("ok:", "changed:", "fatal:"), so the colour is never the only sign. */
+   also says its status in words ("ok:", "changed:", "fatal:"), so the colour is never the only sign.
+   Red is only ever something that failed. A diff's removed lines are what was there before, so they are
+   muted, as a replaced value is everywhere else here; its added lines, what the file becomes, are the ones
+   that stand out. Ansible's own red for them made every changed file look like an error. */
 .log { --ok: #2ee48a; --changed: #fbbf24; --danger: #ff8a8a; --unreachable: #f075b5; --ink-muted: #9aa1b3; }
 .ll-ok, .ll-add { color: var(--ok); }
 .ll-changed, .ll-warn { color: var(--changed); }
-.ll-failed, .ll-del { color: var(--danger); }
+.ll-failed { color: var(--danger); }
 .ll-unreachable { color: var(--unreachable); }
-.ll-skipped, .ll-note { color: var(--ink-muted); }
+.ll-skipped, .ll-note, .ll-del { color: var(--ink-muted); }
 .ll-head { font-weight: 700; color: var(--nav-ink-strong); }
 
 /* ---------------------------------------------------------------- Sign-in, credentials */
