@@ -107,6 +107,45 @@
       varfilter.focus();
     });
 
+    // A list searched as you type (the playbooks). A row matches on data-search, which holds its folded notes
+    // too; when the match isn't in what the row shows (data-head), the notes unfold so it is on screen, and
+    // fold again once the search moves on. Notes the reader opened themselves are left alone.
+    const rowfilter = root.querySelector("[data-rowfilter]");
+    const rowempty = root.querySelector("[data-rowempty]");
+    const rowcount = root.querySelector("[data-rowcount]");
+    const rowtotal = rowcount ? rowcount.textContent : "";  // "11 playbooks"
+    function filterRows() {
+      const term = rowfilter.value.trim().toLowerCase();
+      let shown = 0;
+      root.querySelectorAll("tr[data-search]").forEach((tr) => {
+        const hit = term === "" || tr.dataset.search.includes(term);
+        tr.hidden = !hit;
+        if (hit) shown++;
+        const notes = tr.querySelector("details.about-more");
+        if (!notes) return;
+        const unfold = term !== "" && hit && !(tr.dataset.head || "").includes(term);
+        if (unfold && !notes.open) {
+          notes.open = true;
+          notes.dataset.byFilter = "1";
+        } else if (!unfold && notes.dataset.byFilter) {
+          notes.open = false;
+          delete notes.dataset.byFilter;
+        }
+      });
+      if (rowempty) {
+        rowempty.hidden = shown > 0;
+        rowempty.querySelector("[data-rowterm]").textContent = rowfilter.value.trim();
+      }
+      if (rowcount) rowcount.textContent = term === "" ? rowtotal : `${shown} of ${rowtotal}`;
+    }
+    if (once(rowfilter, "Filter")) rowfilter.addEventListener("input", filterRows);
+    const rowclear = root.querySelector("[data-rowclear]");
+    if (once(rowclear, "Clear")) rowclear.addEventListener("click", () => {
+      rowfilter.value = "";
+      filterRows();
+      rowfilter.focus();
+    });
+
     const factfilter = root.querySelector("[data-factfilter]");
     if (once(factfilter, "Filter")) factfilter.addEventListener("input", () => {
       const term = factfilter.value.trim().toLowerCase();
@@ -402,6 +441,10 @@
     picker.querySelector("[data-picker-current]").innerHTML = body.innerHTML;
     picker.open = false;
     picker.querySelector("summary").focus();
+    // The notes under the field are the chosen playbook's.
+    (e.target.form || document).querySelectorAll("[data-notes-for]").forEach((n) => {
+      n.hidden = n.dataset.notesFor !== e.target.value;
+    });
   });
   document.addEventListener("keydown", (e) => {
     const picker = e.key === "Escape" && e.target.closest && e.target.closest("[data-picker][open]");

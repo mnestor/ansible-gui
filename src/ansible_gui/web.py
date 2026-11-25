@@ -861,8 +861,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"hosts": sorted(inv.hosts), "groups": sorted(g for g in inv.groups if g != "all" and sizes[g]),
                 "group_sizes": sizes}
 
-    def playbook_summaries(books) -> dict[str, str]:
-        return {b.key: variables.summary(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
+    def playbook_summaries(books) -> dict[str, variables.Folded]:
+        """What each playbook does, as one line and the rest of its comment (variables.lead_and_rest)."""
+        return {b.key: variables.folded(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
 
     @app.get("/runs/playbooks", response_class=HTMLResponse)
     def playbook_list(request: Request):

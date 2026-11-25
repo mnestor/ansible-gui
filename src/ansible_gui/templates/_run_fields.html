@@ -7,7 +7,7 @@
   {% set chosen = playbooks | selectattr("key", "equalto", form.playbook) | first %}
   {% macro pb_body(p) -%}
     <span class="picker-path mono"><span class="repo-prefix">{{ p.repo.name }} /</span> {{ p.path }}</span>
-    {% if playbook_about[p.key] %}<span class="picker-about">{{ playbook_about[p.key] }}</span>{% endif %}
+    {% if playbook_about[p.key].lead %}<span class="picker-about">{{ playbook_about[p.key].lead }}</span>{% endif %}
   {%- endmacro %}
   <fieldset class="field">
     <legend class="label" id="pb-legend">Playbook</legend>
@@ -25,6 +25,11 @@
         {% endfor %}
       </div>
     </details>
+    {# The rest of each playbook's comment, under the field: the one chosen shows, to read before the run
+       (what it needs first, what to run it on first). Choosing another swaps it (app.js). #}
+    {% for p in playbooks if playbook_about[p.key].rest %}{% set d = playbook_about[p.key] %}
+    <details class="about-more picker-notes" data-notes-for="{{ p.key }}" {% if p.key != form.playbook %}hidden{% endif %}><summary><span class="about-toggle"><span class="about-closed">Show {{ d.more }} more line{{ "s" if d.more != 1 }} from the top of <span class="mono">{{ p.path }}</span></span><span class="about-open">Show less</span></span></summary><div class="about-rest">{{ d.rest }}</div></details>
+    {% endfor %}
     {% set git_repos = playbook_repos | rejectattr("local") | list %}
     {% if git_repos or (inventory_repo and not inventory_repo.local) %}
       <p class="help">Runs pull first{% if inventory_repo and not inventory_repo.local %}: inventory {{ inventory_repo.name }} at <span class="mono">{{ inventory_repo.short or "not cloned" }}</span>{% endif %}{% for r in git_repos %}, {{ r.name }} at <span class="mono">{{ r.short or "not cloned" }}</span>{% endfor %}. <a href="/repos">Repositories</a></p>
