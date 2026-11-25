@@ -33,20 +33,34 @@
   <input id="rowfilter" class="input input-medium" type="search" placeholder="Find a playbook by name or what it does" autocomplete="off" enterkeyhint="search" data-rowfilter>
   <p class="list-count tabular" data-rowcount aria-live="polite">{{ playbooks | length }} playbook{{ "s" if playbooks | length != 1 }}</p>
 </div>
+{% if by_repo | length > 1 %}
+{# Which repositories are shown: all of them until one is picked. #}
+<div class="source-chips" role="group" aria-label="Repositories shown">
+  <button type="button" class="chip chip-toggle" data-rows-all aria-pressed="true">All <span class="chip-count">{{ playbooks | length }}</span></button>
+  {% for repo, books in by_repo %}<button type="button" class="chip chip-toggle mono" data-rows-chip="r{{ repo.id }}" aria-pressed="false">{{ repo.name }} <span class="chip-count">{{ books | length }}</span></button>{% endfor %}
+</div>
+{% endif %}
 <div class="table-region">
 <table class="history playbooks">
   <thead><tr>
     <th scope="col">Playbook</th><th scope="col" class="col-wide">Templates</th><th scope="col"><span class="visually-hidden">Actions</span></th>
   </tr></thead>
-  <tbody>
-  {% for p in playbooks %}
+  {% for repo, books in by_repo %}
+  <tbody data-rowgroup="r{{ repo.id }}">
+    <tr class="list-group">
+      <th colspan="3" scope="colgroup">
+        {% if repo.local %}<span class="mono list-group-name">{{ repo.name }}</span>{% else %}<a class="mono list-group-name" href="/repos/{{ repo.id }}">{{ repo.name }}</a>{% endif %}
+        <span class="vars-group-why">{{ books | length }} playbook{{ "s" if books | length != 1 }}{% if not repo.local %} · at {% if repo.short %}<span class="mono">{{ repo.short }}</span>{% else %}no commit yet{% endif %}{% endif %}</span>
+      </th>
+    </tr>
+  {% for p in books %}
     {% set ts = templates_by.get(p.key, []) %}
     {% set d = about[p.key] %}
     {# data-search is everything the filter matches; data-head is what the row shows folded, so a match found
        only in the rest of the comment unfolds it. #}
-    <tr data-search="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.text ~ ' ' ~ ts | map(attribute='name') | join(' ')) | lower }}" data-head="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.lead[:60]) | lower }}">
+    <tr data-source="r{{ repo.id }}" data-search="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.text ~ ' ' ~ ts | map(attribute='name') | join(' ')) | lower }}" data-head="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.lead[:60]) | lower }}">
       <th scope="row">
-        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}"><span class="repo-prefix">{{ p.repo.name }} /</span> {{ p.path }}</a>
+        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}">{{ p.path }}</a>
         <div class="playbook-about">{% if d.folds %}<details class="about-more"><summary><span class="about-lead">{{ d.lead }}</span> <span class="about-toggle"><span class="about-closed">{% if d.rest %}Show {{ d.more }} more line{{ "s" if d.more != 1 }}{% else %}Show all{% endif %}</span><span class="about-open">Show less</span></span></summary>{% if d.rest %}<div class="about-rest">{{ d.rest }}</div>{% endif %}</details>{% elif d.lead %}{{ d.lead }}{% else %}<span class="help">No description: add a comment at the top of the file.</span>{% endif %}</div>
         {% if ts %}<span class="phone-only help">{{ ts | length }} template{{ "s" if ts | length != 1 }}</span>{% endif %}
       </th>
@@ -61,6 +75,7 @@
     </tr>
   {% endfor %}
   </tbody>
+  {% endfor %}
 </table>
 </div>
 <div class="empty" data-rowempty hidden>

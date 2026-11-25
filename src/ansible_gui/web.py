@@ -880,7 +880,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for t in run_templates.all():
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
         q = request.query_params
+        # Under a heading per repository, in the repositories' own order: a row then says only its path.
+        by_repo = [(repo, [b for b in books if b.repo.id == repo.id]) for repo in ws.playbook_repos()]
         return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
+                      by_repo=[(repo, some) for repo, some in by_repo if some],
                       git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"))
 
     @app.post("/runs/playbooks/pull")

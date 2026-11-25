@@ -773,6 +773,25 @@ def test_ssh_deploy_key_is_used_and_kept_private(app, c, remotes, tmp_path, monk
     assert not os.path.exists(key_path)
 
 
+def test_the_playbook_list_is_grouped_by_repository_with_a_chip_for_each(app, c, remotes):
+    """Every row used to lead with its repository's name. The list says it once, as a heading over that
+    repository's playbooks, and with more than one repository a chip each narrows the list to it."""
+    setup_repos(c, remotes)
+    page = c.get("/runs/playbooks").text
+    table = page.split('<table class="history playbooks">')[1].split("</table>")[0]
+    heads = [h.split("</tr>")[0] for h in table.split('<tr class="list-group">')[1:]]
+    # In the repositories' own order, which is by name.
+    assert len(heads) == 2 and ">extra</a>" in heads[0] and "1 playbook" in heads[0] and ">lab</a>" in heads[1]
+    assert 'class="repo-prefix"' not in table  # a row is its path; the heading above it is the repository
+    by_name = {r.name: r.id for r in app.state.repos.all()}
+    lab, extra = by_name["lab"], by_name["extra"]
+    assert f'<tbody data-rowgroup="r{lab}">' in table and f'data-source="r{extra}"' in table
+    chips = page.split('class="source-chips"')[1].split("</div>")[0]
+    assert 'data-rows-all aria-pressed="true">All <span class="chip-count">2</span>' in chips
+    assert f'data-rows-chip="r{lab}" aria-pressed="false">lab <span class="chip-count">1</span>' in chips
+    assert chips.count("data-rows-chip=") == 2
+
+
 def test_pull_now_on_the_pages_that_use_the_repositories(app, c, remotes):
     setup_repos(c, remotes)
     work = remotes["pb_work"]

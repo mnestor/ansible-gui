@@ -473,10 +473,12 @@ def test_the_playbook_list_can_be_searched_by_name_and_by_what_the_comment_says(
                               secret_key="s" * 40))
     page = TestClient(app).get("/runs/playbooks").text
     assert 'type="search"' in page and "data-rowfilter" in page and "2 playbooks" in page
-    backup = page.split('<tr data-search="')[1].split("</tr>")[0]
+    # One repository: its heading, and nothing to pick between.
+    assert page.count('<tr class="list-group">') == 1 and "source-chips" not in page and 'class="repo-prefix"' not in page
+    backup = page.split(' data-search="')[1].split("</tr>")[0]
     # Found by what is folded away too; data-head says what is on screen, so a match elsewhere unfolds the row.
     assert "backup.yml" in backup and "needs the borg repository in host_vars." in backup.split('"')[0]
     assert 'data-head="' in backup and "borg repository" not in backup.split('data-head="')[1].split('"')[0]
     assert "No playbooks match" in page
-    patch = page.split('<tr data-search="')[2].split("</tr>")[0]
+    patch = page.split(' data-search="')[2].split("</tr>")[0]
     assert "<details" not in patch and "Patches every host." in patch  # nothing to unfold: no toggle

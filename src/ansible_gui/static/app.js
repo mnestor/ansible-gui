@@ -154,10 +154,14 @@
     const rowcount = root.querySelector("[data-rowcount]");
     const rowtotal = rowcount ? rowcount.textContent : "";  // "11 playbooks"
     function filterRows() {
-      const term = rowfilter.value.trim().toLowerCase();
+      const term = rowfilter ? rowfilter.value.trim().toLowerCase() : "";
+      // The chips narrow the list to the groups picked (repositories); none picked is all of them.
+      const picked = new Set([...root.querySelectorAll('[data-rows-chip][aria-pressed="true"]')].map((c) => c.dataset.rowsChip));
+      const every = root.querySelector("[data-rows-all]");
+      if (every) every.setAttribute("aria-pressed", String(picked.size === 0));
       let shown = 0;
       root.querySelectorAll("tr[data-search]").forEach((tr) => {
-        const hit = term === "" || tr.dataset.search.includes(term);
+        const hit = (term === "" || tr.dataset.search.includes(term)) && (picked.size === 0 || picked.has(tr.dataset.source));
         tr.hidden = !hit;
         if (hit) shown++;
         const notes = tr.querySelector("details.about-more");
@@ -171,13 +175,26 @@
           delete notes.dataset.byFilter;
         }
       });
+      // A group's heading goes with the last of its rows.
+      root.querySelectorAll("tbody[data-rowgroup]").forEach((group) => {
+        group.hidden = !group.querySelector("tr[data-search]:not([hidden])");
+      });
       if (rowempty) {
         rowempty.hidden = shown > 0;
-        rowempty.querySelector("[data-rowterm]").textContent = rowfilter.value.trim();
+        rowempty.querySelector("[data-rowterm]").textContent = rowfilter ? rowfilter.value.trim() : "";
       }
-      if (rowcount) rowcount.textContent = term === "" ? rowtotal : `${shown} of ${rowtotal}`;
+      if (rowcount) rowcount.textContent = term === "" && picked.size === 0 ? rowtotal : `${shown} of ${rowtotal}`;
     }
     if (once(rowfilter, "Filter")) rowfilter.addEventListener("input", filterRows);
+    root.querySelectorAll("[data-rows-chip], [data-rows-all]").forEach((chip) => {
+      if (!once(chip, "Rows")) return;
+      chip.addEventListener("click", () => {
+        if (chip.hasAttribute("data-rows-all")) {
+          root.querySelectorAll("[data-rows-chip]").forEach((c) => c.setAttribute("aria-pressed", "false"));
+        } else chip.setAttribute("aria-pressed", String(chip.getAttribute("aria-pressed") !== "true"));
+        filterRows();
+      });
+    });
     const rowclear = root.querySelector("[data-rowclear]");
     if (once(rowclear, "Clear")) rowclear.addEventListener("click", () => {
       rowfilter.value = "";

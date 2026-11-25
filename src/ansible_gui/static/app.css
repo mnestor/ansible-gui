@@ -308,9 +308,12 @@ a.chip:hover { background: color-mix(in oklab, var(--accent) 14%, var(--plane));
    the path in the winning-source accent (everything under it, it won), then what it applies to and how much
    it sets. A recessed band with more room above than below, so it reads as the start of its rows; the rows
    then say only their line. */
-.vars-group th { padding: var(--s4) var(--s3) var(--s2); background: var(--code); font-weight: 400; text-align: left; border-bottom: 1px solid var(--rule); }
-.vars tbody + tbody .vars-group th { border-top: 1px solid var(--rule); }
-.vars tbody tr.vars-group:hover { background: none; }
+.vars-group th, .list-group th { padding: var(--s4) var(--s3) var(--s2); background: var(--code); font-weight: 400; text-align: left; border-bottom: 1px solid var(--rule); }
+.vars tbody + tbody .vars-group th, .history tbody + tbody .list-group th { border-top: 1px solid var(--rule); }
+.vars tbody tr.vars-group:hover, .history tbody tr.list-group:hover { background: none; }
+/* The same heading over a repository's playbooks: its name, where a variables table has the file. */
+.list-group-name { font-weight: 600; text-decoration: none; }
+a.list-group-name:hover { color: var(--accent-ink); text-decoration: underline; }
 .vars-group-why { margin-left: var(--s2); color: var(--ink-muted); font-size: var(--fs-xs); white-space: nowrap; }
 .vars-by-file .var-name { width: 30%; }
 .vars-by-file .var-value { width: 46%; }
