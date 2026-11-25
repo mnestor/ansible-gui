@@ -71,7 +71,10 @@ def test_by_source_lists_each_source_once_the_one_that_wins_over_the_others_firs
         ("outside the repo", ["j"]),             # nothing here sets it: last, whatever it would rank
     ]
     assert [g.key for g in found] == [f"s{n}" for n in range(1, 10)]
-    assert found[0].layer.path == f"{inv}/host_vars/web1.yml" and found[0].layer.line is None  # the header: whole path
+    # A heading says the short path too; the whole one stays with the layer, for the link and the tooltip.
+    assert found[0].short == "inventory/host_vars/web1.yml" and found[0].prefix == "/srv/repo"
+    assert found[0].layer.path == f"{inv}/host_vars/web1.yml" and found[0].layer.line is None
+    assert found[-1].short == ""  # nothing in the repo sets it: no path to show
     assert by_source([], ["all"]) == []
 
 
@@ -82,6 +85,7 @@ def test_host_variables_are_grouped_under_the_file_that_set_them():
     table = html.split('<table class="vars vars-by-file">')[1].split("</table>")[0]
     heads = [h.split("</tr>")[0] for h in table.split('<tr class="vars-group">')[1:]]
     named = [h.split('class="source source-win mono"')[1].split(">")[1].split("<")[0] for h in heads]
+    assert 'title="inventory/host_vars/web1.yml">inventory/host_vars/web1.yml</a>' in heads[0]
     assert named == ["inventory/host_vars/web1.yml", "inventory/hosts.ini", "group_vars/web.yml",
                      "inventory/group_vars/web/20-extra.yml", "inventory/group_vars/web/10-main.yml",
                      "inventory/group_vars/prod.yml", "inventory/group_vars/all.yml"]

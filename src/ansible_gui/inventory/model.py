@@ -78,8 +78,16 @@ class SourceGroup:
     """The variables one source set and won: one file, or one kind of line in the inventory source."""
     key: str  # "s1", "s2"…: what a page calls it, the same in either order of the table
     layer: Layer  # the source, without a line
-    label: str  # its short name: the path from where the sources part ways, and which line for the inventory's own
+    label: str  # what a chip calls it: its short path, and which line for the inventory's own
     vars: list[ResolvedVar]
+    short: str = ""  # its path from where the sources part ways ("" when nothing in the repo sets it)
+    prefix: str = ""  # what was left off the front of it: the directory every source here shares
+
+
+def short_path(path: str, prefix: str) -> str:
+    """`path` without the directory all of a table's sources share. A page says a file's name where it
+    differs from its neighbours: the forty characters of a checkout's path in front of each one say nothing."""
+    return path[len(prefix) + 1:] if prefix and path.startswith(prefix + "/") else path
 
 
 def _rank(layer: Layer, groups: list[str]) -> tuple[int, int, str]:
@@ -119,12 +127,13 @@ def by_source(vars: list[ResolvedVar], groups: list[str]) -> list[SourceGroup]:
     def label(layer: Layer) -> str:
         if not layer.path:
             return "outside the repo"
-        path = layer.path[len(shared) + 1:] if shared and layer.path.startswith(shared + "/") else layer.path
+        path = short_path(layer.path, shared)
         if layer.kind == "inventory_group":
             return f"{path} · [{layer.group}]"
         return f"{path} · host line" if layer.kind == "inventory_host" else path
 
-    return [SourceGroup(f"s{n}", layer, label(layer), found[layer]) for n, layer in enumerate(ordered, 1)]
+    return [SourceGroup(f"s{n}", layer, label(layer), found[layer], short_path(layer.path or "", shared), shared)
+            for n, layer in enumerate(ordered, 1)]
 
 
 @dataclass
