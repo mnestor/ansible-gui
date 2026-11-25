@@ -48,7 +48,7 @@
 
   <div class="field">
     <label class="label" for="target">Targets</label>
-    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions" data-suggest>
+    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" placeholder="all of the playbook's hosts" aria-describedby="target-help" list="target-suggestions" data-suggest data-chip-field="pattern">
     {% include "_target_suggestions.html" %}
     <p class="help" id="target-help">A host, a group, or any <span class="mono">--limit</span> pattern, like <span class="mono">web:!web2</span>. Leave empty to use the playbook’s own hosts.</p>
   </div>
@@ -66,12 +66,12 @@
   </div>
   <div class="field">
     <label class="label" for="tags">Only tags <span class="optional">(optional)</span></label>
-    <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
+    <input id="tags" class="input input-medium mono" name="tags" value="{{ form.tags }}" data-chip-field="list" autocomplete="off" spellcheck="false" list="tag-suggestions" aria-describedby="tags-help">
     <p class="help" id="tags-help">Runs only tasks with these tags. Pick from the playbook’s tags, or type one and press Enter. Empty runs every task.</p>
   </div>
   <div class="field">
     <label class="label" for="skip_tags">Skip tags <span class="optional">(optional)</span></label>
-    <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-tag-field autocomplete="off" spellcheck="false" list="tag-suggestions">
+    <input id="skip_tags" class="input input-medium mono" name="skip_tags" value="{{ form.skip_tags }}" data-chip-field="list" autocomplete="off" spellcheck="false" list="tag-suggestions">
   </div>
   <datalist id="tag-suggestions"></datalist>
 </section>

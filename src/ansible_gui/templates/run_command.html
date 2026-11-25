@@ -27,7 +27,7 @@
 
   <div class="field">
     <label class="label" for="target">Targets</label>
-    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" required aria-describedby="target-help" list="target-suggestions" data-suggest enterkeyhint="next">
+    <input id="target" class="input input-medium mono" name="target" value="{{ form.target }}" autocomplete="off" spellcheck="false" required aria-describedby="target-help" list="target-suggestions" data-suggest data-chip-field="pattern" enterkeyhint="next">
     {% include "_target_suggestions.html" %}
     <p class="help" id="target-help">A host, a group, or a pattern like <span class="mono">web:!web2</span>.</p>
   </div>

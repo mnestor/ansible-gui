@@ -23,17 +23,20 @@
   </div>
 {% endmacro %}
 
-{# The environment secrets a run gets are the ones ticked here, and no other. A stacked list: each line is a
-   name and the variable it sets, and there may be a dozen. #}
+{# The environment secrets a run gets are the ones picked here, and no other. The tick boxes are what the form
+   sends, and all there is without script or on a touch screen; app.js draws them as a chip field like Targets
+   and the tags (a chip per secret picked, the others in a list under the box), reading the names it offers
+   from the datalist. #}
 {% macro env_secret_field(form, env_secrets) %}
   {% if env_secrets %}
-  <fieldset class="prompt-group" aria-describedby="env-secret-help">
-    <legend class="label">Environment secrets</legend>
+  <fieldset class="prompt-group" aria-describedby="env-secret-help" data-chip-choices="env-secret" data-list="env-secret-options" data-placeholder="Pick a secret" data-more="Add a secret">
+    <legend class="label" id="env-secret-label">Environment secrets</legend>
     <input type="hidden" name="env_secret" value="">
     <div class="choices">
-      {% for c in env_secrets %}<label class="check"><input type="checkbox" name="env_secret" value="{{ c.id }}" {% if c.id|string in (form.env_secret or []) %}checked{% endif %}> {{ c.name }} <span class="mono prompt-name">${{ c.meta.env }}</span></label>{% endfor %}
+      {% for c in env_secrets %}<label class="check"><input type="checkbox" data-name="{{ c.name }}" data-about="${{ c.meta.env }}" name="env_secret" value="{{ c.id }}" {% if c.id|string in (form.env_secret or []) %}checked{% endif %}> {{ c.name }} <span class="mono prompt-name">${{ c.meta.env }}</span></label>{% endfor %}
     </div>
-    <p class="help" id="env-secret-help">The run gets <span class="mono">$NAME</span> and <span class="mono">$NAME_FILE</span> for each one ticked, and no other. <a href="/credentials/secrets">Secrets</a></p>
+    <datalist id="env-secret-options">{% for c in env_secrets %}<option value="{{ c.name }}" data-about="${{ c.meta.env }}">{% endfor %}</datalist>
+    <p class="help" id="env-secret-help">The run gets <span class="mono">$NAME</span> and <span class="mono">$NAME_FILE</span> for each one picked, and no other. <a href="/credentials/secrets">Secrets</a></p>
   </fieldset>
   {% endif %}
 {% endmacro %}

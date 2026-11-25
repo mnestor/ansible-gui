@@ -9,6 +9,32 @@
     return true;
   }
 
+  const coarse = window.matchMedia("(pointer: coarse)");
+
+  // The names in a comma list (tags).
+  function listTerms(text) {
+    return text.split(",").map((t) => t.trim()).filter(Boolean);
+  }
+  // The names in a host pattern, split as Ansible splits it: on commas if it has any; otherwise on the colons
+  // outside brackets, unless the whole of it is one address (fe80::1), where the colons are the address's own.
+  function patternTerms(text) {
+    text = text.trim();
+    const commas = text.includes(",");
+    if (!commas && /^[0-9a-f]*(:[0-9a-f]*){2,}$/i.test(text)) return [text];
+    const out = [];
+    let depth = 0, term = "";
+    for (const ch of text) {
+      if (ch === "[") depth++;
+      else if (ch === "]") depth = Math.max(0, depth - 1);
+      if (ch === (commas ? "," : ":") && depth === 0) {
+        out.push(term);
+        term = "";
+      } else term += ch;
+    }
+    out.push(term);
+    return out.map((t) => t.trim()).filter(Boolean);
+  }
+
   function setup(root) {
     const find = root.querySelector("[data-find]");
     const lists = root.querySelectorAll("[data-list]");
@@ -140,79 +166,169 @@
     const tagList = root.querySelector("#tag-suggestions");
     if (tagOptions && tagList) tagList.replaceChildren(tagOptions.content.cloneNode(true));
 
-    // Tag fields: a chip per tag, and a box that suggests the playbook's tags one at a time (a datalist on
-    // the comma list itself only completes the first). The comma list stays in the original input, which is
-    // what the form sends; without script that input is all there is.
-    root.querySelectorAll("input[data-tag-field]").forEach((input) => {
-      if (!once(input, "Tags")) return;
+    // Chip fields: Targets, Only tags, Skip tags and Environment secrets. One box styled as an input, holding a
+    // chip per choice with an × that removes it, and an entry that offers what there is to choose in the app's
+    // own list (suggest.js; the browser's on a touch screen). What the form sends stays what it was: the
+    // original input, holding the comma list or the pattern, or the secrets' tick boxes. Without script those
+    // are all there is.
+    function chipField(o) {
       const box = document.createElement("div");
-      box.className = "tag-field input input-medium";
+      box.className = "chip-field input input-medium" + (o.plain ? " chip-field-text" : "");
       const chips = document.createElement("ul");
       chips.className = "chips";
       const entry = document.createElement("input");
-      entry.className = "tag-entry";
-      entry.id = input.id;
-      input.id = input.id + "-value";
-      for (const attr of ["list", "aria-describedby"]) {
-        if (input.hasAttribute(attr)) entry.setAttribute(attr, input.getAttribute(attr));
+      entry.className = "chip-entry";
+      entry.id = o.id;
+      if (o.describedBy) entry.setAttribute("aria-describedby", o.describedBy);
+      if (o.labelledBy) entry.setAttribute("aria-labelledby", o.labelledBy);
+      if (o.list) {
+        entry.setAttribute("list", o.list);
+        entry.dataset.suggest = "";
+        entry.dataset.suggestLabel = o.label;
+        if (o.plain) entry.dataset.suggestPlain = "";
       }
-      input.removeAttribute("list");
-      Object.assign(entry, { autocomplete: "off", spellcheck: false, placeholder: "Type or pick a tag" });
+      Object.assign(entry, { autocomplete: "off", spellcheck: false });
       entry.setAttribute("autocapitalize", "off");
       entry.setAttribute("enterkeyhint", "done");
-      input.hidden = true; // hidden, still submitted
+      entry.suggestAnchor = box;  // the list hangs under the whole field, not under the entry
+      entry.suggestExclude = () => o.chosen().map((c) => c.match || c.text);
       box.append(chips, entry);
-      input.after(box);
+      o.after.after(box);
 
-      let tags = input.value.split(",").map((t) => t.trim()).filter(Boolean);
-      function sync(changed) {
-        chips.replaceChildren(...tags.map((t) => {
+      function draw() {
+        const now = o.chosen();
+        chips.replaceChildren(...now.map((c) => {
           const li = document.createElement("li");
           const chip = document.createElement("span");
-          chip.className = "chip mono";
-          chip.textContent = t;
+          chip.className = "chip" + (o.plain ? "" : " mono");
+          chip.textContent = c.text;
+          if (c.about) {
+            const about = document.createElement("span");
+            about.className = "chip-about mono";
+            about.textContent = c.about;
+            chip.append(about);
+          }
           const remove = document.createElement("button");
           remove.type = "button";
           remove.className = "chip-remove";
           remove.textContent = "×";
-          remove.setAttribute("aria-label", `Remove ${t}`);
+          remove.setAttribute("aria-label", `Remove ${c.text}`);
           remove.addEventListener("click", () => {
-            tags = tags.filter((x) => x !== t);
-            sync(true);
+            o.remove(c);
+            draw();
             entry.focus();
           });
           chip.append(remove);
           li.append(chip);
           return li;
         }));
-        input.value = tags.join(",");
-        // The preview listens for change on the form: it refreshes per tag, not per keystroke.
-        if (changed) input.dispatchEvent(new Event("change", { bubbles: true }));
+        entry.placeholder = now.length ? o.more : o.placeholder;
+        if (o.required) entry.required = now.length === 0;  // the hidden original can't be told it is empty
       }
-      function add(text) {
-        for (const t of text.split(",").map((s) => s.trim()).filter(Boolean)) if (!tags.includes(t)) tags.push(t);
+      function take(text) {
         entry.value = "";
-        sync(true);
+        if (text.trim()) o.add(text);
+        draw();
       }
       entry.addEventListener("keydown", (e) => {
-        if ((e.key === "Enter" || e.key === ",") && entry.value.trim()) {
+        if (e.key === "Enter") {
+          if (entry.hasAttribute("aria-activedescendant")) return;  // an option of the list is picked out: Enter is its
+          e.preventDefault();  // Enter in a chip field never starts a run
+          if (entry.value.trim()) take(entry.value);
+        } else if (o.splits && o.splits(e.key, entry.value) && entry.value.trim()) {
           e.preventDefault();
-          add(entry.value);
-        } else if (e.key === "Enter") {
-          e.preventDefault(); // Enter in the tag box never starts a run
-        } else if (e.key === "Backspace" && !entry.value && tags.length) {
-          tags.pop();
-          sync(true);
+          take(entry.value);
+        } else if (e.key === "Backspace" && !entry.value) {
+          const now = o.chosen();
+          if (!now.length) return;
+          o.remove(now[now.length - 1]);
+          draw();
         }
       });
-      // A pick from the suggestions arrives as an input event with no inputType (Firefox) or a replacement.
+      // A pick from the list arrives as a change (suggest.js), or from the browser's own list as an input
+      // event with no inputType (Firefox) or a replacement.
       entry.addEventListener("input", (e) => {
-        if (!e.inputType || e.inputType === "insertReplacementText" || entry.value.includes(",")) add(entry.value);
+        if (!e.inputType || e.inputType === "insertReplacementText") take(entry.value);
       });
-      entry.addEventListener("change", (e) => e.stopPropagation());
-      entry.addEventListener("blur", () => { if (entry.value.trim()) add(entry.value); });
-      box.addEventListener("click", (e) => { if (e.target === box || e.target === chips) entry.focus(); });
-      sync(false);
+      entry.addEventListener("change", (e) => {
+        e.stopPropagation();  // the form hears of a chip, not of what is being typed
+        if (entry.value.trim()) take(entry.value);
+      });
+      entry.addEventListener("blur", () => { if (entry.value.trim()) take(entry.value); });
+      box.addEventListener("click", (e) => {
+        if (e.target !== box && e.target !== chips) return;
+        entry.focus();
+        entry.click();  // opens the list, as a click on the entry does
+      });
+      draw();
+      if (window.agSuggest) window.agSuggest(entry, box);
+    }
+
+    // Targets, and the two tag fields: the original input keeps the text the form sends.
+    root.querySelectorAll("input[data-chip-field]").forEach((input) => {
+      if (!once(input, "Chips")) return;
+      const pattern = input.dataset.chipField === "pattern";
+      const read = pattern ? patternTerms : listTerms;
+      // A pattern is joined the way it came (web:!web2, or web,!web2), a new one with colons; with commas
+      // once a name has a colon of its own (a slice, an IPv6 address).
+      const joint = pattern && !input.value.includes(",") ? ":" : ",";
+      let terms = read(input.value);
+      const id = input.id;
+      const list = input.getAttribute("list");
+      const required = input.required;
+      input.id = id + "-value";
+      input.removeAttribute("list");
+      input.required = false;
+      input.hidden = true;  // hidden, still submitted
+      function changed() {
+        input.value = terms.join(pattern && terms.some((t) => t.includes(":")) ? "," : joint);
+        // The preview listens for change on the form: it refreshes per chip, not per keystroke.
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      chipField({
+        after: input, id, list, required, describedBy: input.getAttribute("aria-describedby"),
+        label: pattern ? "Groups and hosts" : "Tags",
+        placeholder: input.placeholder || (pattern ? "Type or pick a group or host" : "Type or pick a tag"),
+        more: pattern ? "Add a group or host" : "Add a tag",
+        chosen: () => terms.map((t) => ({ text: t, match: t.replace(/^[!&]+/, "") })),
+        add(text) {
+          const fresh = read(text).filter((t) => !terms.includes(t));
+          if (!fresh.length) return;
+          terms.push(...fresh);
+          changed();
+        },
+        remove(c) {
+          terms = terms.filter((t) => t !== c.text);
+          changed();
+        },
+        // A comma ends a name; so does a colon in a pattern, unless it is inside a slice: web[0:2].
+        splits: (key, typed) => key === "," || (pattern && key === ":" && !/\[[^\]]*$/.test(typed)),
+      });
+    });
+
+    // Environment secrets: the tick boxes stay what the form sends, and stay the control on a touch screen.
+    root.querySelectorAll("fieldset[data-chip-choices]").forEach((set) => {
+      const holder = set.querySelector(".choices");
+      if (coarse.matches || !holder || !once(set, "Chips")) return;
+      const boxes = [...holder.querySelectorAll('input[type="checkbox"]')];
+      const legend = set.querySelector("legend");
+      const tick = (box, on) => {
+        box.checked = on;
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      };
+      holder.hidden = true;
+      chipField({
+        after: holder, id: set.dataset.chipChoices, list: set.dataset.list, plain: true,
+        labelledBy: legend && legend.id, describedBy: set.getAttribute("aria-describedby"),
+        label: legend ? legend.textContent.trim() : "Choices",
+        placeholder: set.dataset.placeholder || "Pick one", more: set.dataset.more || "Add another",
+        chosen: () => boxes.filter((b) => b.checked).map((b) => ({ text: b.dataset.name, about: b.dataset.about, box: b })),
+        add(text) {
+          const box = boxes.find((b) => b.dataset.name.toLowerCase() === text.trim().toLowerCase());
+          if (box && !box.checked) tick(box, true);  // only what is on the list: there is nothing to type in
+        },
+        remove: (c) => tick(c.box, false),
+      });
     });
 
     // Show/hide a password field.

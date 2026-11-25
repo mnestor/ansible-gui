@@ -110,6 +110,23 @@ def test_the_launcher_offers_each_secret_unticked_and_run_again_ticks_what_the_r
     assert f'name="env_secret" value="{secrets["OTHER_TOKEN"]}" >' in again
 
 
+def test_targets_tags_and_secrets_are_marked_for_the_one_chip_field(app, c, secrets):
+    """Targets, the tags and the environment secrets are drawn by one component (app.js, chipField): a chip
+    per choice and a list to pick from. These are the hooks it reads; what the form sends is unchanged, so
+    the page works without it."""
+    page = c.get("/runs/new", params={"playbook": "sees.yml"}).text
+    assert 'list="target-suggestions" data-suggest data-chip-field="pattern"' in page
+    assert page.count('data-chip-field="list"') == 2  # Only tags, Skip tags
+    field = page.split('data-chip-choices="env-secret"')[1].split("</fieldset>")[0]
+    assert 'data-list="env-secret-options"' in page and '<legend class="label" id="env-secret-label">' in field
+    for env, cid in secrets.items():  # the tick boxes stay underneath, and say what each chip shows
+        assert f'data-about="${env}" name="env_secret" value="{cid}" >' in field
+    assert '<option value="tok" data-about="$TEST_TOKEN">' in field
+    assert '<option value="other" data-about="$OTHER_TOKEN">' in field
+    command = c.get("/runs/command").text
+    assert 'data-chip-field="pattern"' in command and 'data-chip-choices="env-secret"' in command
+
+
 @needs_ansible
 def test_a_template_and_a_schedule_keep_the_secrets_picked_for_them(app, c, secrets):
     tok = secrets["TEST_TOKEN"]

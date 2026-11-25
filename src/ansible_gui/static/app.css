@@ -814,10 +814,15 @@ table.repos th[scope=row] { white-space: normal; }
 .strip-line { display: block; }
 
 /* Tag field: chips and a borderless entry inside one box that looks like an input. */
-.tag-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); cursor: text; }
-.tag-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
-.tag-field .chips:empty { display: none; }
-.tag-entry { flex: 1 1 8rem; min-width: 0; padding: 0; border: 0; outline: none; background: transparent; color: inherit; font: inherit; font-family: var(--font-mono); }
+/* Chip field (Targets, the tags, Environment secrets): a box that looks like an input and holds a chip per
+   choice and the entry to add another. The list of what there is to choose hangs under the whole box. */
+.chip-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); cursor: text; height: auto; min-height: 38px; }
+.chip-field:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 22%, transparent); }
+.chip-field .chips:empty { display: none; }
+.chip-entry { flex: 1 1 8rem; min-width: 0; padding: 0; border: 0; outline: none; background: transparent; color: inherit; font: inherit; font-family: var(--font-mono); }
+.chip-field-text .chip-entry { font-family: var(--font-text); }
+.chip-field-text .picker-about { font-family: var(--font-mono); }
+.chip-about { margin-left: var(--s2); color: var(--ink-muted); font-size: var(--fs-xs); }
 .chip-remove { margin-inline: var(--s1) calc(-1 * var(--s2)); padding: 0 var(--s1); border: 0; border-radius: var(--radius-pill); background: none; color: var(--ink-muted); font: inherit; cursor: pointer; }
 .chip-remove:hover { color: var(--danger); }
 .chip-remove:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
