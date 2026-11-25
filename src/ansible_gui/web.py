@@ -165,6 +165,27 @@ def env_secrets_of(run: Run) -> list[str]:
     return [str(e["id"]) for e in run.credentials.get("env_secret") or [] if isinstance(e, dict) and "id" in e]
 
 
+def split_tags(tags: str, skip_tags: str) -> tuple[str, str]:
+    """(the tags to run only, the tags to skip), as a run stores them and Ansible takes them.
+
+    The Tags field takes !name for a tag to skip, as Targets takes !host. That is the form's own shorthand:
+    Ansible has no such syntax, it has --tags and --skip-tags, and "--tags '!name'" would match nothing. So
+    the two are taken apart here, whichever way they arrive (the form, a link). A tags field with no ! in it
+    is left exactly as it was typed."""
+    if "!" not in tags:
+        return tags, skip_tags
+    only: list[str] = []
+    skip = [t.strip() for t in skip_tags.split(",") if t.strip()]
+    for tag in (t.strip() for t in tags.split(",")):
+        name = tag.lstrip("! ").strip()
+        if tag.startswith("!"):
+            if name and name not in skip:
+                skip.append(name)
+        elif tag and tag not in only:
+            only.append(tag)
+    return ",".join(only), ",".join(skip)
+
+
 def ticked_env_secrets(src) -> list[str]:
     """The environment secrets ticked in a form or named in a link, as credential ids. A form also sends an
     empty one, so "none ticked" still arrives and a template's own aren't taken in its place."""
@@ -549,13 +570,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             verbosity = max(0, min(4, int(src.get("verbosity") or 0)))
         except ValueError:
             verbosity = 0
+        tags, skip_tags = split_tags((src.get("tags") or "").strip(), (src.get("skip_tags") or "").strip())
         return {
             "playbook": src.get("playbook") or "",
             "target": (src.get("target") or "").strip(),
             "mode": "apply" if src.get("mode") == "apply" else "check",
             "diff": src.get("diff", "1") == "1",
-            "tags": (src.get("tags") or "").strip(),
-            "skip_tags": (src.get("skip_tags") or "").strip(),
+            "tags": tags,
+            "skip_tags": skip_tags,
             "verbosity": verbosity,
             "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),

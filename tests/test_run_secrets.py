@@ -116,7 +116,7 @@ def test_targets_tags_and_secrets_are_marked_for_the_one_chip_field(app, c, secr
     the page works without it."""
     page = c.get("/runs/new", params={"playbook": "sees.yml"}).text
     assert 'list="target-suggestions" data-suggest data-chip-field="pattern"' in page
-    assert page.count('data-chip-field="list"') == 2  # Only tags, Skip tags
+    assert page.count('data-chip-field="list"') == 1 and 'data-chip-skip="skip_tags"' in page  # Tags, with its skips
     field = page.split('data-chip-choices="env-secret"')[1].split("</fieldset>")[0]
     assert 'data-list="env-secret-options"' in page and '<legend class="label" id="env-secret-label">' in field
     for env, cid in secrets.items():  # the tick boxes stay underneath, and say what each chip shows

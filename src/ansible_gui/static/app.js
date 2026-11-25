@@ -273,6 +273,15 @@
       // once a name has a colon of its own (a slice, an IPv6 address).
       const joint = pattern && !input.value.includes(",") ? ":" : ",";
       let terms = read(input.value);
+      // Tags: the field beside it holds the tags to skip. They are drawn here as !name, like a host left out
+      // of Targets, and that field is put away; each still gets its own names when anything changes.
+      const skips = input.dataset.chipSkip ? document.getElementById(input.dataset.chipSkip) : null;
+      const bare = (t) => t.replace(/^[!\s]+/, "");
+      if (skips) {
+        terms = terms.concat(listTerms(skips.value).map((t) => "!" + t));
+        const field = skips.closest(".field");
+        if (field) field.hidden = true;
+      }
       const id = input.id;
       const list = input.getAttribute("list");
       const required = input.required;
@@ -281,7 +290,10 @@
       input.required = false;
       input.hidden = true;  // hidden, still submitted
       function changed() {
-        input.value = terms.join(pattern && terms.some((t) => t.includes(":")) ? "," : joint);
+        if (skips) {
+          input.value = terms.filter((t) => !t.startsWith("!")).join(",");
+          skips.value = terms.filter((t) => t.startsWith("!")).map(bare).join(",");
+        } else input.value = terms.join(pattern && terms.some((t) => t.includes(":")) ? "," : joint);
         // The preview listens for change on the form: it refreshes per chip, not per keystroke.
         input.dispatchEvent(new Event("change", { bubbles: true }));
       }
@@ -289,11 +301,15 @@
         after: input, id, list, required, describedBy: input.getAttribute("aria-describedby"),
         label: pattern ? "Groups and hosts" : "Tags",
         placeholder: input.placeholder || (pattern ? "Type or pick a group or host" : "Type or pick a tag"),
-        more: pattern ? "Add a group or host" : "Add a tag",
+        more: pattern ? "Add a group or host" : (skips ? "Add a tag, or !tag to skip one" : "Add a tag"),
         chosen: () => terms.map((t) => ({ text: t, match: t.replace(/^[!&]+/, "") })),
         add(text) {
-          const fresh = read(text).filter((t) => !terms.includes(t));
+          let typed = read(text);
+          if (skips) typed = typed.map((t) => (t.startsWith("!") ? "!" + bare(t) : t)).filter((t) => bare(t));
+          const fresh = typed.filter((t) => !terms.includes(t));
           if (!fresh.length) return;
+          // A tag is run or skipped, not both: the one just added takes the place of its opposite.
+          if (skips) terms = terms.filter((t) => !fresh.some((f) => bare(f) === bare(t)));
           terms.push(...fresh);
           changed();
         },
