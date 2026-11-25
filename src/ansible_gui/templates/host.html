@@ -37,8 +37,8 @@
   {% endif %}
 
   <h3 {% if found | length == 1 %}id="inv-{{ loop.index }}"{% endif %} class="section-title section-sub">Variables</h3>
-  <p class="scope-note">Inventory variables only, in Ansible’s precedence order. Role defaults, <span class="mono">vars_files</span> and <span class="mono">set_fact</span> are not shown; gathered facts are under <a href="#facts">Facts</a>.</p>
-  {% with vars = host.vars, show_filter = loop.first, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
+  <p class="scope-note">Inventory variables only: what Ansible resolves for this host, each under the file that set it, the file that wins over the others first. Role defaults, <span class="mono">vars_files</span> and <span class="mono">set_fact</span> are not shown; gathered facts are under <a href="#facts">Facts</a>.</p>
+  {% with vars = host.vars, order = host.all_groups, anchor = "vars-" ~ loop.index, show_filter = loop.first, empty_text = "This host has no inventory variables. Ansible will use its defaults and whatever the playbooks set." %}
     {% include "_vars.html" %}
   {% endwith %}
 

@@ -36,7 +36,7 @@ from .repos import forge
 from .keys import Keys
 from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
-from .inventory.model import Layer, Vaulted
+from .inventory.model import Layer, Vaulted, by_source
 from .inventory.service import Inventories
 from .repos import git as gitsync
 from .repos.store import Invalid as RepoInvalid
@@ -299,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         default_account=lambda: creds.default("account"),
         account_name=lambda cid: (lambda c: c.name if c else "")(creds.get(cid) if cid else None),
         present=present,
+        by_source=by_source,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
         commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
         playbook_repo=lambda rid: ws.playbook_repo(rid),
@@ -430,6 +431,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def groups_overview(request: Request):
         return inventory_page(request, "overview.html", listing="groups", selected=None)
 
+    def vars_order(request: Request) -> str:
+        """How a variables table is laid out: "file" (under the source that set each, the default) or "name"
+        (A to Z, ?by=name)."""
+        return "name" if request.query_params.get("by") == "name" else "file"
+
     @app.get("/inventory/hosts/{name}", response_class=HTMLResponse)
     def host(request: Request, name: str):
         found = invs.find_host(name)
@@ -440,7 +446,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         neighbours = (names[at - 1] if at > 0 else None, names[at + 1] if 0 <= at < len(names) - 1 else None)
         return inventory_page(request, "host.html", name=name, found=found, selected=("host", name),
                               neighbours=neighbours, position=(at + 1, len(names)),
-                              facts=facts.get(name))
+                              facts=facts.get(name), vars_by=vars_order(request))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
     def group(request: Request, name: str):
@@ -449,7 +455,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return inventory_page(request, "missing.html", status=404, listing="groups", kind="group", name=name,
                                   selected=None)
         return inventory_page(request, "group.html", listing="groups", name=name, found=found,
-                              selected=("group", name))
+                              selected=("group", name), vars_by=vars_order(request))
 
     @app.post("/facts/gather")
     async def gather_facts(request: Request):

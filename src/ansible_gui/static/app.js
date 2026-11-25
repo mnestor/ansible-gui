@@ -84,21 +84,60 @@
       find.focus();
     });
 
+    // Variables. The filter box reads each row's name, value and file (data-search) across every table of
+    // the page; a table's source chips narrow that table to the sources picked (none picked: all of them).
+    // A source's heading goes when none of its rows is left, and the count says how many are showing.
     const varfilter = root.querySelector("[data-varfilter]");
-    const varempty = root.querySelector("[data-varempty]");
+    const varblocks = [...root.querySelectorAll("[data-vars]")];
     function filterVars() {
-      const term = varfilter.value.trim().toLowerCase();
-      let shown = 0;
-      root.querySelectorAll("tr[data-var]").forEach((tr) => {
-        const hit = term === "" || tr.dataset.var.toLowerCase().includes(term);
-        tr.hidden = !hit;
-        if (hit) shown++;
+      const typed = varfilter ? varfilter.value.trim() : "";
+      const term = typed.toLowerCase();
+      varblocks.forEach((block) => {
+        const picked = new Set([...block.querySelectorAll('[data-source-chip][aria-pressed="true"]')]
+          .map((chip) => chip.dataset.sourceChip));
+        const all = block.querySelector("[data-source-all]");
+        if (all) all.setAttribute("aria-pressed", String(picked.size === 0));
+        const rows = [...block.querySelectorAll("tr[data-var]")];
+        let shown = 0;
+        rows.forEach((tr) => {
+          const hit = (term === "" || (tr.dataset.search || tr.dataset.var.toLowerCase()).includes(term))
+            && (picked.size === 0 || picked.has(tr.dataset.source));
+          tr.hidden = !hit;
+          if (hit) shown++;
+        });
+        block.querySelectorAll("tbody[data-group]").forEach((group) => {
+          group.hidden = !group.querySelector("tr[data-var]:not([hidden])");
+        });
+        const count = block.querySelector("[data-varcount]");
+        if (count) {
+          if (!count.dataset.all) count.dataset.all = count.textContent.trim().replace(/\s+/g, " ");
+          count.textContent = shown === rows.length ? count.dataset.all
+            : `${shown} of ${rows.length} variable${rows.length === 1 ? "" : "s"}`;
+        }
+        const empty = block.querySelector("[data-varempty]");
+        if (empty) {
+          empty.hidden = shown > 0 || rows.length === 0;
+          empty.querySelector("[data-varterm]").textContent = typed;
+          const narrowed = empty.querySelector("[data-varpicked]");
+          if (narrowed) narrowed.hidden = picked.size === 0;
+        }
       });
-      if (varempty) {
-        varempty.hidden = shown > 0;
-        varempty.querySelector("[data-varterm]").textContent = varfilter.value.trim();
-      }
     }
+    varblocks.forEach((block) => {
+      if (!once(block, "Sources")) return;
+      block.addEventListener("click", (e) => {
+        const chip = e.target.closest("[data-source-chip], [data-source-all]");
+        const clear = e.target.closest("[data-varclear]");
+        if (!chip && !clear) return;
+        if (chip && chip.hasAttribute("data-source-chip")) {
+          chip.setAttribute("aria-pressed", String(chip.getAttribute("aria-pressed") !== "true"));
+        } else {  // All, or Clear filter: back to every source
+          block.querySelectorAll("[data-source-chip]").forEach((c) => c.setAttribute("aria-pressed", "false"));
+          if (clear && varfilter) varfilter.value = "";
+        }
+        filterVars();
+      });
+    });
     if (once(varfilter, "Filter")) varfilter.addEventListener("input", filterVars);
     const varclear = root.querySelector("[data-varclear]");
     if (once(varclear, "Clear")) varclear.addEventListener("click", () => {
