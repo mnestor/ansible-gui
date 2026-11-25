@@ -28,7 +28,7 @@ from .config import LOOPBACK_HOSTS, Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
 from .facts import FactStore
 from . import ansible_config
-from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
+from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid, picked_ids
 
 ACCOUNT_SIDE = ("account",)  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
@@ -156,7 +156,19 @@ def command_url(run: Run) -> str:
          "verbosity": str(run.verbosity) if run.verbosity else ""}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
-    return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
+    q["env_secret"] = env_secrets_of(run)
+    return "/runs/command?" + urlencode({k: v for k, v in q.items() if v}, doseq=True)
+
+
+def env_secrets_of(run: Run) -> list[str]:
+    """The environment secrets a run got, as a link names them: its launcher ticks the same ones."""
+    return [str(e["id"]) for e in run.credentials.get("env_secret") or [] if isinstance(e, dict) and "id" in e]
+
+
+def ticked_env_secrets(src) -> list[str]:
+    """The environment secrets ticked in a form or named in a link, as credential ids. A form also sends an
+    empty one, so "none ticked" still arrives and a template's own aren't taken in its place."""
+    return list(dict.fromkeys(v for v in map(str, src.getlist("env_secret")) if v.isdigit()))
 
 
 def rerun_url(run: Run, mode: str) -> str:
@@ -167,6 +179,7 @@ def rerun_url(run: Run, mode: str) -> str:
          "template": "" if run.template_id is None else str(run.template_id), "from": str(run.id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
+    q["env_secret"] = env_secrets_of(run) or ""  # named even when there are none: the template's aren't this run's
     # Secret answers never go in a link: a template keeps its own, anything else is typed again.
     plain = {k: v for k, v in run.prompt_vars.items() if not (isinstance(v, dict) and variables.SECRET in v)}
     if plain:
@@ -175,7 +188,7 @@ def rerun_url(run: Run, mode: str) -> str:
         q["extra_vars"] = run.extra_vars
     if any(isinstance(v, dict) and variables.SECRET in v for v in run.prompt_vars.values()):
         q["rerun"] = str(run.id)  # its secrets stay on the server; an empty secret field reuses them
-    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
+    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None}, doseq=True)
 
 
 def rerun_hosts(run: Run, mode: str, hosts: list[str]) -> str:
@@ -227,6 +240,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.creds = creds
     schedules = ScheduleStore(settings.data_dir)
     run_templates = TemplateStore(settings.data_dir)
+    # Saved before environment secrets were picked per run: each keeps the ones it got, which was all of them.
+    env_secrets_now = [c.id for c in creds.by_kind("env_secret")]
+    schedules.keep_earlier_env_secrets(env_secrets_now)
+    run_templates.keep_earlier_env_secrets(env_secrets_now)
     app.state.templates = run_templates
     notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
     executor.on_finish = notifier.run_finished
@@ -429,8 +446,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chosen[kind] = {"id": cred.id, "name": cred.name}
                 if kind == "account":
                     chosen[kind]["user"] = cred.meta.get("username", "")
-        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                for c in creds.by_kind("env_secret")]
+        chosen["env_secret"] = []  # ansible -m setup reads the hosts; nothing in it takes a token
         run = store.create(kind="facts", playbook="", repo_id=ws.command_repo(inv_repo).id, target=target, tags="",
                            skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=[],
                            credentials=chosen, trigger=auth.display_name(auth.current_user(request)),
@@ -544,6 +560,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
+            "env_secret": ticked_env_secrets(src),
             "extra_vars": "\n".join(line.rstrip() for line in str(src.get("extra_vars") or "").splitlines()).strip("\n"),
             "prompt_vars": stored_vars(src),
             "var_raw": variables.raw_fields(src),
@@ -720,6 +737,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if key in PER_RUN:
             cred = creds.get(int(value)) if str(value).isdigit() else None
             return cred.name if cred else "none"
+        if key == "env_secret":
+            found = [creds.get(int(v)) for v in value or [] if str(v).isdigit()]
+            return ", ".join(sorted("$" + str(c.meta.get("env")) for c in found if c)) or "none"
         if key == "target":
             return value or "playbook’s hosts"
         if key == "extra_vars":
@@ -791,8 +811,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chosen[kind] = {"id": cred.id, "name": cred.name}
             if kind == "account":
                 chosen[kind]["user"] = cred.meta.get("username", "")
-        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                for c in creds.by_kind("env_secret")]
+        # Only the environment secrets ticked: a run gets no other.
+        chosen["env_secret"] = []
+        for cid in form.get("env_secret") or []:
+            cred = creds.get(int(cid)) if str(cid).isdigit() else None
+            if not cred or cred.kind != "env_secret":
+                return {}, ("An environment secret ticked here was deleted. Check what is ticked under More "
+                            "options, then try again.")
+            chosen["env_secret"].append({"id": cred.id, "name": cred.name, "env": cred.meta.get("env")})
+        chosen["env_secret"].sort(key=lambda e: str(e["env"]))
         return chosen, None
 
     def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
@@ -953,7 +980,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
                 "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
                 "verbosity": int(verbosity) if verbosity in ("0", "1", "2", "3", "4") else 0,
-                "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
+                "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN},
+                "env_secret": ticked_env_secrets(src)}
 
     def command_hosts(form: dict) -> playbooks.Preview:
         """Which hosts the command would reach. It runs with the first playbook repository's ansible.cfg and the
@@ -1182,7 +1210,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            key=lambda c: (order.index(c.kind), c.name.lower()))
         users = {}
         for owner in [*schedules.all(), *run_templates.all()]:
-            for cid in owner.credentials.values():
+            for cid in picked_ids(owner.credentials):
                 users[cid] = users.get(cid, 0) + 1
         used_by_repo: dict[int, list] = {}
         for r in repos.all():
@@ -1224,7 +1252,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
-        used_by = [sc for sc in schedules.all() if cred and cred.id in sc.credentials.values()] if cred else []
+        used_by = [sc for sc in schedules.all() if cred and cred.id in picked_ids(sc.credentials)] if cred else []
         used_by_repos = [r for r in repos.all() if cred and r.ssh_key_id == cred.id] if cred else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
                       cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
@@ -1433,6 +1461,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "inventory": "" if sched.inventory_id is None else str(sched.inventory_id),
                 "prompt_vars": sched.prompt_vars, "extra_vars": sched.extra_vars, "kept": sched.prompt_vars}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
+        form["env_secret"] = [str(i) for i in sched.credentials.get("env_secret", [])]
         return form
 
     @app.get("/schedules", response_class=HTMLResponse)
@@ -1500,10 +1529,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["kept"] = kept_secrets(form, source)
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
-        for kind in PER_RUN:
-            if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
-                return schedule_page(request, form, sched, status=400,
-                                     form_error=f"That {KINDS[kind].lower()} no longer exists. Choose another.")
+        if problem := pick_credentials(form)[1]:
+            return schedule_page(request, form, sched, status=400, form_error=problem)
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return schedule_page(request, form, sched, status=400, form_error="Choose the inventory to run against.")

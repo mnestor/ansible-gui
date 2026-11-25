@@ -47,14 +47,17 @@
 
   <label class="check"><input type="checkbox" name="become" value="1" {% if form.become %}checked{% endif %}> Run as root <span class="help mono">--become</span></label>
 
-  {% from "_signin.html" import account_field, other_credentials %}
+  {% from "_signin.html" import account_field, other_credentials, env_secret_field, env_secret_names %}
   {{ account_field(form, cred_choices) }}
   {% set others = [] %}
   {% for kind, items in cred_choices.items() if kind != "account" %}{% for c in items %}{% if form[kind] == c.id|string %}{% set _ = others.append(c.name) %}{% endif %}{% endfor %}{% endfor %}
+  {% set ticked = env_secret_names(form, env_secrets) | trim %}
+  {% if ticked %}{% set _ = others.append(ticked) %}{% endif %}
   <details class="more" {% if form.verbosity %}open{% endif %}>
-    <summary>More options <span class="summary-note">· {{ "also " ~ others | join(", ") if others else "vault password, verbosity" }}</span></summary>
+    <summary>More options <span class="summary-note">· {{ "also " ~ others | join(", ") if others else ("vault password, environment secrets, verbosity" if env_secrets else "vault password, verbosity") }}</span></summary>
     <div class="more-body">
       {{ other_credentials(form, cred_choices, kinds, settings) }}
+      {{ env_secret_field(form, env_secrets) }}
       <fieldset class="field">
         <legend class="label">Verbosity</legend>
         <div class="segmented segmented-inline" aria-describedby="verbosity-help">
@@ -64,7 +67,7 @@
         </div>
         <p class="help" id="verbosity-help">To see why a host can’t be reached: <span class="mono">-vvv</span> shows the ssh command Ansible runs, <span class="mono">-vvvv</span> also what ssh says (the config files it read, the name it looked up, the keys it offered).</p>
       </fieldset>
-      <p class="help">{% if env_secrets %}Every run also gets {{ env_secrets | map(attribute="meta") | map(attribute="env") | map("string") | join(", ") }}. {% endif %}{% if has_playbook_repo %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.{% else %}There is no playbook repository, so the command runs from the top of the inventory repository, with its <span class="mono">ansible.cfg</span> if it has one.{% endif %}</p>
+      <p class="help">{% if has_playbook_repo %}Uses the first playbook repository’s <span class="mono">ansible.cfg</span> and the group_vars next to its playbooks.{% else %}There is no playbook repository, so the command runs from the top of the inventory repository, with its <span class="mono">ansible.cfg</span> if it has one.{% endif %}</p>
     </div>
   </details>
 

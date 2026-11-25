@@ -23,6 +23,26 @@
   </div>
 {% endmacro %}
 
+{# The environment secrets a run gets are the ones ticked here, and no other. A stacked list: each line is a
+   name and the variable it sets, and there may be a dozen. #}
+{% macro env_secret_field(form, env_secrets) %}
+  {% if env_secrets %}
+  <fieldset class="prompt-group" aria-describedby="env-secret-help">
+    <legend class="label">Environment secrets</legend>
+    <input type="hidden" name="env_secret" value="">
+    <div class="choices">
+      {% for c in env_secrets %}<label class="check"><input type="checkbox" name="env_secret" value="{{ c.id }}" {% if c.id|string in (form.env_secret or []) %}checked{% endif %}> {{ c.name }} <span class="mono prompt-name">${{ c.meta.env }}</span></label>{% endfor %}
+    </div>
+    <p class="help" id="env-secret-help">The run gets <span class="mono">$NAME</span> and <span class="mono">$NAME_FILE</span> for each one ticked, and no other. <a href="/credentials/secrets">Secrets</a></p>
+  </fieldset>
+  {% endif %}
+{% endmacro %}
+
+{# What More options holds besides the vault password and verbosity, for its summary line: "$ENROLL_TOKEN". #}
+{% macro env_secret_names(form, env_secrets) -%}
+  {%- for c in env_secrets if c.id|string in (form.env_secret or []) %}${{ c.meta.env }}{{ ", " if not loop.last }}{% endfor -%}
+{%- endmacro %}
+
 {% macro other_credentials(form, cred_choices, kinds, settings) %}
   {% set items = cred_choices.vault_password %}
   <div class="field">

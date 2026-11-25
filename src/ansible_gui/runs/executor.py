@@ -20,6 +20,7 @@ from ..facts import GATHER_ACTIONS
 from ..scratch import Scratch
 from ..worker import SCRATCH, VAULT, Cancel, vault_files
 from . import playbooks, variables
+from .redact import Redactor
 from .store import Run, RunStore, host_result, now
 
 log = logging.getLogger(__name__)
@@ -134,6 +135,21 @@ class Prepared:
     key: str | None = None  # the file in files to load into the run's ssh-agent
     user: str = ""  # the account's login, if the run signs in with one
     ssoossh: dict | None = None  # {"server", "code"}: the runner fetches the key's certificate before loading it
+    secrets: list[str] = field(default_factory=list)  # every secret value above, for the log to leave out
+
+
+class RunLog:
+    """A run's output.log. Once the run's secrets are known, no line that holds one is written as it is."""
+
+    def __init__(self, path: Path):
+        self._file = path.open("a", encoding="utf-8", buffering=1)
+        self.redact = Redactor([])
+
+    def write(self, text: str) -> None:
+        self._file.write(self.redact(text))
+
+    def close(self) -> None:
+        self._file.close()
 
 
 class Executor:
@@ -232,7 +248,7 @@ class Executor:
         run = self.store.get(run_id)
         if run is None or run.status != "queued":
             return
-        log_file = self.store.log_path(run_id).open("a", encoding="utf-8", buffering=1)
+        log_file = RunLog(self.store.log_path(run_id))
         self.store.update(run_id, status="running", started_at=now())
 
         def stop(message: str) -> None:
@@ -306,6 +322,7 @@ class Executor:
             cmdline.append("--diff")
         cmdline += prepared.cmdline
         files = dict(prepared.files)
+        secrets = list(prepared.secrets)
         # As files, not arguments: secret answers stay out of ps and the log. Free-form first, so a prompt
         # answer wins over it, and Connect as over both.
         if run.extra_vars.strip():
@@ -319,6 +336,9 @@ class Executor:
                             "saved. Enter it again and run again.")
             files["prompt-vars.yml"] = variables.vars_file_text(plain)
             cmdline += ["-e", f"@{SCRATCH}/prompt-vars.yml"]
+            secrets += [str(plain[k]) for k, v in run.prompt_vars.items() if isinstance(v, dict) and variables.SECRET in v]
+        # From here on Ansible has them, and prints what its tasks do: see redact.py.
+        log_file.redact = Redactor(secrets)
         user = prepared.user
         if user:
             # Extra vars beat the inventory and the play. Both names, because ansible_ssh_user beats ansible_user.
@@ -424,12 +444,12 @@ class Executor:
 
         stats = final or live
         if result.get("lost"):  # the runner stopped, or the connection to it broke: Ansible was stopped with it
-            self.store.update(run_id, status="interrupted", finished_at=now(), host_stats=stats,
-                              error=f"Interrupted: {result['error']}. Ansible was stopped with it. Run it again.")
+            self.store.update(run_id, status="interrupted", finished_at=now(), host_stats=stats, error=log_file.redact(
+                f"Interrupted: {result['error']}. Ansible was stopped with it. Run it again."))
             return
         if "error" in result:
             self.store.update(run_id, status="error", finished_at=now(), host_stats=stats,
-                              error=f"Didn’t start: {result['error']}")
+                              error=log_file.redact(f"Didn’t start: {result['error']}"))
             return
         if timed_out.is_set() and run_id not in self._cancel:
             self.store.update(run_id, status="failed", finished_at=now(), rc=result.get("rc"), host_stats=stats,
@@ -509,6 +529,7 @@ class Executor:
         if "ssh_key" in loaded:
             cred, secret = loaded["ssh_key"]
             p.files["id"] = secret["private_key"]
+            p.secrets += [secret["private_key"], secret.get("ssoossh_code") or ""]
             if cred.meta.get("ssoossh") and secret.get("ssoossh_code"):
                 # The runner writes id-cert.pub with `ssoossh service retrieve` before it loads the key.
                 p.ssoossh = {"server": cred.meta["ssoossh"]["server"], "code": secret["ssoossh_code"]}
@@ -525,16 +546,26 @@ class Executor:
             files, args = vault_files(self.workspace.settings.vault_password_file)
             p.files.update(files)
             p.cmdline += args
+        p.secrets.append(p.files.get("vault-pass", ""))
         if "become_password" in loaded:
             p.cmdline.append("--ask-become-pass")
             p.passwords[r"^BECOME password.*:\s*?$"] = loaded["become_password"][1]["password"]
+            p.secrets.append(loaded["become_password"][1]["password"])
+        # The environment secrets picked for this run, and no other. One that is gone stops the run, as a
+        # missing account does: the playbook would otherwise carry on with an empty variable.
         for ref in chosen.get("env_secret", []):
             cred = self.creds.get(ref["id"]) if self.creds else None
-            if cred and cred.readable:
-                name, value = cred.meta["env"], self.creds.secret(cred)["value"]
-                p.env[name] = value
-                p.files[f"env-{name}"] = value
-                p.env[f"{name}_FILE"] = f"{SCRATCH}/env-{name}"
+            if not cred or cred.kind != "env_secret":
+                raise CredentialMissing(f"The environment secret “{ref.get('name', ref['id'])}” was deleted "
+                                        "before this run started.")
+            if not cred.readable:
+                raise CredentialMissing(f"The environment secret “{cred.name}” can’t be decrypted: the secret key "
+                                        "changed since it was saved. Enter its value again on the Credentials page.")
+            name, value = cred.meta["env"], self.creds.secret(cred)["value"]
+            p.env[name] = value
+            p.files[f"env-{name}"] = value
+            p.env[f"{name}_FILE"] = f"{SCRATCH}/env-{name}"
+            p.secrets.append(value)
         return p
 
     def _args(self, run, cmdline: list[str], inv_repo) -> list[str]:

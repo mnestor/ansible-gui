@@ -11,6 +11,7 @@ from ansible_gui.config import Settings
 from ansible_gui.credentials import ssh
 from ansible_gui.credentials.store import CredentialStore, Invalid
 from ansible_gui.keys import Keys
+from ansible_gui.runs.redact import MASK
 from ansible_gui.web import create_app
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runner"
@@ -139,11 +140,12 @@ def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     ids = {k: str(creds.by_kind(k)[0].id) for k in ("account", "vault_password")}
 
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
-                              **ids}, follow_redirects=False)
+                              "env_secret": str(creds.by_kind("env_secret")[0].id), **ids}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log
-    assert "secret=s3cret file=s3cret" in log
+    # The variable and its file both held the value: only the value itself is masked (runs/redact.py).
+    assert f"secret={MASK} file={MASK}" in log and "s3cret" not in log
     assert "agent=/" in log and "agui-" in log  # the per-run agent, not the server user's
     assert "ED25519-CERT" in log  # key and certificate loaded into it
     agent_dir = log.split("agent=")[1].split("/agent.sock")[0]
@@ -325,8 +327,9 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
     assert f'<option value="{acct.id}" selected data-desc="user deploy · SSH certificate · become password">admin (default)</option>' in launcher
 
+    token = str(creds.by_kind("env_secret")[0].id)  # env.yml reads it
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
-                              "account": str(acct.id)}, follow_redirects=False)
+                              "account": str(acct.id), "env_secret": token}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log
@@ -335,7 +338,8 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
 
     # A Connect as from an old link is ignored: the account decides the user.
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
-                              "account": str(acct.id), "remote_user": "other"}, follow_redirects=False)
+                              "account": str(acct.id), "env_secret": token, "remote_user": "other"},
+               follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     assert "user=deploy" in app.state.store.log_path(run.id).read_text()
 
@@ -557,7 +561,8 @@ def test_a_run_loads_the_certificate_ssoossh_fetched(app, keypair, fake_ssoossh)
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})  # env.yml reads it
     acct = app.state.creds.by_kind("account")[0]
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
-                              "account": str(acct.id)}, follow_redirects=False)
+                              "account": str(acct.id),
+                              "env_secret": str(app.state.creds.by_kind("env_secret")[0].id)}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log

@@ -276,9 +276,15 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
   The runner (`ansible-gui_hosts` in the compose layout) has to reach the ssoossh server.
 - Stored credentials (Fernet-encrypted in SQLite): SSH keys with optional certificates or ssoossh enrollment
   codes (no passphrases),
-  vault passwords, become passwords, and environment secrets, which every run gets as `$NAME` and
-  `$NAME_FILE`. They are written to a 0700 temp dir for the run and wiped after it. Values are never shown
-  back in the UI.
+  vault passwords, become passwords, and environment secrets. A run gets an environment secret as `$NAME` and
+  `$NAME_FILE` only if it is ticked for that run (under More options; a template or a schedule keeps its own
+  list), so a playbook never sees a token meant for another. They are written to a 0700 temp dir for the run and
+  wiped after it. Values are never shown back in the UI.
+- A run's log leaves out the secrets the run was handed: its environment secrets, become and vault passwords,
+  key and secret answers are written as `••••••` wherever Ansible prints one, as typed or inside a JSON result.
+  That covers the run page, **Download log** and the email, which all read the same file. It is a net, not a
+  guarantee: a value a playbook encodes (base64, a URL) or splits gets through, and one shorter than four
+  characters is left alone. Keep `no_log: true` on the tasks that handle secrets.
 - Hosts on another network are reached through a jump host: a `ProxyJump` line in `ANSIBLE_GUI_SSH_CONFIG`.
   The jump host is offered the run's own key or certificate, and carries an encrypted stream: it never holds the
   key, the become password or the vault password. In the compose layout the runner, on its own network

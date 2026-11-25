@@ -23,13 +23,16 @@ KINDS = {
     "env_secret": "Environment secret",
     "git_token": "Git token",
 }
-# Kinds a run picks one of. Environment secrets go to every run.
+# Kinds a run picks one of. It also picks any number of environment secrets, and gets no other.
 PER_RUN = ("account", "vault_password")
 # An account is who a run signs in as: a user, an SSH key (and certificate), a become password. A separate
 # SSH key is a repository's deploy key; an account can copy one in.
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\$?$", re.I)
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # a template's or a schedule's name
+# A credential's name is only ever shown (the launcher, the run history), never part of a file name or a
+# command, so it may have spaces. An environment secret's variable name is another field, held to ENV_RE.
+CRED_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")
 ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
 # What `ssoossh --server` takes: a host (https assumed), with a port and a path if need be.
 SSOOSSH_RE = re.compile(r"^(https://)?[A-Za-z0-9]([A-Za-z0-9.-]{0,252})(:\d{1,5})?(/[\w./~-]*)?$", re.I)
@@ -55,6 +58,32 @@ class Invalid(ValueError):
     def __init__(self, errors: dict[str, str]):
         super().__init__("; ".join(errors.values()))
         self.errors = errors
+
+
+def picked_ids(credentials: dict) -> set[int]:
+    """Every credential a template or schedule picked, from its `credentials`:
+    {"account": 3, "vault_password": 5, "env_secret": [4, 7]}."""
+    out: set[int] = set()
+    for value in (credentials or {}).values():
+        out.update(v for v in (value if isinstance(value, list) else [value]) if isinstance(v, int))
+    return out
+
+
+def with_earlier_env_secrets(stored: str, ids: list[int]) -> str | None:
+    """A template's or schedule's stored credentials, given the environment secrets it got before they were
+    picked per run: every one there is (`ids`). None when it already lists its own, even an empty list.
+
+    Until then every run got them all, so one saved earlier has no list. Giving it none would take a token
+    away from a schedule that runs unattended; it keeps what it had, to be unticked where it isn't needed."""
+    picked = json.loads(stored or "{}")
+    if "env_secret" in picked:
+        return None
+    return json.dumps({**picked, "env_secret": sorted(ids)})
+
+
+def env_secret_ids(form: dict) -> list[int]:
+    """The environment secrets a form ticked, as a template or schedule stores them."""
+    return sorted({int(v) for v in form.get("env_secret") or [] if str(v).isdigit()})
 
 
 @dataclass
@@ -125,9 +154,10 @@ class CredentialStore:
         if cred_id and (not existing or existing.kind != kind):
             raise Invalid({"name": "That credential no longer exists."})
         errors: dict[str, str] = {}
-        name = name.strip()
-        if not NAME_RE.match(name):
-            errors["name"] = "Use 1–64 letters, digits, dots, dashes or underscores, starting with a letter or digit."
+        name = " ".join(name.split())  # spaces typed around it or doubled inside it aren't part of the name
+        if not CRED_NAME_RE.match(name):
+            errors["name"] = ("Use 1–64 letters, digits, spaces, dots, dashes or underscores, starting with a "
+                              "letter or digit.")
         else:
             clash = self._db.execute("select id from credentials where lower(name)=lower(?)", (name,)).fetchone()
             if clash and clash["id"] != cred_id:
