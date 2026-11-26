@@ -1,6 +1,7 @@
 """Git repositories: clone on save, pull before each run, cancel and email when a pull fails."""
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -225,6 +226,63 @@ def test_delete_removes_clone(app, c, remotes):
     c.post(f"/repos/{extra.id}/delete")
     assert not extra.path.exists() and "extra /" not in c.get("/runs/new").text
 
+
+
+def test_a_new_address_that_cant_be_pulled_leaves_the_repository_on_its_last_commit(app, c, remotes, tmp_path):
+    """Saving another clone URL pulls from it at once. Until a pull from it works the repository stays on the
+    commit it had: a mistyped address, or a key the new server refuses, must not take the inventory away."""
+    setup_repos(c, remotes)
+    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
+    form = {"name": "hosts", "role": "inventory", "branch": "main", "paths": "inventory/hosts.yml"}
+    r = c.post(f"/repos/{hosts.id}", data={**form, "url": f"file://{tmp_path / 'moved-away.git'}"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    after = app.state.repos.get(hosts.id)
+    assert after.url.endswith("moved-away.git") and after.last_error
+    assert after.last_commit == hosts.last_commit and after.path.is_dir()
+    assert "box1" in c.get("/inventory").text
+    page = c.get("/repos").text
+    assert "Last pull failed" in page and f"the clone stays at {hosts.short}" in page
+    # An address that can be pulled takes over, with another repository's history, whole.
+    moved, _ = make_remote(tmp_path, "moved", {"inventory/hosts.yml":
+                                               "all:\n  hosts:\n    elsewhere:\n      ansible_connection: local\n"})
+    assert c.post(f"/repos/{hosts.id}", data={**form, "url": f"file://{moved}"},
+                  follow_redirects=False).status_code == 303
+    now = app.state.repos.get(hosts.id)
+    assert now.last_commit and now.last_commit != hosts.last_commit and not now.last_error
+    inventory = c.get("/inventory").text
+    assert "elsewhere" in inventory and "box1" not in inventory
+    assert not hosts.path.exists()  # the old address's commit went with the pull that replaced it
+
+
+def fake_ssh(tmp_path: Path, *says: str) -> dict:
+    """git's environment with an ssh that prints these lines and fails, as ssh does when it can't sign in."""
+    from ansible_gui.repos import git as gitsync
+    ssh = tmp_path / "fake-ssh"
+    ssh.write_text("#!/bin/sh\n" + "".join(f"echo {shlex.quote(line)} >&2\n" for line in says) + "exit 255\n")
+    ssh.chmod(0o755)
+    return {**gitsync._base_env(), "GIT_SSH_COMMAND": str(ssh)}
+
+
+@pytest.mark.parametrize("says, shown", [
+    # ssh could not sign in: the reason is the line before git's advice, and has a plain explanation.
+    (["Warning: Permanently added 'git.example.test' (ED25519) to the list of known hosts.",
+      "git@git.example.test: Permission denied (publickey)."],
+     "The git server refused the SSH key. Add its public key as a deploy key. "
+     "(git: git@git.example.test: Permission denied (publickey).)"),
+    # the server let the key in and refused the repository: its own words
+    (["ERROR: Repository not found."], "ERROR: Repository not found."),
+    # nothing but the advice
+    ([], "The git server closed the connection without saying why: it refused the sign-in, or the repository "
+         "isn’t there. (git: Could not read from remote repository.)"),
+])
+def test_a_refused_ssh_pull_shows_the_reason_not_the_end_of_gits_advice(tmp_path, says, shown):
+    """When the connection fails git ends with "Please make sure you have the correct access rights / and the
+    repository exists." Its last line alone, "and the repository exists.", was all the Repositories page said."""
+    from ansible_gui.repos import git as gitsync
+    with pytest.raises(gitsync.GitError) as e:
+        gitsync._git(["ls-remote", "git@git.example.test:me/inventory.git"], tmp_path, fake_ssh(tmp_path, *says))
+    assert str(e.value) == shown
 
 
 def start_slow_run(app, c, remotes, tmp_path):

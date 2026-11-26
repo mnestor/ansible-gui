@@ -167,14 +167,11 @@ class RepoStore:
         values = (name, role, url, branch, key, paths, edit, fg, reqs if role == "playbooks" else "", now(), user)
         with self._lock:
             if rid:
-                old = self.get(rid)
-                # A new URL or branch means a new clone; forget the old state.
-                reset = old and (old.url != url or old.branch != branch)
+                # With a new URL or branch the commit stays what it was until a pull from there works: the
+                # pull that follows a save replaces it, or says why it couldn't. Forgetting it here took the
+                # inventory away for a mistyped address, or a key the new server didn't know.
                 self._db.execute("update repos set name=?, role=?, url=?, branch=?, ssh_key_id=?, paths=?, edit_url=?,"
                                  " forge=?, requirements=?, updated_at=?, updated_by=? where id=?", (*values, rid))
-                if reset:
-                    self._db.execute("update repos set last_commit=null, last_subject=null, last_fetch_at=null,"
-                                     " last_error=null where id=?", (rid,))
             else:
                 cur = self._db.execute("insert into repos (name, role, url, branch, ssh_key_id, paths, edit_url,"
                                        " forge, requirements, updated_at, updated_by, created_at) values (?,?,?,?,?,?,?,?,?,?,?,?)",

@@ -100,7 +100,7 @@ def _git(args: list[str], cwd: Path, env: dict, timeout: int = 180) -> str:
         raise GitError(f"git {args[0]} took longer than {timeout}s. Is the git server reachable from here?") from None
     if proc.returncode != 0:
         lines = [l for l in (proc.stderr or proc.stdout).strip().splitlines() if l.strip()]
-        raise GitError(_plain(lines[-1] if lines else f"git {args[0]} failed with code {proc.returncode}."))
+        raise GitError(_reason(lines) if lines else f"git {args[0]} failed with code {proc.returncode}.")
     return proc.stdout.strip()
 
 
@@ -252,6 +252,26 @@ _PLAIN = [
     ("couldn't find remote ref", "That branch doesn’t exist in the repository."),
     ("Could not resolve host", "The git server’s name doesn’t resolve from the ansible-gui server."),
 ]
+
+
+# How git's output ends when the connection itself failed, followed by "Please make sure you have the correct
+# access rights" and "and the repository exists."
+_NO_CONNECTION = "fatal: Could not read from remote repository."
+
+
+def _reason(lines: list[str]) -> str:
+    """The line of git's output that says why it failed: usually its last.
+
+    Not when the connection failed. Then git ends with three lines of advice, and what ssh or the server said
+    is the line before them: "Permission denied (publickey)", "Repository not found". The advice's own last
+    line, "and the repository exists.", was once all a refused pull showed."""
+    if _NO_CONNECTION not in lines:
+        return _plain(lines[-1])
+    said = [l for l in lines[:lines.index(_NO_CONNECTION)] if not l.startswith("Warning: Permanently added")]
+    if not said:
+        return ("The git server closed the connection without saying why: it refused the sign-in, or the "
+                "repository isn’t there. (git: Could not read from remote repository.)")
+    return _plain(said[-1])
 
 
 def _plain(line: str) -> str:
