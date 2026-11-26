@@ -9,6 +9,15 @@
     return true;
   }
 
+  // Whether a live run's page is kept at its foot (see the live log in setup). Only the reader's own scrolling
+  // changes it: up, to the hosts or to Cancel, and the page stays put; back to the foot and it follows again.
+  // It is not measured when lines arrive, since by then the page has already grown under the reader.
+  let pageFollows = false;
+  const pageToFoot = () => window.scrollTo(0, document.documentElement.scrollHeight);
+  window.addEventListener("scroll", () => {
+    pageFollows = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 24;
+  }, { passive: true });
+
   const coarse = window.matchMedia("(pointer: coarse)");
 
   // The names in a comma list (tags).
@@ -247,6 +256,14 @@
 
     // Live log: append new lines; stay pinned to the bottom unless the reader scrolled up.
     const logEl = root.querySelector("#log");
+    // A live run's page follows too (data-follow="page"): the box grows as lines arrive, so its foot, where
+    // they land, would slide under the fold. Arriving, by the launcher's redirect or a link, starts at the foot:
+    // a frame later, because htmx scrolls a boosted page to its top after this has run.
+    const livePage = logEl && logEl.dataset.follow === "page";
+    if (livePage && once(logEl, "Follow")) {
+      logEl.scrollTop = logEl.scrollHeight;
+      requestAnimationFrame(() => { pageFollows = true; pageToFoot(); });
+    }
     root.querySelectorAll("template[data-log-append]").forEach((t) => {
       if (logEl) {
         const pinned = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 24;
@@ -255,6 +272,8 @@
       }
       t.remove();
     });
+    // Every poll, not only one with new lines: the hosts table above the log grows during a run as well.
+    if (livePage && pageFollows) pageToFoot();
 
     // Tag suggestions come back with each preview.
     const tagOptions = root.querySelector("#tag-options");
