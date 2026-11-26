@@ -293,10 +293,10 @@ class CredentialStore:
             is_default = False
 
         elif kind == "git_token":
-            user = values.get("username", "").strip()
-            if not re.match(r"^[\w.@+-]{1,128}$", user):
+            git_user = values.get("username", "").strip()  # not `user`: that is who is saving this
+            if not re.match(r"^[\w.@+-]{1,128}$", git_user):
                 errors["username"] = "Enter the user name the git server expects with this token."
-            meta["username"] = user
+            meta["username"] = git_user
             token = values.get("token", "").strip()
             if token:
                 secret["token"] = token

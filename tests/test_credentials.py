@@ -72,6 +72,17 @@ def test_edit_keeps_secret_and_single_default(store):
         store.save(kind="vault_password", name="A", values={"password": "x"}, is_default=False, user="")
 
 
+def test_a_git_token_says_who_saved_it_not_the_user_it_signs_in_as(store):
+    """Its "Updated by" showed the token's own user name: the name the git server expects with the token had
+    taken the place of the person saving it."""
+    c = store.save(kind="git_token", name="forge", values={"username": "forge-bot", "token": "t0ken"},
+                   is_default=False, user="mike")
+    assert c.updated_by == "mike" and c.meta["username"] == "forge-bot"
+    c = store.save(kind="git_token", name="forge", values={"username": "forge-bot"}, is_default=False, user="anna",
+                   cred_id=c.id)
+    assert c.updated_by == "anna" and store.secret(c) == {"token": "t0ken"}
+
+
 def test_env_names_are_checked(store):
     for bad in ("1STARTS_WITH_DIGIT", "HAS.DOT", "PATH", "path", "ANSIBLE_BECOME_PASS", "SSH_AUTH_SOCK"):
         with pytest.raises(Invalid):
