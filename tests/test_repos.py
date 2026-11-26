@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from ansible_gui.config import Settings, SmtpSettings
 from ansible_gui.web import create_app
 
+from test_credentials import fake_ssoossh, keypair  # noqa: F401 - fixtures
 from test_notify import FakeSMTP, fake_smtp  # noqa: F401 - fixture
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runner"
@@ -787,6 +788,8 @@ info = {{"args": args}}
 if key:
     info["key_mode"] = stat.S_IMODE(os.stat(key).st_mode)
     info["key_first_line"] = open(key).readline().strip()
+    cert = key + "-cert.pub"  # where ssh looks for the certificate of the key -i names
+    info["cert"] = open(cert).read().split()[0] if os.path.exists(cert) else None
 with open({log!r}, "a") as f:
     f.write(json.dumps(info) + "\\n")
 command = args[-1].replace("git-upload-pack", "git upload-pack", 1)
@@ -829,6 +832,96 @@ def test_ssh_deploy_key_is_used_and_kept_private(app, c, remotes, tmp_path, monk
     # the key only exists for the length of the pull
     key_path = calls[0]["args"][calls[0]["args"].index("-i") + 1]
     assert not os.path.exists(key_path)
+
+
+def ssh_calls(tmp_path, monkeypatch):
+    """Put the fake ssh first on the PATH; returns the file it logs its calls to."""
+    import sys
+    log = tmp_path / "ssh-calls.jsonl"
+    bindir = tmp_path / "sshbin"
+    bindir.mkdir()
+    (bindir / "ssh").write_text(FAKE_SSH.format(python=sys.executable, log=str(log)))
+    (bindir / "ssh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return log
+
+
+def test_an_ssh_pull_presents_the_certificate_ssoossh_issues_for_its_key(app, c, remotes, tmp_path, monkeypatch,
+                                                                         keypair, fake_ssoossh):
+    """A git server that takes only certificates refused every pull: a repository's key signed in alone. The
+    key's enrollment now gets it a certificate before each pull, as it does before each run."""
+    import json
+    log = ssh_calls(tmp_path, monkeypatch)
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "puller", "private_key": key,
+                                 "ssoossh_server": "https://sso.lab", "ssoossh_code": "pull-code"})
+    cred = app.state.creds.by_kind("ssh_key")[0]
+    r = add(c, name="hosts", role="inventory", url=f"ssh://git@git.lab.test{remotes['inv']}",
+            paths="inventory/hosts.yml", ssh_key_id=str(cred.id))
+    assert r.status_code == 303, r.text[-400:]
+    repo = app.state.repos.all()[0]
+    assert not repo.last_error and repo.last_commit, repo.last_error
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls and all(call["cert"] == "ssh-ed25519-cert-v01@openssh.com" for call in calls)
+    assert fake_ssoossh.read_text() == "https://sso.lab pull-code\n"  # asked once for the pull
+    assert "pull-code" not in c.get("/repos").text
+
+    # A code ssoossh refuses: the pull fails, saying so, and the commit stays.
+    c.post(f"/credentials/{cred.id}", data={"kind": "ssh_key", "name": "puller", "ssoossh_server": "https://sso.lab",
+                                            "ssoossh_code": "expired-code"})
+    c.post(f"/repos/{repo.id}/pull")
+    after = app.state.repos.get(repo.id)
+    assert after.last_commit == repo.last_commit
+    assert after.last_error == ("ssoossh couldn’t get a certificate from https://sso.lab: the server refused this "
+                                "enrollment code (expired)")
+
+
+def test_an_ssh_pull_presents_the_certificate_saved_with_its_key(app, c, remotes, tmp_path, monkeypatch, keypair):
+    import json
+    log = ssh_calls(tmp_path, monkeypatch)
+    key, cert = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "puller", "private_key": key, "certificate": cert})
+    r = add(c, name="hosts", role="inventory", url=f"ssh://git@git.lab.test{remotes['inv']}",
+            paths="inventory/hosts.yml", ssh_key_id=str(app.state.creds.by_kind("ssh_key")[0].id))
+    assert r.status_code == 303 and not app.state.repos.all()[0].last_error
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls and all(call["cert"] == "ssh-ed25519-cert-v01@openssh.com" for call in calls)
+
+
+def test_the_repository_form_offers_only_what_can_sign_in_to_its_url(app, c, remotes, keypair):
+    """Tokens are for HTTPS and keys for SSH. The list shows the ones that fit the URL typed, both while there
+    is none to go by, and nothing for a path on this server."""
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "a-deploy-key", "private_key": key,
+                                 "ssoossh_server": "sso.lab", "ssoossh_code": "code-1"})
+    c.post("/credentials", data={"kind": "git_token", "name": "a-forge-token", "username": "mike", "token": "t0ken"})
+    key_id, token_id = (app.state.creds.by_kind(k)[0].id for k in ("ssh_key", "git_token"))
+
+    def offered(url, picked=""):
+        return c.get("/repos/sign-in", params={"url": url, "ssh_key_id": picked}).text
+
+    both = offered("")
+    assert "a-deploy-key" in both and "a-forge-token" in both and "<optgroup" in both
+    assert both.strip() in c.get("/repos/new").text  # the form opens with the same field
+    https = offered("https://git.example.com/me/ansible.git", str(token_id))
+    assert "a-forge-token" in https and "a-deploy-key" not in https and "<optgroup" not in https
+    assert f'<option value="{token_id}" selected' in https
+    for url in ("git@git.example.com:me/ansible.git", "ssh://git@git.example.com/me/ansible.git"):
+        over_ssh = offered(url, str(token_id))  # the token picked for another URL doesn't follow
+        assert "a-deploy-key" in over_ssh and "a-forge-token" not in over_ssh and " selected" not in over_ssh
+        assert "certificate from ssoossh" in over_ssh  # what the key signs in with is said
+    local = offered("/srv/git/ansible.git")
+    assert "a-deploy-key" not in local and "a-forge-token" not in local and "needs no sign-in" in local
+    # It follows the URL as it is typed.
+    assert 'hx-get="/repos/sign-in"' in both and 'from:#url' in both
+
+    # A saved repository opens on what fits its own URL.
+    add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml")
+    repo = app.state.repos.all()[0]
+    app.state.repos.save({"name": "hosts", "role": "inventory", "url": "git@git.example.com:me/inv.git",
+                          "branch": "main", "paths": "inventory/hosts.yml", "ssh_key_id": str(key_id)}, "t", repo.id)
+    page = c.get(f"/repos/{repo.id}").text
+    assert f'<option value="{key_id}" selected' in page and "a-forge-token" not in page
 
 
 def test_the_playbook_list_is_grouped_by_repository_with_a_chip_for_each(app, c, remotes):

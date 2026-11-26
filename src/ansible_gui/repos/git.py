@@ -21,6 +21,7 @@ import shutil
 import stat
 import subprocess
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -148,11 +149,14 @@ def token_env(url: str, token: tuple[str, str]) -> dict:
 
 
 def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str | None = None,
-          token: tuple[str, str] | None = None, *, workdir: Path) -> Fetched:
+          token: tuple[str, str] | None = None, *, workdir: Path,
+          with_key: Callable[[Path], None] | None = None) -> Fetched:
     """Fetch the branch, whole, into the bare clone. Raises GitError.
 
     private_key signs in over SSH, from a file in workdir, a private temp directory the caller wipes; token
-    is (user, token) for HTTPS, handed to git as token_env() says."""
+    is (user, token) for HTTPS, handed to git as token_env() says. with_key(file) is called once the key is
+    written: a certificate it puts beside the key, as file-cert.pub, is presented with it, since that is
+    where ssh looks for the certificate of a key named with -i."""
     if token and not url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     bare = home / "git"
@@ -164,6 +168,8 @@ def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str 
         fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(private_key)
+        if with_key:
+            with_key(key)
         ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
     env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
     if token:

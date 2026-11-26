@@ -1,5 +1,7 @@
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -131,8 +133,9 @@ def test_secret_values_never_render(app, keypair):
 def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     c = TestClient(app)
     key, cert = keypair
-    c.post("/credentials", data={"kind": "account", "name": "lab", "private_key": key, "certificate": cert,
-                                 "is_default": "1"})
+    c.post("/credentials", data={"kind": "ssh_key", "name": "lab-key", "private_key": key, "certificate": cert})
+    c.post("/credentials", data={"kind": "account", "name": "lab", "is_default": "1",
+                                 "ssh_key_id": str(app.state.creds.by_kind("ssh_key")[0].id)})
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})
     c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "fixture-password",
                                  "is_default": "1"})
@@ -222,7 +225,8 @@ def test_changed_secret_key_fails_the_run_clearly(tmp_path, keypair):
     settings = dict(project_dir=FIXTURE, inventory=["inventory/hosts.yml"], data_dir=tmp_path,
                     ssh_config=FIXTURE / "ssh" / "config")
     first = TestClient(create_app(Settings(**settings, secret_key="a" * 40)))
-    assert first.post("/credentials", data={"kind": "account", "name": "lab", "private_key": keypair[0],
+    first.post("/credentials", data={"kind": "ssh_key", "name": "lab-key", "private_key": keypair[0]})
+    assert first.post("/credentials", data={"kind": "account", "name": "lab", "ssh_key_id": "1", "become_password": "pw",
                                             "is_default": "1"}, follow_redirects=False).status_code == 303
 
     app = create_app(Settings(**settings, secret_key="b" * 40))
@@ -314,13 +318,14 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})
     creds = app.state.creds
     r = c.post("/credentials", data={"kind": "account", "name": "admin", "username": "deploy", "is_default": "1",
-                                     "copy_key_from": str(creds.by_kind("ssh_key")[0].id),
+                                     "ssh_key_id": str(creds.by_kind("ssh_key")[0].id),
                                      "become_password": "pw-copied"},
                follow_redirects=False)
     assert r.status_code == 303, r.text
     acct = creds.by_kind("account")[0]
-    assert acct.meta["username"] == "deploy" and acct.meta["has_key"] and acct.meta["has_become"] and acct.meta["cert"]
-    assert creds.secret(acct)["become_password"] == "pw-copied"
+    # The account names the key; the key, with its certificate, stays the one saved SSH key.
+    assert acct.meta == {"username": "deploy", "ssh_key_id": creds.by_kind("ssh_key")[0].id, "has_become": True}
+    assert creds.secret(acct) == {"become_password": "pw-copied"}
     listing = c.get("/credentials").text
     assert "pw-copied" not in listing and "PRIVATE KEY" not in listing and "become password" in listing
 
@@ -344,15 +349,38 @@ def test_an_account_signs_in_with_its_user_key_and_become_password(app, keypair)
     assert "user=deploy" in app.state.store.log_path(run.id).read_text()
 
 
-def test_an_account_needs_something_and_a_certificate_needs_its_key(app, keypair):
+def test_an_account_needs_a_user_a_key_or_a_become_password(app, keypair):
     c = TestClient(app)
-    _, cert = keypair
+    key, _ = keypair
     empty = c.post("/credentials", data={"kind": "account", "name": "nothing"})
     assert empty.status_code == 400 and "at least a user" in empty.text
-    lone = c.post("/credentials", data={"kind": "account", "name": "certonly", "username": "u", "certificate": cert})
-    assert lone.status_code == 400 and "private key this certificate is for" in lone.text
+    gone = c.post("/credentials", data={"kind": "account", "name": "nokey", "username": "u", "ssh_key_id": "99"})
+    assert gone.status_code == 400 and "That SSH key no longer exists" in gone.text
     ok = c.post("/credentials", data={"kind": "account", "name": "useronly", "username": "ansible"}, follow_redirects=False)
     assert ok.status_code == 303
+    # An account holds no key of its own: one sent with its form is not kept.
+    c.post("/credentials", data={"kind": "account", "name": "pasted", "username": "u", "private_key": key})
+    pasted = next(a for a in app.state.creds.by_kind("account") if a.name == "pasted")
+    assert app.state.creds.secret(pasted) == {} and pasted.meta == {"username": "u", "has_become": False}
+
+
+def test_the_account_form_offers_the_saved_keys_and_takes_none_of_its_own(app, keypair):
+    c = TestClient(app)
+    key, cert = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "lab-key", "private_key": key, "certificate": cert})
+    saved = app.state.creds.by_kind("ssh_key")[0]
+    form = c.get("/credentials/new", params={"kind": "account"}).text
+    assert '<select id="ssh_key_id"' in form and f'<option value="{saved.id}"' in form and ">lab-key</option>" in form
+    for gone in ('name="private_key"', 'name="certificate"', 'name="ssoossh_code"', 'name="copy_key_from"'):
+        assert gone not in form
+    c.post("/credentials", data={"kind": "account", "name": "admin", "username": "deploy",
+                                 "ssh_key_id": str(saved.id)})
+    acct = app.state.creds.by_kind("account")[0]
+    assert f'<option value="{saved.id}" selected' in c.get(f"/credentials/{acct.id}").text
+    accounts = c.get("/credentials").text  # the account's row names its key, and leads to it
+    assert f'<a class="mono" href="/credentials/{saved.id}">lab-key</a>' in accounts and "certificate lab-cert" in accounts
+    key_page = c.get(f"/credentials/{saved.id}").text  # and the key says who signs in with it
+    assert f'<a class="mono" href="/credentials/{acct.id}">admin</a>' in key_page
 
 
 def test_accounts_secrets_and_ssh_settings_are_separate_pages(app):
@@ -483,35 +511,33 @@ def fake_ssoossh(tmp_path, monkeypatch):
     return calls
 
 
-def test_an_account_can_fetch_its_certificate_from_ssoossh(store, keypair, tmp_path):
+def test_an_ssh_key_can_fetch_its_certificate_from_ssoossh(store, keypair, tmp_path):
     key, cert = keypair
-    c = store.save(kind="account", name="svc", values={"username": "ansible", "private_key": key, "certificate": cert},
+    c = store.save(kind="ssh_key", name="svc", values={"private_key": key, "certificate": cert},
                    is_default=False, user="t")
     assert c.meta["cert"]
-    c = store.save(kind="account", name="svc", values={"username": "ansible", "ssoossh_server": "https://sso.lab/",
-                                                       "ssoossh_code": "code-1"},
+    c = store.save(kind="ssh_key", name="svc", values={"ssoossh_server": "https://sso.lab/", "ssoossh_code": "code-1"},
                    is_default=False, user="t", cred_id=c.id)
     assert c.meta["ssoossh"] == {"server": "https://sso.lab"}
     assert "cert" not in c.meta and "certificate" not in c.meta  # ssoossh's replaces the pasted one
     assert store.secret(c)["ssoossh_code"] == "code-1" and "code-1" not in str(c.meta)
 
     # Left empty, the code is kept; the server can change.
-    c = store.save(kind="account", name="svc", values={"username": "ansible", "ssoossh_server": "sso2.lab"},
+    c = store.save(kind="ssh_key", name="svc", values={"ssoossh_server": "sso2.lab"},
                    is_default=False, user="t", cred_id=c.id)
     assert c.meta["ssoossh"]["server"] == "sso2.lab" and store.secret(c)["ssoossh_code"] == "code-1"
 
     # The code was for the old key: a new key needs a new one.
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(tmp_path / "new")], check=True)
     with pytest.raises(Invalid) as e:
-        store.save(kind="account", name="svc", values={"private_key": (tmp_path / "new").read_text(),
+        store.save(kind="ssh_key", name="svc", values={"private_key": (tmp_path / "new").read_text(),
                                                        "ssoossh_server": "sso2.lab"},
                    is_default=False, user="t", cred_id=c.id)
     assert "code again" in e.value.errors["ssoossh_code"]
 
     # Clearing the server stops it.
-    c = store.save(kind="account", name="svc", values={"username": "ansible"}, is_default=False, user="t",
-                   cred_id=c.id)
-    assert "ssoossh" not in c.meta
+    c = store.save(kind="ssh_key", name="svc", values={}, is_default=False, user="t", cred_id=c.id)
+    assert "ssoossh" not in c.meta and "ssoossh_code" not in store.secret(c)
 
 
 def test_ssoossh_needs_https_a_code_a_key_and_no_pasted_certificate(store, keypair):
@@ -521,45 +547,159 @@ def test_ssoossh_needs_https_a_code_a_key_and_no_pasted_certificate(store, keypa
         ({"private_key": key, "ssoossh_server": "sso.lab; rm -rf /", "ssoossh_code": "x"}, "ssoossh_server", "address"),
         ({"private_key": key, "ssoossh_code": "x"}, "ssoossh_server", "Enter the ssoossh server"),
         ({"private_key": key, "ssoossh_server": "sso.lab"}, "ssoossh_code", "Paste the enrollment code"),
-        ({"username": "u", "ssoossh_server": "sso.lab", "ssoossh_code": "x"}, "ssoossh_code", "private key"),
+        ({"ssoossh_server": "sso.lab", "ssoossh_code": "x"}, "private_key", "Paste the private key"),
         ({"private_key": key, "certificate": cert, "ssoossh_server": "sso.lab", "ssoossh_code": "x"},
          "certificate", "not both"),
     ]
     for values, field, says in cases:
         with pytest.raises(Invalid) as e:
-            store.save(kind="account", name="svc", values=values, is_default=False, user="t")
+            store.save(kind="ssh_key", name="svc", values=values, is_default=False, user="t")
         assert says in e.value.errors.get(field, ""), (values, e.value.errors)
+    # An account takes no enrollment: it picks a key that has one.
+    acct = store.save(kind="account", name="acct", values={"username": "u", "ssoossh_server": "sso.lab",
+                                                           "ssoossh_code": "x"}, is_default=False, user="t")
+    assert "ssoossh" not in acct.meta and store.secret(acct) == {}
 
 
-def test_the_account_form_shows_ssoossh_and_never_the_code(app, keypair):
+def test_an_account_picks_a_saved_ssh_key(store, keypair):
+    key, _ = keypair
+    saved = store.save(kind="ssh_key", name="lab-key", values={"private_key": key}, is_default=False, user="t")
+    acct = store.save(kind="account", name="admin", values={"username": "deploy", "ssh_key_id": str(saved.id)},
+                      is_default=False, user="t")
+    assert acct.meta == {"username": "deploy", "ssh_key_id": saved.id, "has_become": False}
+    assert store.key_of(acct).id == saved.id and store.accounts_using(saved.id)[0].id == acct.id
+    for not_a_key in (str(acct.id), "99", "x"):  # another kind of credential, one that is gone, nonsense
+        with pytest.raises(Invalid) as e:
+            store.save(kind="account", name="other", values={"username": "u", "ssh_key_id": not_a_key},
+                       is_default=False, user="t")
+        assert "no longer exists" in e.value.errors["ssh_key_id"]
+    store.delete(saved.id)
+    assert store.key_of(store.get(acct.id)) is None
+
+
+def old_account(tmp_path, fernet, name, key_text, *, certificate="", ssoossh=None, become="", username="ansible"):
+    """An account row as ansible-gui wrote it while an account held its own key."""
+    info = ssh.inspect_key(ssh.normalize(key_text))
+    meta = {"username": username, "type": info.type, "fingerprint": info.fingerprint, "comment": info.comment,
+            "public_key": info.public_key, "has_key": True, "has_become": bool(become)}
+    secret = {"private_key": ssh.normalize(key_text)}
+    if certificate:
+        cert = ssh.inspect_cert(certificate, info)
+        meta["certificate"] = certificate
+        meta["cert"] = {"key_id": cert.key_id, "principals": cert.principals, "valid": cert.valid}
+    if ssoossh:
+        meta["ssoossh"] = {"server": ssoossh[0]}
+        secret["ssoossh_code"] = ssoossh[1]
+    if become:
+        secret["become_password"] = become
+    db = sqlite3.connect(tmp_path / "ansible-gui.db")
+    db.execute("insert into credentials (name, kind, is_default, meta, secret, created_at, updated_at, updated_by)"
+               " values (?, 'account', 1, ?, ?, '2026-11-01T00:00:00+00:00', '2026-11-01T00:00:00+00:00', 'mike')",
+               (name, json.dumps(meta), fernet.encrypt(json.dumps(secret).encode())))
+    db.commit()
+    db.close()
+
+
+def test_an_account_from_before_gives_its_key_to_an_ssh_key_of_its_own(tmp_path, keypair):
+    """Accounts used to hold their own key, certificate and ssoossh enrollment. On the first start after
+    that, each such key becomes an SSH key the account picks, so nothing an account could do is lost."""
+    key, _ = keypair
+    fernet = Keys.load("k" * 40, tmp_path).fernet
+    CredentialStore(tmp_path, fernet)  # makes the table
+    old_account(tmp_path, fernet, "svc", key, ssoossh=("https://sso.lab", "code-1"), become="pw")
+    store = CredentialStore(tmp_path, fernet)
+    [made] = store.by_kind("ssh_key")
+    acct = store.by_kind("account")[0]
+    assert made.name == "svc key" and made.meta["ssoossh"] == {"server": "https://sso.lab"}
+    assert made.meta["fingerprint"].startswith("SHA256:") and made.meta["public_key"]
+    assert store.secret(made) == {"private_key": ssh.normalize(key), "ssoossh_code": "code-1"}
+    assert acct.meta == {"username": "ansible", "ssh_key_id": made.id, "has_become": True}
+    assert store.secret(acct) == {"become_password": "pw"} and acct.is_default
+    # Starting again changes nothing.
+    again = CredentialStore(tmp_path, fernet)
+    assert [c.id for c in again.by_kind("ssh_key")] == [made.id] and again.by_kind("account")[0].meta == acct.meta
+
+
+def test_an_account_from_before_picks_the_saved_key_it_was_copied_from(tmp_path, keypair):
+    """The same key with the same certificate is one SSH key. With another certificate arrangement it is not:
+    a repository's deploy key must not start asking ssoossh for certificates because an account did."""
+    key, cert = keypair
+    fernet = Keys.load("k" * 40, tmp_path).fernet
+    first = CredentialStore(tmp_path, fernet)
+    saved = first.save(kind="ssh_key", name="deploy", values={"private_key": key, "certificate": cert},
+                       is_default=False, user="t")
+    db = sqlite3.connect(tmp_path / "ansible-gui.db")  # a key could once be marked as the launcher's default
+    db.execute("update credentials set is_default=1 where id=?", (saved.id,))
+    db.commit()
+    db.close()
+    again = tmp_path / "same-key-other-comment"  # the same key in another file: only its comment differs
+    again.write_text(key)
+    again.chmod(0o600)
+    subprocess.run(["ssh-keygen", "-q", "-c", "-C", "renamed@lab", "-P", "", "-f", str(again)], check=True,
+                   capture_output=True)
+    assert again.read_text() != key
+    old_account(tmp_path, fernet, "copied", again.read_text(), certificate=cert)
+    old_account(tmp_path, fernet, "enrolled", key, ssoossh=("sso.lab", "code-2"))
+    old_account(tmp_path, fernet, "deploy key", key, username="other")  # its name is the one a new key would take
+    store = CredentialStore(tmp_path, fernet)
+    accounts = {a.name: a for a in store.by_kind("account")}
+    assert accounts["copied"].meta["ssh_key_id"] == saved.id
+    enrolled = store.key_of(accounts["enrolled"])
+    assert enrolled.id != saved.id and enrolled.name == "enrolled key" and enrolled.meta["ssoossh"]["server"] == "sso.lab"
+    assert "ssoossh" not in store.get(saved.id).meta and store.get(saved.id).meta["cert"]
+    assert not store.get(saved.id).is_default  # nothing picks a key by default
+    plain = store.key_of(accounts["deploy key"])
+    assert plain.id not in (saved.id, enrolled.id) and plain.name == "deploy key key" and "cert" not in plain.meta
+    assert len(store.by_kind("ssh_key")) == 3
+
+
+def test_an_account_that_cant_be_decrypted_is_left_as_it_is(tmp_path, keypair):
+    key, _ = keypair
+    fernet = Keys.load("k" * 40, tmp_path).fernet
+    CredentialStore(tmp_path, fernet)  # makes the table
+    old_account(tmp_path, fernet, "svc", key)
+    other = CredentialStore(tmp_path, Keys.load("z" * 40, tmp_path).fernet)  # the master key changed
+    acct = other.by_kind("account")[0]
+    assert not acct.readable and acct.meta["has_key"] and not other.by_kind("ssh_key")
+
+
+def test_the_ssh_key_form_shows_ssoossh_and_never_the_code(app, keypair):
     c = TestClient(app)
     key, _ = keypair
-    r = c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
+    r = c.post("/credentials", data={"kind": "ssh_key", "name": "svc-key", "private_key": key,
                                      "ssoossh_server": "sso.lab", "ssoossh_code": "s3cret-code"},
                follow_redirects=False)
     assert r.status_code == 303, r.text
-    acct = app.state.creds.by_kind("account")[0]
-    form = c.get(f"/credentials/{acct.id}").text
+    saved = app.state.creds.by_kind("ssh_key")[0]
+    form = c.get(f"/credentials/{saved.id}").text
     assert 'value="sso.lab"' in form and "s3cret-code" not in form and "<details class=\"more\" open>" in form
-    listing = c.get("/credentials").text
+    listing = c.get("/credentials/secrets").text
     assert "certificate from ssoossh" in listing and "s3cret-code" not in listing
+    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "ssh_key_id": str(saved.id)})
+    assert "certificate from ssoossh" in c.get("/credentials").text
     launcher = c.get("/runs/new", params={"playbook": "env.yml", "target": "box1"}).text
     assert "user ansible · ssoossh certificate · no become password" in launcher
 
-    bad = c.post("/credentials", data={"kind": "account", "name": "svc2", "private_key": key,
+    bad = c.post("/credentials", data={"kind": "ssh_key", "name": "svc2", "private_key": key,
                                        "ssoossh_server": "http://sso.lab", "ssoossh_code": "s3cret-code"})
     assert bad.status_code == 400 and 'value="http://sso.lab"' in bad.text and "s3cret-code" not in bad.text
+
+
+def enrolled_account(c, app, key, code, server="https://sso.lab"):
+    """An SSH key enrolled with ssoossh, and an account that signs in with it."""
+    c.post("/credentials", data={"kind": "ssh_key", "name": "svc-key", "private_key": key,
+                                 "ssoossh_server": server, "ssoossh_code": code})
+    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "is_default": "1",
+                                 "ssh_key_id": str(app.state.creds.by_kind("ssh_key")[0].id)})
+    return app.state.creds.by_kind("account")[0]
 
 
 @needs_ansible
 def test_a_run_loads_the_certificate_ssoossh_fetched(app, keypair, fake_ssoossh):
     c = TestClient(app)
     key, _ = keypair
-    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
-                                 "ssoossh_server": "https://sso.lab", "ssoossh_code": "s3cret-code",
-                                 "is_default": "1"})
+    acct = enrolled_account(c, app, key, "s3cret-code")
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "s3cret"})  # env.yml reads it
-    acct = app.state.creds.by_kind("account")[0]
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               "account": str(acct.id),
                               "env_secret": str(app.state.creds.by_kind("env_secret")[0].id)}, follow_redirects=False)
@@ -576,9 +716,7 @@ def test_a_run_loads_the_certificate_ssoossh_fetched(app, keypair, fake_ssoossh)
 def test_a_run_stops_when_ssoossh_refuses_the_code(app, keypair, fake_ssoossh):
     c = TestClient(app)
     key, _ = keypair
-    c.post("/credentials", data={"kind": "account", "name": "svc", "username": "ansible", "private_key": key,
-                                 "ssoossh_server": "sso.lab", "ssoossh_code": "expired-code"})
-    acct = app.state.creds.by_kind("account")[0]
+    acct = enrolled_account(c, app, key, "expired-code", server="sso.lab")
     r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               "account": str(acct.id)}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
@@ -586,3 +724,19 @@ def test_a_run_stops_when_ssoossh_refuses_the_code(app, keypair, fake_ssoossh):
     assert run.error == ("Didn’t start: ssoossh couldn’t get a certificate from sso.lab: "
                          "the server refused this enrollment code (expired)")
     assert "expired-code" not in app.state.store.log_path(run.id).read_text()
+
+
+@needs_ansible
+def test_a_run_stops_when_its_accounts_key_was_deleted(app, keypair):
+    c = TestClient(app)
+    key, _ = keypair
+    acct = enrolled_account(c, app, key, "s3cret-code")
+    warned = c.get(f"/credentials/{acct.meta['ssh_key_id']}").text  # the key's page says so first
+    assert "stop with an error until another key is picked" in warned
+    c.post(f"/credentials/{acct.meta['ssh_key_id']}/delete")
+    assert "key deleted" in c.get("/credentials").text
+    assert "user ansible · SSH key deleted · no become password" in c.get("/runs/new").text
+    r = c.post("/runs", data={"playbook": "env.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
+                              "account": str(acct.id)}, follow_redirects=False)
+    run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
+    assert run.status == "error" and "The SSH key of the account “svc” was deleted" in run.error

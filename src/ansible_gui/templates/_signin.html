@@ -2,9 +2,16 @@
    More options. #}
 {# All three parts, said either way, so a missing one is visible: "user deploy · SSH certificate · no become password". #}
 {% macro account_summary(c) -%}
+  {%- set k = account_key(c) -%}
   {{- ("user " ~ c.meta.username) if c.meta.username else "no user: the inventory’s" -}}
-  {{- " · " ~ (("ssoossh certificate" if c.meta.ssoossh else "SSH certificate" if c.meta.cert else "SSH key") if c.meta.has_key else "no SSH key") -}}
+  {{- " · " ~ (("ssoossh certificate" if k.meta.ssoossh else "SSH certificate" if k.meta.cert else "SSH key") if k else ("SSH key deleted" if c.meta.ssh_key_id else "no SSH key")) -}}
   {{- " · " ~ ("become password" if c.meta.has_become else "no become password") -}}
+{%- endmacro %}
+
+{# A saved SSH key in a dropdown's second line: what it is, and the certificate it signs in with. #}
+{% macro key_about(k) -%}
+  {{- k.meta.type ~ " " ~ k.meta.fingerprint -}}
+  {{- " · certificate from ssoossh" if k.meta.ssoossh else (" · certificate " ~ k.meta.cert.key_id) if k.meta.cert else "" -}}
 {%- endmacro %}
 
 {% from "_inv_note.html" import inv_note %}

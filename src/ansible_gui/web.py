@@ -298,6 +298,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         account_side=ACCOUNT_SIDE,
         default_account=lambda: creds.default("account"),
         account_name=lambda cid: (lambda c: c.name if c else "")(creds.get(cid) if cid else None),
+        account_key=creds.key_of,
         present=present,
         by_source=by_source,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
@@ -1248,9 +1249,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for r in repos.all():
             if r.ssh_key_id:
                 used_by_repo.setdefault(r.ssh_key_id, []).append(r)
+        key_accounts: dict[int, list] = {}
+        for a in everything:
+            if a.kind == "account" and a.meta.get("ssh_key_id"):
+                key_accounts.setdefault(a.meta["ssh_key_id"], []).append(a)
         return render(request, "credentials.html", section="credentials", view=view, items=items, kinds=KINDS,
-                      token_repos=used_by_repo, saved=q.get("saved"), deleted=q.get("deleted"),
-                      key_file=keys.generated_at, users=users)
+                      token_repos=used_by_repo, key_accounts=key_accounts, saved=q.get("saved"),
+                      deleted=q.get("deleted"), key_file=keys.generated_at, users=users)
 
     def ssh_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
                  status: int = 200) -> HTMLResponse:
@@ -1286,16 +1291,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
         used_by = [sc for sc in schedules.all() if cred and cred.id in picked_ids(sc.credentials)] if cred else []
         used_by_repos = [r for r in repos.all() if cred and r.ssh_key_id == cred.id] if cred else []
+        used_by_accounts = creds.accounts_using(cred.id) if cred and cred.kind == "ssh_key" else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
                       cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
-                      used_by_repos=used_by_repos,
+                      used_by_repos=used_by_repos, used_by_accounts=used_by_accounts,
                       ssh_keys=creds.by_kind("ssh_key"))
 
     @app.get("/credentials/new", response_class=HTMLResponse)
-    def new_credential(request: Request, kind: str = "ssh_key", copy_key_from: str = ""):
+    def new_credential(request: Request, kind: str = "ssh_key"):
         kind = kind if kind in KINDS else "ssh_key"
-        values = {"is_default": not creds.by_kind(kind), "copy_key_from": copy_key_from}
-        return cred_form(request, kind, values=values)
+        return cred_form(request, kind, values={"is_default": not creds.by_kind(kind)})
 
     @app.get("/credentials/{cred_id}", response_class=HTMLResponse)
     def edit_credential(request: Request, cred_id: int):
@@ -1305,29 +1310,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
                                                            "env": cred.meta.get("env", ""),
                                                            "username": cred.meta.get("username", ""),
+                                                           "ssh_key_id": cred.meta.get("ssh_key_id") or "",
                                                            "ssoossh_server": (cred.meta.get("ssoossh") or {}).get("server", "")})
 
     def list_for(kind: str) -> str:
         return "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets"
 
-    def copy_into_account(values: dict) -> None:
-        """An account can use a key already saved (a repository's deploy key, say): its value, decrypted here,
-        unless one was pasted in its place."""
-        src = creds.get(int(values["copy_key_from"])) if str(values["copy_key_from"]).isdigit() else None
-        if src and src.kind == "ssh_key" and src.readable and not values["private_key"].strip():
-            values["private_key"] = creds.secret(src)["private_key"]
-            if not values["ssoossh_server"].strip():  # else ssoossh's certificate takes its place
-                values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
-
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
         values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token",
-                                                "become_password", "copy_key_from", "ssoossh_server", "ssoossh_code")}
-        for flag in ("remove_certificate", "remove_key", "remove_become"):
+                                                "become_password", "ssh_key_id", "ssoossh_server", "ssoossh_code")}
+        for flag in ("remove_certificate", "remove_become"):
             values[flag] = data.get(flag) == "1"
-        if kind == "account":
-            copy_into_account(values)
         is_default = data.get("is_default") == "1"
         try:
             cred = creds.save(kind=kind, name=data.get("name", ""), values=values, is_default=is_default,
@@ -1335,8 +1330,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Invalid as e:
             # Secrets are never echoed back into the page; the form asks for them again.
             keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
-                    "certificate": values["certificate"] if not values["copy_key_from"] else "",
-                    "copy_key_from": values["copy_key_from"], "ssoossh_server": values["ssoossh_server"]}
+                    "certificate": values["certificate"], "ssh_key_id": values["ssh_key_id"],
+                    "ssoossh_server": values["ssoossh_server"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
         return RedirectResponse(f"{list_for(cred.kind)}?saved={cred.id}", status_code=303)
@@ -1380,11 +1375,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         changed = ids != ",".join(str(i) for i in sorted(ws.pulling()))
         return Response(status_code=204, headers={"HX-Refresh": "true"} if changed else None)
 
+    def sign_in(url: str, picked, error: str | None = None) -> dict:
+        """What the repository form's "Sign in with" offers for a clone URL: the git tokens for HTTPS, the SSH
+        keys for SSH, nothing for a path on this server, and both while the URL doesn't say which."""
+        url, picked = (url or "").strip(), str(picked or "")
+        kind = ("git_token" if gitsync.is_https(url) else "ssh_key" if gitsync.is_ssh(url)
+                else "none" if url.startswith(("/", "file://")) else "")
+        tokens, ssh_keys = creds.by_kind("git_token"), creds.by_kind("ssh_key")
+        there = {str(c.id) for c in tokens + ssh_keys}
+        return {"signin": {"kind": kind, "picked": picked, "deleted": bool(picked) and picked not in there,
+                           "error": error},
+                "git_tokens": tokens, "ssh_keys": ssh_keys}
+
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
-        return render(request, "repo_form.html", status, section="repos", repo=repo, values=values or {},
-                      errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"), git_tokens=creds.by_kind("git_token"),
-                      used_by=repo_users(repo) if repo else [])
+        values, errors = values or {}, errors or {}
+        return render(request, "repo_form.html", status, section="repos", repo=repo, values=values, errors=errors,
+                      used_by=repo_users(repo) if repo else [],
+                      **sign_in(values.get("url") or "", values.get("ssh_key_id"), errors.get("ssh_key_id")))
+
+    @app.get("/repos/sign-in", response_class=HTMLResponse)
+    def repo_sign_in(request: Request, url: str = "", ssh_key_id: str = ""):
+        return render(request, "_repo_signin.html", section="repos", **sign_in(url, ssh_key_id))
 
     @app.get("/repos/new", response_class=HTMLResponse)
     def new_repo(request: Request, role: str = ""):

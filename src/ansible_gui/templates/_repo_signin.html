@@ -1,0 +1,33 @@
+{# The repository form's "Sign in with": what can sign in to the clone URL above it, drawn again as the URL
+   is typed (GET /repos/sign-in). signin.kind is "git_token" for an HTTPS URL, "ssh_key" for an SSH one, "none"
+   for a path on this server, and "" while the URL doesn't say: then both are listed, as they are without
+   script. #}
+{% from "_signin.html" import key_about %}
+<div class="field" id="repo-sign-in" hx-get="/repos/sign-in" hx-trigger="input changed delay:400ms from:#url" hx-include="#url, #ssh_key_id" hx-swap="outerHTML" hx-push-url="false">
+  <label class="label" for="ssh_key_id">Sign in with</label>
+  {% macro tokens() %}{% for k in git_tokens %}<option value="{{ k.id }}" {% if signin.picked == k.id|string %}selected{% endif %} data-desc="Git token · user {{ k.meta.username }}">{{ k.name }}</option>
+        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}{% endmacro %}
+  {% macro keys() %}{% for k in ssh_keys %}<option value="{{ k.id }}" {% if signin.picked == k.id|string %}selected{% endif %} data-desc="SSH key · {{ key_about(k) }}">{{ k.name }}</option>
+        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}{% endmacro %}
+  <select id="ssh_key_id" class="input input-small" name="ssh_key_id" aria-describedby="key-help{% if signin.error %} key-err{% endif %}" {% if signin.error %}aria-invalid="true"{% endif %}>
+    <option value="" data-desc="{{ "A path on this server" if signin.kind == "none" else "A public repository" }}">Nothing</option>
+    {% if signin.kind == "git_token" %}{{ tokens() }}
+    {% elif signin.kind == "ssh_key" %}{{ keys() }}
+    {% elif signin.kind == "" %}
+      <optgroup label="Git tokens, for HTTPS URLs">
+        {{ tokens() }}
+      </optgroup>
+      <optgroup label="SSH keys, for SSH URLs">
+        {{ keys() }}
+      </optgroup>
+    {% endif %}
+    {% if signin.deleted %}<option value="{{ signin.picked }}" selected>Deleted: pick another</option>{% endif %}
+  </select>
+  <p class="help" id="key-help">
+    {%- if signin.kind == "git_token" %}An HTTPS URL signs in with a git token: for a private repository, one with read-only access. {% if not git_tokens %}<a href="/credentials/new?kind=git_token">Add a git token</a> first; this form isn’t saved when you leave. {% endif %}Stored encrypted in <a href="/credentials/secrets">Secrets</a>, used only to pull.
+    {%- elif signin.kind == "ssh_key" %}An SSH URL signs in with an SSH key: one the server knows as a read-only deploy key, or one whose certificate it accepts. {% if not ssh_keys %}<a href="/credentials/new?kind=ssh_key">Add an SSH key</a> first; this form isn’t saved when you leave. {% endif %}Stored encrypted in <a href="/credentials/secrets">Secrets</a>.
+    {%- elif signin.kind == "none" %}A path on this server needs no sign-in.
+    {%- else %}For a private repository: a git token with read-only access for an HTTPS URL, or an SSH key for an SSH one. The list narrows to what fits once the URL is in. Stored encrypted in <a href="/credentials/secrets">Secrets</a>.
+    {%- endif %}</p>
+  {% if signin.error %}<p class="field-error" id="key-err">{{ signin.error }}</p>{% endif %}
+</div>

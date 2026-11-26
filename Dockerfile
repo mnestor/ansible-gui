@@ -23,7 +23,8 @@ COPY src ./src
 # the venv is all the next stage takes, so the image holds no source tree, lock file or uv.
 RUN uv sync --frozen --no-dev --group ansible --no-editable
 
-# The ssoossh client, for accounts that fetch their certificate at every run (`ssoossh service retrieve`):
+# The ssoossh client, for SSH keys that fetch their certificate each time they sign in (`ssoossh service
+# retrieve`, in the runner before a run and in the fetcher before a pull):
 # a static Go binary from its release, checked against the release's checksum. Bump the version and the sum
 # together (ssoossh_<version>_checksums.txt).
 FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS ssoossh

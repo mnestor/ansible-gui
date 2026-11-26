@@ -91,7 +91,7 @@ services:
       interval: 30s
       timeout: 5s
     networks:
-      - fetch                                              # the git server and Galaxy
+      - fetch                                              # the git server, Galaxy, and ssoossh for a repository's enrolled key
 
   runner:
     <<: *hardened

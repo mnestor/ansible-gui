@@ -497,8 +497,8 @@ class Executor:
                 "Ansible was stopped, with every SSH connection it had open.")
 
     def prepare(self, run: Run) -> Prepared:
-        """What the run job carries from the credential store: the account's key and certificate, the become
-        and vault passwords, and the environment secrets, for this run only.
+        """What the run job carries from the credential store: the key the account picked, with its
+        certificate, the become and vault passwords, and the environment secrets, for this run only.
 
         The run never sees the server user's ssh-agent, ~/.ssh/config or known_hosts: the runner starts an
         agent holding only this key, and SSH reads only the ssh_config the job carries (which includes
@@ -521,8 +521,15 @@ class Executor:
         if "account" in loaded:
             acct, secret = loaded.pop("account")
             p.user = acct.meta.get("username") or ""
-            if secret.get("private_key"):
-                loaded["ssh_key"] = (acct, secret)
+            if acct.meta.get("ssh_key_id"):
+                key = self.creds.key_of(acct)
+                if not key:
+                    raise CredentialMissing(f"The SSH key of the account “{acct.name}” was deleted. Pick another "
+                                            "on the account’s page.")
+                if not key.readable:
+                    raise CredentialMissing(f"The SSH key “{key.name}” can’t be decrypted: the secret key changed "
+                                            "since it was saved. Enter it again on the Credentials page.")
+                loaded["ssh_key"] = (key, self.creds.secret(key))
             if secret.get("become_password"):
                 loaded["become_password"] = (acct, {"password": secret["become_password"]})
 

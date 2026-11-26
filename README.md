@@ -82,13 +82,14 @@ There is no upgrade path from the single-container layout: start the three conta
 ## Git repositories
 
 Set up on the Repositories page: any number of inventory and playbook repositories,
-each with a branch and, for private repositories, a deploy key picked from the stored SSH keys.
+each with a branch and, for private repositories, a git token or one of the stored SSH keys to sign in with.
 ansible-gui keeps a bare clone of each in `data/repos/<id>/git/`, and writes each commit a pull lands on out once,
 into its own directory, `data/repos/<id>/commits/<full hash>/`, which nothing writes into again. A pull lands on a
 new directory and a running playbook keeps reading its own, so a run executes one commit from its first task to its
 last. Directories no repository's current commit and no running run uses are removed.
 
-Private repositories sign in with a git token (HTTPS) or an SSH deploy key, both stored encrypted on the
+Private repositories sign in with a git token (HTTPS) or an SSH key (a deploy key, or a key with a
+certificate for a server that takes only those), both stored encrypted on the
 Credentials page. A token goes to git from the environment, through a credential helper set for that one server
 and for that pull only: never into the URL or `.git/config`, never saved, and not offered to another server a
 redirect names. Give it read-only access to repository contents.
@@ -269,11 +270,16 @@ Runs never use the server user's `~/.ssh/config`, `known_hosts` or ssh-agent:
 - Each run gets its own ssh-agent, holding only the SSH key (and certificate) chosen for it, or nothing.
   `Match exec` commands run with that agent's `SSH_AUTH_SOCK`, so a command that fetches a certificate and
   `ssh-add`s it works.
-- An account can fetch its certificate from [ssoossh](https://github.com/mnestor/ssoossh) instead of holding a
-  pasted one: enroll the key once with `ssoossh service enroll --key <file>`, then give the account that key,
-  the server and the enrollment code. Before each run the runner calls `ssoossh service retrieve` for the run's
+- An SSH key is saved once, under Secrets, and picked where it signs in: by an account (who a run signs in as)
+  and by a repository pulled over SSH. An account holds no key of its own. Accounts saved before this had one:
+  at the first start each becomes an SSH key named after its account, which the account then picks.
+- An SSH key can fetch its certificate from [ssoossh](https://github.com/mnestor/ssoossh) instead of holding a
+  pasted one: enroll the key once with `ssoossh service enroll --key <file>`, then save that key with the
+  server and the enrollment code. Before each run the runner calls `ssoossh service retrieve` for the run's
   copy of the key and loads the certificate into the run's agent with it; the run's log names the certificate.
-  The runner (`ansible-gui_hosts` in the compose layout) has to reach the ssoossh server.
+  Before each pull of a repository that signs in with such a key the fetcher does the same, and ssh presents
+  the certificate with the key. The runner (`ansible-gui_hosts` in the compose layout) has to reach the ssoossh
+  server, and so does the fetcher (`ansible-gui_fetch`) once a repository uses an enrolled key.
 - Stored credentials (Fernet-encrypted in SQLite): SSH keys with optional certificates or ssoossh enrollment
   codes (no passphrases),
   vault passwords, become passwords, and environment secrets. A run gets an environment secret as `$NAME` and
@@ -322,11 +328,13 @@ them. That rests on git (a fetch into a bare clone, then `read-tree` and `checko
 `ansible-galaxy collection install` not executing what they fetch. A review on 21 Nov 2026 found no way for
 them to, but found ansible-galaxy obeying the repository's `ansible.cfg`, which let one repository write into
 another's files; the install now gets only its Galaxy servers, and finished directories can't be written. That
-review was reading and testing, not proof: the fetcher holds a deploy key or token only for the length of a pull.
+review was reading and testing, not proof: the fetcher holds a repository's key (with its certificate, or the
+enrollment code that gets it one) or token only for the length of a pull. Give a repository a key of its own:
+picking the key an account signs in to hosts with hands the fetcher what was the runner's alone.
 [docs/runner-split.md](docs/runner-split.md) has the full table of what a hostile playbook gets.
 Without workers (`ANSIBLE_GUI_FETCHER_SOCKET` unset), that code runs as the server's own user, and write
 access to a repository is admin access to this server. Either way: protect the branches ansible-gui pulls, give it
-read-only deploy keys or tokens, and don't add a repository you wouldn't trust with those credentials.
+read-only keys or tokens, and don't add a repository you wouldn't trust with those credentials.
 
 Credentials are encrypted with a key derived from `ANSIBLE_GUI_SECRET_KEY`, which belongs outside `data/`. Nothing
 under `data/` holds a secret in plain text: runs get theirs in a temp directory of the runner's that is wiped
