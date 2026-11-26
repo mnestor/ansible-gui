@@ -1,6 +1,6 @@
 {# Variables: the playbook's prompts (its roles' meta/argument_specs.yml), then free-form YAML. Redrawn when the
    playbook changes; the inventory notes are redrawn by every preview. #}
-{% from "_inv_note.html" import inv_note %}
+{% from "_inv_note.html" import inv_note, inv_summary %}
 {% set notes = notes or {} %}
 {% macro field(p, a, saved_secrets, notes) %}
   {% set id = "var-" ~ p.name %}
@@ -63,7 +63,8 @@
   <div class="form-section-head form-section-head-row">
     <div>
       <h2 class="form-section-title" id="sec-vars">Variables</h2>
-      <p class="help">Sent to the playbook with <span class="mono">-e</span>, which beats every other source. Leave a variable out to keep what the inventory or the role sets.</p>
+      <p class="help">Sent as extra variables (<span class="mono">-e</span>): a value here wins over the inventory and the role’s defaults. Leave a variable out to keep what they set.</p>
+      {% if prompts %}<p class="inv-note" id="inv-summary">{{ inv_summary(notes, prompts | map(attribute="name") | reject("equalto", "ansible_user") | list) }}</p>{% endif %}
     </div>
     {% if prompts %}
     <div class="segmented segmented-inline" role="radiogroup" aria-label="Edit variables as">
@@ -83,7 +84,7 @@
     {% for p in shown %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}
     {% if rest %}
     <details class="more prompt-more" {% if not shown %}open{% endif %}>
-      <summary>{{ rest | length }} {{ "more " if shown }}optional variable{{ "s" if rest | length != 1 }} <span class="summary-note">· {{ rest | map(attribute="name") | join(", ") | truncate(60) }}</span></summary>
+      <summary>{{ rest | length }} {{ "more " if shown }}optional variable{{ "s" if rest | length != 1 }} {% set names = rest | map(attribute="name") | list %}<span class="summary-note">· {{ names[:3] | join(", ") }}{% if names | length > 3 %} and {{ names | length - 3 }} more{% endif %}</span></summary>
       <div class="prompt-more-body">{% for p in rest %}{{ field(p, form.answers.get(p.name), saved_secrets, notes) }}{% endfor %}</div>
     </details>
     {% endif %}

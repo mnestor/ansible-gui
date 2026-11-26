@@ -15,56 +15,83 @@
   <p class="preview-note">As template <strong>{{ from_template.name }}</strong> sets it.</p>
   {% endif %}
 {% endif %}
-{% if not form.playbook %}
+{% if not form.playbook %}{% set status = "Choose a playbook to see which hosts it would run on." %}
   <p class="preview-note">Choose a playbook to see which hosts it would run on.</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
-    <span class="help">Choose a playbook first.</span></div>
-{% elif not form.inventory %}
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true" aria-describedby="run-why">{{ save_label if saving else "Run" }}</button>
+    <span class="help" id="run-why">Choose a playbook first.</span></div>
+{% elif not form.inventory %}{% set status = "Choose an inventory to see which hosts it would run on." %}
   <p class="preview-note">Choose an inventory to see which hosts it would run on.</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
-    <span class="help">Choose an inventory first.</span></div>
-{% elif preview.error %}
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true" aria-describedby="run-why">{{ save_label if saving else "Run" }}</button>
+    <span class="help" id="run-why">Choose an inventory first.</span></div>
+{% elif preview.error %}{% set status = "Ansible couldn’t work out the targets." %}
   <p class="field-error" role="alert">Ansible couldn’t work out the targets: <span class="mono">{{ preview.error }}</span></p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
-    <span class="help">Fix the target pattern or the playbook, then try again.</span></div>
-{% elif not preview.hosts %}
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true" aria-describedby="run-why">{{ save_label if saving else "Run" }}</button>
+    <span class="help" id="run-why">Fix the target pattern or the playbook, then try again.</span></div>
+{% elif not preview.hosts %}{% set status = "No hosts match." %}
   <p class="preview-note"><strong>No hosts match.</strong>
     {% if form.target %}<span class="mono">{{ form.target }}</span> doesn’t overlap the hosts in <span class="mono">{{ form.playbook.split(":", 1)[-1] }}</span>.{% else %}The playbook’s plays target no hosts in this inventory.{% endif %}</p>
-  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true">{{ save_label if saving else "Run" }}</button>
-    <span class="help">Change the targets to run.</span></div>
+  <div class="actions"><button class="btn btn-primary" type="submit" disabled aria-disabled="true" aria-describedby="run-why">{{ save_label if saving else "Run" }}</button>
+    <span class="help" id="run-why">Change the targets to run.</span></div>
 {% else %}
   <div class="preview-hosts">
     <p class="preview-note"><strong class="tabular">{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}</strong>{% if preview.plays > 1 %} across {{ preview.plays }} plays{% endif %}{% if not form.target %}, from the playbook’s own hosts{% endif %}.</p>
   </div>
+{% set ov = overrides or {} %}{% set n_ov = (ov.vars or []) | length %}
+  {% set n_vars %}{{ n_ov }} variable{{ "s" if n_ov != 1 }}{% endset %}
+  {% set ov_sum %}{% if n_ov %} Replaces inventory values for {{ n_vars }}, listed below.{% endif %}{% endset %}
+  {% set status %}{{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}.{{ ov_sum }}{% endset %}
   <div class="actions">
     {% if purpose == "template" %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
-    <span class="help">Runs from it start as {{ "Apply" if apply else "a dry run" }} on whatever matches at the time: {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }} today. Whoever runs it can change any field.</span>
+    <span class="help">Runs from it start as {{ "Apply" if apply else "a dry run" }} on whatever matches at the time: {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }} today. Whoever runs it can change any field.{{ ov_sum }}</span>
     {% elif saving %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ save_label }}</button>
-    <span class="help">{% if apply %}Each run applies changes to the hosts that match at that time{% else %}Each run is a dry run on the hosts that match at that time{% endif %}: {{ preview.hosts | length }} today.</span>
+    <span class="help">{% if apply %}Each run applies changes to the hosts that match at that time{% else %}Each run is a dry run on the hosts that match at that time{% endif %}: {{ preview.hosts | length }} today.{{ ov_sum }}</span>
     {% else %}
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Starting…">
       {% if apply %}Apply to {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% else %}Dry run on {{ preview.hosts | length }} host{{ "s" if preview.hosts | length != 1 }}{% endif %}
     </button>
-    <span class="help">{% if apply %}Changes these hosts.{% else %}Reports what would change; changes nothing.{% endif %}</span>
+    <span class="help">{% if apply %}Changes these hosts.{% else %}Reports what would change; changes nothing.{% endif %}{{ ov_sum }}</span>
     {% endif %}
   </div>
+  {% if ov.sets and not ov.checked %}
+  <p class="preview-note">Can’t check for overrides: the inventory didn’t load.</p>
+  {% elif ov.vars %}
   <div class="preview-hosts">
-    {% if run_sets %}<p class="preview-sub">Inventory values this run overrides</p>{% endif %}
-    <ul class="target-list">
-      {% for h, found in overrides or [] %}
-      <li><span class="mono target-host">{{ h }}</span>
-        {% if found %}<ul class="override-list">{% for o in found %}<li><span class="mono">{{ o.name }}</span> <s class="mono">{{ o.was }}</s> <span aria-hidden="true">→</span><span class="visually-hidden">becomes</span> <span class="mono">{{ o.now }}</span> <span class="mono override-where">{{ o.where }}</span></li>{% endfor %}</ul>
-        {% elif run_sets %}<span class="help">none: it keeps its inventory values</span>{% endif %}
-      </li>
+    <p class="preview-sub">Replaces inventory values · {{ n_vars }}</p>
+    <ul class="override-vars">
+      {% for o in ov.vars %}{% if loop.index == 6 %}</ul>
+    <details class="override-more"><summary>{{ n_ov - 5 }} more variable{{ "s" if n_ov - 5 != 1 }}</summary>
+    <ul class="override-vars">{% endif %}
+      <li class="override" data-var="{{ o.name }}"><span class="mono override-name">{{ o.name }}</span>
+        <span class="visually-hidden">now</span><span class="mono override-now">{{ o.now }}</span>
+        <ul class="override-was">
+          {% for g in o.groups %}{% if loop.index == 4 %}</ul>
+        <details class="override-more"><summary>{{ o.groups | length - 3 }} more value{{ "s" if o.groups | length - 3 != 1 }}</summary>
+        <ul class="override-was">{% endif %}
+          <li><span class="visually-hidden">replaces</span><s class="mono">{{ g.was }}</s><span class="mono override-where">{{ g.where }}</span>
+            {% if g.hosts | length == 1 %}<span class="override-on">on <span class="mono">{{ g.hosts[0] }}</span></span>
+            {% else %}<details class="override-hosts"><summary>{{ g.hosts | length }} hosts</summary>
+              <ul class="chips">{% for h in g.hosts[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if g.hosts | length > 24 %}<li class="help">and {{ g.hosts | length - 24 }} more</li>{% endif %}</ul></details>{% endif %}</li>
+          {% endfor %}
+        </ul>{% if o.groups | length > 3 %}</details>{% endif %}
+      </li><!-- /override -->
       {% endfor %}
-    </ul>
-    {% set rest = preview.hosts[(overrides or []) | length:] %}
-    {% if rest %}<ul class="chips">{% for h in rest[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if rest | length > 24 %}<li class="help">and {{ rest | length - 24 }} more</li>{% endif %}</ul>{% endif %}
+    </ul>{% if n_ov > 5 %}</details>{% endif %}
+    {% if ov.also %}<p class="help">Also sets {% for a in ov.also %}<span class="mono">{{ a }}</span>{{ " and " if loop.revindex == 2 else ", " if not loop.last }}{% endfor %}, without changing an inventory value.</p>{% endif %}
+  </div>
+  {% elif ov.also %}
+  <p class="preview-note">The run sets {% for a in ov.also %}<span class="mono">{{ a }}</span>{{ " and " if loop.revindex == 2 else ", " if not loop.last }}{% endfor %} without changing any inventory value on these hosts.</p>
+  {% endif %}
+  <div class="preview-hosts">
+    <p class="preview-sub">Hosts · <span class="tabular">{{ preview.hosts | length }}</span></p>
+    <ul class="chips">{% for h in preview.hosts[:24] %}<li><span class="chip mono">{{ h }}</span></li>{% endfor %}{% if preview.hosts | length > 24 %}<li class="help">and {{ preview.hosts | length - 24 }} more</li>{% endif %}</ul>
   </div>
   {% if not saving %}{% for h in preview.hosts %}<input type="hidden" name="expected" value="{{ h }}">{% endfor %}{% endif %}
 {% endif %}
 <template id="tag-options">{% for t in preview.tags %}<option value="{{ t }}">{% endfor %}</template>
 {# The inventory notes under the variable fields follow the targets. #}
-{% if oob %}{% from "_inv_note.html" import inv_note %}{% for n in note_names %}<p class="inv-note" id="inv-{{ n }}" hx-swap-oob="true">{{ inv_note(notes.get(n)) }}</p>{% endfor %}{% endif %}
+{% if oob %}{% from "_inv_note.html" import inv_note, inv_summary %}{% for n in note_names %}<p class="inv-note" id="inv-{{ n }}" hx-swap-oob="true">{{ inv_note(notes.get(n), alone=(n == "ansible_user")) }}</p>{% endfor %}
+{% set prompt_names = note_names | reject("equalto", "ansible_user") | list %}{% if prompt_names %}<p class="inv-note" id="inv-summary" hx-swap-oob="true">{{ inv_summary(notes, prompt_names) }}</p>{% endif %}
+{# Only this sentence is announced: the preview itself holds the button and long lists, so it is not a live region. #}
+<p id="preview-status" hx-swap-oob="innerHTML">{{ status | default("") | trim }}</p>{% endif %}
