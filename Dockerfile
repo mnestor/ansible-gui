@@ -10,7 +10,7 @@
 # Base images by digest, so a rebuild gets exactly what was tested; Dependabot proposes updates.
 # Alpine, with its release in the tag: a digest update stays on 3.24, and moving to the next release
 # (a new OpenSSH, OpenSSL and git at once) is a change someone makes on purpose.
-FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS build
+FROM python:3.14-alpine3.24@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67 AS build
 COPY --from=ghcr.io/astral-sh/uv:0.9.7@sha256:ba4857bf2a068e9bc0e64eed8563b065908a4cd6bfb66b531a9c424c8e25e142 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
 WORKDIR /app
@@ -27,13 +27,13 @@ RUN uv sync --frozen --no-dev --group ansible --no-editable
 # retrieve`, in the runner before a run and in the fetcher before a pull):
 # a static Go binary from its release, checked against the release's checksum. Bump the version and the sum
 # together (ssoossh_<version>_checksums.txt).
-FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89 AS ssoossh
+FROM python:3.14-alpine3.24@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67 AS ssoossh
 ARG SSOOSSH_VERSION=1.6.2
 ADD --checksum=sha256:a9cc0d69f3045fcc4c5165fccbae0be25ae3d2ce9d97795f4a852fd960b64991 \
     https://github.com/mnestor/ssoossh/releases/download/v${SSOOSSH_VERSION}/ssoossh-client_${SSOOSSH_VERSION}_linux_amd64.tar.gz /ssoossh.tar.gz
 RUN tar -xzf /ssoossh.tar.gz -C / ssoossh && chmod 755 /ssoossh
 
-FROM python:3.12-alpine3.24@sha256:c5ba3deef00c7758561a0f03c26f44f10589263d40e732b8748e0d1f38f6dd89
+FROM python:3.14-alpine3.24@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67
 LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later"
 # apk upgrade: the fixes Alpine has published since the base image was built.
 # bash and GNU tar are for playbooks, not for ansible-gui: tasks that run on the controller
@@ -47,7 +47,7 @@ LABEL org.opencontainers.image.licenses="MIT AND GPL-3.0-or-later"
 # same way, without the modules removed, and the old note is dropped: the libraries nothing needs go with it.
 RUN apk upgrade --no-cache \
  && apk add --no-cache git openssh-client tini ca-certificates bash tar \
- && cd /usr/local/lib/python3.12 \
+ && cd /usr/local/lib/python3.14 \
  && rm -rf site-packages/pip site-packages/pip-*.dist-info ensurepip idlelib tkinter turtledemo turtle.py lib2to3 \
            __pycache__/turtle.* lib-dynload/_tkinter.*.so lib-dynload/nis.*.so \
  && rm -f /usr/local/bin/pip* /usr/local/bin/idle* /usr/local/bin/2to3* \

@@ -33,8 +33,12 @@ def inside(path: Path) -> bool:
     if _roots is None:
         return True
     try:
-        real = Path(path).resolve()
-    except (OSError, RuntimeError):  # a link that leads back to itself
+        real = Path(path).resolve(strict=True)
+    except FileNotFoundError:
+        real = Path(path).resolve()  # nothing there: where it would be, links followed as far as they go
+    except (OSError, RuntimeError):
+        # A link that leads back to itself. Resolving one raised RuntimeError until Python 3.13. Since then
+        # only a strict resolve says so: a lenient one hands the path back as it was, which looks inside.
         return False
     return any(real == root or root in real.parents for root in _roots)
 

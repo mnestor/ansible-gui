@@ -42,7 +42,7 @@ ANSIBLE_GUI_PROJECT_DIR=~/git/ansible/lxc ANSIBLE_GUI_INVENTORY=inventory/hosts.
 | `ANSIBLE_GUI_INSECURE_NO_AUTH` | | `1` allows listening beyond loopback without sign-in (only if a proxy in front does it). `ANSIBLE_GUI_PUBLIC_URL` is still needed |
 | `ANSIBLE_GUI_HOST` / `ANSIBLE_GUI_PORT` | `127.0.0.1` / `8080` | Listen address |
 
-Needs `ansible-core` on PATH (`uv run` installs the locked one on Python 3.12+). Ansible is only ever called as a
+Needs `ansible-core` on PATH (`uv run` installs the locked one on Python 3.13+). Ansible is only ever called as a
 subprocess, never imported (it is GPLv3). Once read, every `ANSIBLE_GUI_*` variable is removed from the
 server's environment, so no playbook, inventory plugin or collection inherits the secrets among them.
 
@@ -52,7 +52,7 @@ server's environment, so no playbook, inventory plugin or collection inherits th
 docker build -t ansible-gui .
 ```
 
-The image is Alpine with ansible-gui, ansible-core 2.21.4, git and OpenSSH. It runs as uid 10001 under tini and
+The image is Alpine with ansible-gui, Python 3.14, ansible-core 2.22.0, git and OpenSSH. It runs as uid 10001 under tini and
 listens on 8080 with data in `/data`. The same image runs the workers: `ansible-gui worker --jobs fetcher|runner
 --socket PATH --allow-uid 10001` takes the app's jobs on a Unix socket and accepts a connection from uid 10001 only
 (the kernel reports who is on the other end). `deploy/docker-compose.yml` runs the app, a fetcher (uid 10002, the

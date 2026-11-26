@@ -228,7 +228,7 @@ def test_vault_password_file_from_settings(tmp_path):
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
     log = app.state.store.log_path(run.id).read_text()
     assert run.status == "successful", log[-800:]
-    assert "word=opened-the-vault" in log
+    assert "the vault opened" in log
     assert "fixture-password" not in log
 
 

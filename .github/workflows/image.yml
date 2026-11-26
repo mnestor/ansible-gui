@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Tests (with the ansible-core from uv.lock, the one the image ships)
         run: uv run --frozen pytest -q --cov --cov-report=
       - name: Coverage summary
@@ -58,15 +58,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Known vulnerabilities in what the image installs (uv.lock, ansible-core included)
         run: |
           uv export --frozen --no-dev --group ansible --no-emit-project --format requirements-txt -o requirements.txt
-          uvx --python 3.12 --from pip-audit==2.10.1 pip-audit --strict --disable-pip -r requirements.txt
+          uvx --python 3.14 --from pip-audit==2.10.1 pip-audit --strict --disable-pip -r requirements.txt
       # What anyone pointing Bandit at the repository would be shown first. The lines it would flag at this
       # level (yaml.load with a SafeLoader subclass, SQL built from our own column names) carry "# nosec".
       - name: Static analysis of ansible-gui's own code (medium severity and up)
-        run: uvx --python 3.12 --from bandit==1.9.4 bandit -q -r src -ll
+        run: uvx --python 3.14 --from bandit==1.9.4 bandit -q -r src -ll
 
   image:
     needs: [test, audit]

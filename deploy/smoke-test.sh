@@ -72,7 +72,7 @@ for f in ansible-gui.db secret.key; do
 done
 
 echo "- has the tools it runs"
-docker exec "$name" ansible-playbook --version | head -1 | grep -q "core 2.21.4" || fail "ansible-core isn't 2.21.4"
+docker exec "$name" ansible-playbook --version | head -1 | grep -q "core 2.22.0" || fail "ansible-core isn't 2.22.0"
 docker exec "$name" ansible-galaxy --version >/dev/null || fail "ansible-galaxy missing"
 docker exec "$name" git --version >/dev/null || fail "git missing"
 docker exec "$name" ssh -V >/dev/null 2>&1 || fail "ssh missing"

@@ -10,6 +10,8 @@
                 3130383633656532390a643063323561383837623532346336636461366238626466616333343431
                 36373733613430363833333537653863366164346665646430386536353830373062
   tasks:
+    # Said, not printed: from ansible-core 2.22 a vaulted value is masked wherever it would be shown
+    # ("word=$REDACTED$" for a debug of it), so the play checks the value itself and says what it found.
     - name: Use the vaulted value
       ansible.builtin.debug:
-        msg: "word={{ secret_word }}"
+        msg: "{{ 'the vault opened' if secret_word == 'opened-the-vault' else 'the vault held something else' }}"

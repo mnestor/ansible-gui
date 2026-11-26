@@ -44,6 +44,10 @@ def test_with_workers_a_link_out_of_the_repositories_is_not_read(repo, tmp_path)
     assert found and all(varfiles.load(f).error and not varfiles.load(f).values for f in found)
     with pytest.raises(PermissionError):
         repofiles.read_bytes(repo / "linked.yml")
-    with pytest.raises(PermissionError):
+    with pytest.raises(PermissionError):  # a link to itself: resolving it stopped raising in Python 3.13
         repofiles.read_text(repo / "loop.yml")
+    assert not repofiles.inside(repo / "loop.yml") and not repofiles.inside(repo / "loop.yml" / "below")
+    with pytest.raises(FileNotFoundError):  # a file that isn't there is missing, not refused
+        repofiles.read_text(repo / "missing.yml")
+    assert repofiles.inside(repo / "missing.yml") and not repofiles.inside(repo / "host_vars" / "missing.yml")
     assert repofiles.read_text(repo / "inside.yml") == PLAY

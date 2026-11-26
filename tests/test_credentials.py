@@ -170,7 +170,7 @@ def test_run_gets_its_own_agent_key_env_and_vault(app, keypair):
     r = c.post("/runs", data={"playbook": "vault.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                               **ids}, follow_redirects=False)
     run = wait(app, int(r.headers["location"].rsplit("/", 1)[1]))
-    assert "word=opened-the-vault" in app.state.store.log_path(run.id).read_text()
+    assert "the vault opened" in app.state.store.log_path(run.id).read_text()
 
 
 @needs_ansible
