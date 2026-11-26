@@ -103,7 +103,14 @@ def test_failure_mails_with_hosts_link_and_failing_task(app, c, tmp_path):
 def test_recovery_mails_once(app, c):
     sched = schedule(c, app, name="flaky", playbook="env.yml", mode="apply")
     fire_and_wait(app, sched)
+    # The fix: the token env.yml reads, added and ticked on the schedule (a run gets only the ones picked for it).
     c.post("/credentials", data={"kind": "env_secret", "name": "tok", "env": "TEST_TOKEN", "value": "x"})
+    token = str(app.state.creds.by_kind("env_secret")[0].id)
+    r = c.post(f"/schedules/{sched.id}", data={"name": "flaky", "cron": "0 3 * * *", "playbook": "env.yml",
+                                                "target": "box1", "mode": "apply", "diff": "1", "verbosity": "0",
+                                                "notify": "problems", "env_secret": token}, follow_redirects=False)
+    assert r.status_code == 303, r.text
+    sched = app.state.schedules.get(sched.id)
     fire_and_wait(app, sched)
     fire_and_wait(app, sched)
     subjects = [m["Subject"] for m in FakeSMTP.sent]

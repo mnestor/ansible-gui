@@ -5,7 +5,7 @@
 <header class="subject">
   <p class="eyebrow">Runs</p>
   <h1 class="identity">Run a playbook</h1>
-  <p class="subject-meta">Pick one to fill in its run. Each says what it does from the comment at the top of the file, or else from its roles’ <span class="mono">meta/main.yml</span> description.</p>
+  <p class="subject-meta">Pick one to fill in its run. Each says what it does in the opening of the comment at the top of its file, or else from its roles’ <span class="mono">meta/main.yml</span> description.</p>
 </header>
 
 {% if git_repos %}
@@ -28,18 +28,40 @@
 {% if not playbooks %}
   <p class="empty"><span>No playbooks found in <span class="mono">{{ settings.playbook_dir }}</span> under <span class="mono">{{ settings.project_dir }}</span>. A playbook is a YAML file whose top level is a list of plays with <span class="mono">hosts:</span>. Set <span class="mono">ANSIBLE_GUI_PLAYBOOK_DIR</span> if they live elsewhere.</span> <a href="/repos">Add a repository</a></p>
 {% else %}
+<div class="list-toolbar">
+  <label class="visually-hidden" for="rowfilter">Find a playbook</label>
+  <input id="rowfilter" class="input input-medium" type="search" placeholder="Find a playbook by name or what it does" autocomplete="off" enterkeyhint="search" data-rowfilter>
+  <p class="list-count tabular" data-rowcount aria-live="polite">{{ playbooks | length }} playbook{{ "s" if playbooks | length != 1 }}</p>
+</div>
+{% if by_repo | length > 1 %}
+{# Which repositories are shown: all of them until one is picked. #}
+<div class="source-chips" role="group" aria-label="Repositories shown">
+  <button type="button" class="chip chip-toggle" data-rows-all aria-pressed="true">All <span class="chip-count">{{ playbooks | length }}</span></button>
+  {% for repo, books in by_repo %}<button type="button" class="chip chip-toggle mono" data-rows-chip="r{{ repo.id }}" aria-pressed="false">{{ repo.name }} <span class="chip-count">{{ books | length }}</span></button>{% endfor %}
+</div>
+{% endif %}
 <div class="table-region">
 <table class="history playbooks">
   <thead><tr>
     <th scope="col">Playbook</th><th scope="col" class="col-wide">Templates</th><th scope="col"><span class="visually-hidden">Actions</span></th>
   </tr></thead>
-  <tbody>
-  {% for p in playbooks %}
+  {% for repo, books in by_repo %}
+  <tbody data-rowgroup="r{{ repo.id }}">
+    <tr class="list-group">
+      <th colspan="3" scope="colgroup">
+        {% if repo.local %}<span class="mono list-group-name">{{ repo.name }}</span>{% else %}<a class="mono list-group-name" href="/repos/{{ repo.id }}">{{ repo.name }}</a>{% endif %}
+        <span class="vars-group-why">{{ books | length }} playbook{{ "s" if books | length != 1 }}{% if not repo.local %} · at {% if repo.short %}<span class="mono">{{ repo.short }}</span>{% else %}no commit yet{% endif %}{% endif %}</span>
+      </th>
+    </tr>
+  {% for p in books %}
     {% set ts = templates_by.get(p.key, []) %}
-    <tr>
+    {% set d = about[p.key] %}
+    {# data-search is everything the filter matches; data-head is what the row shows folded, so a match found
+       only in the rest of the comment unfolds it. #}
+    <tr data-source="r{{ repo.id }}" data-search="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.text ~ ' ' ~ ts | map(attribute='name') | join(' ')) | lower }}" data-head="{{ (p.repo.name ~ ' ' ~ p.path ~ ' ' ~ d.lead[:60]) | lower }}">
       <th scope="row">
-        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}"><span class="repo-prefix">{{ p.repo.name }} /</span> {{ p.path }}</a>
-        <span class="playbook-about">{% if about[p.key] %}{{ about[p.key] }}{% else %}<span class="help">No description: add a comment at the top of the file.</span>{% endif %}</span>
+        <a class="mono" href="/runs/new?{{ {'playbook': p.key} | urlencode }}">{{ p.path }}</a>
+        <div class="playbook-about">{% if d.folds %}<details class="about-more"><summary><span class="about-lead">{{ d.lead }}</span> <span class="about-toggle"><span class="about-closed">{% if d.rest %}Show {{ d.more }} more line{{ "s" if d.more != 1 }}{% else %}Show all{% endif %}</span><span class="about-open">Show less</span></span></summary>{% if d.rest %}<div class="about-rest">{{ d.rest }}</div>{% endif %}</details>{% elif d.lead %}{{ d.lead }}{% else %}<span class="help">No description: add a comment at the top of the file.</span>{% endif %}</div>
         {% if ts %}<span class="phone-only help">{{ ts | length }} template{{ "s" if ts | length != 1 }}</span>{% endif %}
       </th>
       <td class="col-wide">{% if ts %}{% for t in ts[:3] %}<a class="mono" href="/runs/templates/{{ t.id }}">{{ t.name }}</a>{{ ", " if not loop.last }}{% endfor %}{% if ts | length > 3 %} and {{ ts | length - 3 }} more{% endif %}{% else %}<span class="help">—</span>{% endif %}</td>
@@ -53,7 +75,12 @@
     </tr>
   {% endfor %}
   </tbody>
+  {% endfor %}
 </table>
+</div>
+<div class="empty" data-rowempty hidden>
+  <p>No playbooks match “<span data-rowterm></span>”. The search reads each playbook’s path and the comment at the top of its file.</p>
+  <button type="button" class="btn btn-quiet" data-rowclear>Clear search</button>
 </div>
 {% endif %}
 {% endblock %}

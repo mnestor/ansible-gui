@@ -88,8 +88,19 @@ def fetch(job: dict, ctx: Context) -> dict:
     try:
         config = _ssh(d, job["ssh"])
         token = tuple(job["token"]) if job.get("token") else None
+
+        def certify(key: Path) -> None:
+            """The key's certificate beside it: the one saved with the key, or one ssoossh issues now."""
+            if job.get("ssoossh"):
+                if job.get("public_key"):
+                    key.with_name(key.name + ".pub").write_text(str(job["public_key"]).strip() + "\n")
+                _ssoossh_cert(key, job["ssoossh"], ctx)
+            elif job.get("certificate"):
+                key.with_name(key.name + "-cert.pub").write_text(str(job["certificate"]).strip() + "\n")
+
         try:
-            got = git.fetch(home, job["url"], job["branch"], config, job.get("private_key"), token, workdir=d)
+            got = git.fetch(home, job["url"], job["branch"], config, job.get("private_key"), token, workdir=d,
+                            with_key=certify)
         except git.GitError as e:
             return {"error": str(e), "host_keys": _learned(d, job["ssh"])}
         return {"commit": got.commit, "subject": got.subject, "host_keys": _learned(d, job["ssh"])}
@@ -224,18 +235,20 @@ SSOOSSH_TIMEOUT = 60  # seconds for `ssoossh service retrieve`: the CA key and o
 
 
 def _ssoossh_cert(key: Path, conf: dict, ctx: Context) -> None:
-    """Write key-cert.pub with ssoossh, from the enrollment code the account holds, so that ssh-add loads the
-    certificate with the key. The scratch directory starts empty, so this asks the server once per run."""
+    """Write key-cert.pub with ssoossh, from the enrollment code saved with the SSH key, so that ssh-add (a
+    run) or ssh -i (a pull) loads the certificate with the key. The scratch directory starts empty, so this
+    asks the server once per run or pull."""
     server, code = str(conf.get("server") or ""), str(conf.get("code") or "")
     if not server or not code or server.startswith("-"):
-        raise Refused("the account’s ssoossh server or enrollment code is missing")
+        raise Refused("the SSH key’s ssoossh server or enrollment code is missing")
     try:
-        # The code is an argument: ssoossh takes it no other way. Nothing else runs in this container yet.
+        # The code is an argument: ssoossh takes it no other way. In the runner nothing else runs yet. In the
+        # fetcher only other pulls do, as the same user, each already holding the key of its own repository.
         out = subprocess.run(["ssoossh", "--server", server, "service", "retrieve", "--key", str(key),
                               "--code", code], capture_output=True, text=True, timeout=SSOOSSH_TIMEOUT,
                              stdin=subprocess.DEVNULL)
     except FileNotFoundError:
-        raise Refused("this image has no ssoossh, which the account fetches its certificate with") from None
+        raise Refused("this image has no ssoossh, which the SSH key gets its certificate with") from None
     except subprocess.TimeoutExpired:
         raise Refused(f"ssoossh didn’t get a certificate from {server} within {SSOOSSH_TIMEOUT} s") from None
     cert = key.with_name(key.name + "-cert.pub")
@@ -256,7 +269,7 @@ def run(job: dict, ctx: Context) -> dict:
 
     The job's files (key, certificate, vault password, answers) go into a private temp directory, with its
     ssh_config and known_hosts; the key is loaded into an ssh-agent that serves this run only, with the
-    certificate ssoossh fetches first if the account has one from there. Sends
+    certificate ssoossh fetches first if the key is enrolled there. Sends
     {"scratch": dir} once that is ready, then {"event": ...} for every event, and returns the status.
     Canceling kills Ansible's whole process tree at once."""
     import ansible_runner  # slow to import, and only runs need it

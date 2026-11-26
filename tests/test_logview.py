@@ -84,3 +84,18 @@ def test_a_log_read_in_pieces_is_coloured_like_the_whole():
     # The state comes back from the browser: anything else in it is ignored, not put into the page.
     assert logview.render("more\n", 'x"><script>')[0] == "more\n"
     assert logview.render("more\n", "failed")[0] == '<span class="ll ll-failed">more\n</span>'
+
+
+def test_a_diffs_removed_lines_are_not_the_colour_of_a_failure():
+    """Red says something failed. A removed line is the old content: with --diff on, every changed file put
+    red lines in a log where nothing had gone wrong."""
+    import re
+    from pathlib import Path
+    css = (Path(logview.__file__).parent.parent / "static" / "app.css").read_text()
+
+    def colour(kind: str) -> str:
+        return next(line for line in css.splitlines() if re.search(rf"\.ll-{kind}\b[^{{]*{{", line)).split("{")[1]
+
+    assert "--danger" in colour("failed")
+    assert "--danger" not in colour("del") and "--ink-muted" in colour("del")  # muted, like any replaced value here
+    assert "--ok" in colour("add")

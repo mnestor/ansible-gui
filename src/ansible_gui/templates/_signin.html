@@ -2,9 +2,16 @@
    More options. #}
 {# All three parts, said either way, so a missing one is visible: "user deploy · SSH certificate · no become password". #}
 {% macro account_summary(c) -%}
+  {%- set k = account_key(c) -%}
   {{- ("user " ~ c.meta.username) if c.meta.username else "no user: the inventory’s" -}}
-  {{- " · " ~ (("ssoossh certificate" if c.meta.ssoossh else "SSH certificate" if c.meta.cert else "SSH key") if c.meta.has_key else "no SSH key") -}}
+  {{- " · " ~ (("ssoossh certificate" if k.meta.ssoossh else "SSH certificate" if k.meta.cert else "SSH key") if k else ("SSH key deleted" if c.meta.ssh_key_id else "no SSH key")) -}}
   {{- " · " ~ ("become password" if c.meta.has_become else "no become password") -}}
+{%- endmacro %}
+
+{# A saved SSH key in a dropdown's second line: what it is, and the certificate it signs in with. #}
+{% macro key_about(k) -%}
+  {{- k.meta.type ~ " " ~ k.meta.fingerprint -}}
+  {{- " · certificate from ssoossh" if k.meta.ssoossh else (" · certificate " ~ k.meta.cert.key_id) if k.meta.cert else "" -}}
 {%- endmacro %}
 
 {% from "_inv_note.html" import inv_note %}
@@ -22,6 +29,29 @@
     <p class="help" id="account-help">{% if accounts %}The user, SSH key and become password the run uses. <a href="/credentials">Accounts</a>{% else %}No accounts yet, so runs use the inventory’s user and the SSH config. <a href="/credentials/new?kind=account">Add an account</a>: a user, its SSH key and its become password, picked together.{% endif %}</p>
   </div>
 {% endmacro %}
+
+{# The environment secrets a run gets are the ones picked here, and no other. The tick boxes are what the form
+   sends, and all there is without script or on a touch screen; app.js draws them as a chip field like Targets
+   and the tags (a chip per secret picked, the others in a list under the box), reading the names it offers
+   from the datalist. #}
+{% macro env_secret_field(form, env_secrets) %}
+  {% if env_secrets %}
+  <fieldset class="prompt-group" aria-describedby="env-secret-help" data-chip-choices="env-secret" data-list="env-secret-options" data-placeholder="Pick a secret" data-more="Add a secret">
+    <legend class="label" id="env-secret-label">Environment secrets</legend>
+    <input type="hidden" name="env_secret" value="">
+    <div class="choices">
+      {% for c in env_secrets %}<label class="check"><input type="checkbox" data-name="{{ c.name }}" data-about="${{ c.meta.env }}" name="env_secret" value="{{ c.id }}" {% if c.id|string in (form.env_secret or []) %}checked{% endif %}> {{ c.name }} <span class="mono prompt-name">${{ c.meta.env }}</span></label>{% endfor %}
+    </div>
+    <datalist id="env-secret-options">{% for c in env_secrets %}<option value="{{ c.name }}" data-about="${{ c.meta.env }}">{% endfor %}</datalist>
+    <p class="help" id="env-secret-help">The run gets <span class="mono">$NAME</span> and <span class="mono">$NAME_FILE</span> for each one picked, and no other. <a href="/credentials/secrets">Secrets</a></p>
+  </fieldset>
+  {% endif %}
+{% endmacro %}
+
+{# What More options holds besides the vault password and verbosity, for its summary line: "$ENROLL_TOKEN". #}
+{% macro env_secret_names(form, env_secrets) -%}
+  {%- for c in env_secrets if c.id|string in (form.env_secret or []) %}${{ c.meta.env }}{{ ", " if not loop.last }}{% endfor -%}
+{%- endmacro %}
 
 {% macro other_credentials(form, cred_choices, kinds, settings) %}
   {% set items = cred_choices.vault_password %}

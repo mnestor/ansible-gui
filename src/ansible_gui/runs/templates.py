@@ -10,7 +10,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from ..credentials.store import NAME_RE, PER_RUN
+from ..credentials.store import NAME_RE, PER_RUN, env_secret_ids, with_earlier_env_secrets
 from ..db import Database
 from .store import now
 
@@ -58,7 +58,7 @@ class Template:
     check_mode: bool
     diff: bool
     verbosity: int
-    credentials: dict  # {"account": 3, ...}; a kind left out means None
+    credentials: dict  # {"account": 3, ..., "env_secret": [4, 7]}; a kind left out means None
     updated_at: datetime
     updated_by: str
     prompt_vars: dict = field(default_factory=dict)  # secrets sealed (variables.py)
@@ -75,7 +75,8 @@ class Template:
                 "skip_tags": self.skip_tags, "verbosity": self.verbosity,
                 "inventory": "" if self.inventory_id is None else str(self.inventory_id),
                 "prompt_vars": dict(self.prompt_vars), "extra_vars": self.extra_vars,
-                **{k: str(self.credentials.get(k, "")) for k in PER_RUN}}
+                **{k: str(self.credentials.get(k, "")) for k in PER_RUN},
+                "env_secret": [str(i) for i in self.credentials.get("env_secret", [])]}
 
 
 def _tags(text: str) -> list[str]:
@@ -84,7 +85,7 @@ def _tags(text: str) -> list[str]:
 
 # The launcher fields a run can change from its template, in the order the launcher shows them.
 FIELDS = [("playbook", "Playbook"), ("inventory", "Inventory"), ("target", "Targets"), ("mode", "Mode"),
-          ("diff", "Show diffs"), *((k, None) for k in PER_RUN),
+          ("diff", "Show diffs"), *((k, None) for k in PER_RUN), ("env_secret", "Environment secrets"),
           ("tags", "Only tags"), ("skip_tags", "Skip tags"), ("verbosity", "Verbosity"),
           ("extra_vars", "Extra variables")]
 
@@ -96,6 +97,8 @@ def changed_fields(form: dict, template: dict) -> list[str]:
         a, b = form.get(key, ""), template.get(key, "")
         if key in ("tags", "skip_tags"):
             a, b = _tags(str(a)), _tags(str(b))
+        elif key == "env_secret":
+            a, b = sorted(map(str, a or [])), sorted(map(str, b or []))
         elif key in ("diff", "verbosity"):
             pass
         else:
@@ -146,7 +149,8 @@ class TemplateStore:
             errors["note"] = f"Keep the note to 200 characters; it has {len(note)}. Put the detail in the playbook."
         if errors:
             raise Invalid(errors)
-        creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
+        creds = {**{k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()},
+                 "env_secret": env_secret_ids(form)}
         values = (name, note, form["playbook_path"], form["repo_id"], form.get("inventory_id"), form["target"],
                   form["tags"], form["skip_tags"], int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"],
                   json.dumps(creds), json.dumps(form.get("prompt_vars") or {}),
@@ -169,4 +173,13 @@ class TemplateStore:
     def delete(self, tid: int) -> None:
         with self._lock:
             self._db.execute("delete from templates where id=?", (tid,))
+            self._db.commit()
+
+    def keep_earlier_env_secrets(self, ids: list[int]) -> None:
+        """Once, at the first start after environment secrets became a per-run choice: see
+        with_earlier_env_secrets()."""
+        with self._lock:
+            for r in self._db.execute("select id, credentials from templates"):
+                if (kept := with_earlier_env_secrets(r["credentials"], ids)) is not None:
+                    self._db.execute("update templates set credentials=? where id=?", (kept, r["id"]))
             self._db.commit()

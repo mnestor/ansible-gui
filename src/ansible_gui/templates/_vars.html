@@ -1,29 +1,23 @@
-{# Variables table. Expects `vars` (list of ResolvedVar) and `empty_text`; optional `inv_repo` (for git links)
-   and `show_filter` (false on later tables of a page: the first filter covers them all). #}
-{% set overriding = vars | selectattr("overridden") | list %}
-<div class="vars-toolbar">
-  {% if show_filter is not defined or show_filter %}
-  <label class="visually-hidden" for="varfilter">Filter variables</label>
-  <input id="varfilter" class="input input-small" type="search" placeholder="Filter variables" autocomplete="off" enterkeyhint="search" data-varfilter {% if not vars %}disabled{% endif %}>
-  {% endif %}
-  <p class="vars-count tabular">
-    {{ vars | length }} variable{{ "s" if vars | length != 1 }}{% if overriding %} · {{ overriding | length }} override{{ "s" if overriding | length == 1 }} another source{% endif %}
-  </p>
-</div>
+{# Variables table. Expects `vars` (list of ResolvedVar), `empty_text`, `order` (the groups in precedence order:
+   it ranks the sources) and `anchor` (this table's id); optional `inv_repo` (for git links) and `show_filter`
+   (false on later tables of a page: the first filter covers them all).
 
-{% if not vars %}
-  <p class="empty">{{ empty_text }}</p>
-{% else %}
-<div class="table-region">
-<table class="vars">
-  <thead>
-    <tr><th scope="col">Variable</th><th scope="col">Value</th><th scope="col">Set in</th></tr>
-  </thead>
-  <tbody>
-  {% for v in vars %}
-    {% set shown = present(v.value) %}
-    <tr data-var="{{ v.name }}" {% if v.mismatch %}class="row-mismatch"{% endif %}>
-      <th scope="row" class="var-name mono">{{ v.name }}</th>
+   `vars_by` is "file" (the default: each source's variables under one heading that names the file once, the
+   source that wins over the others first) or "name" (A to Z, the file on every row). A table fed by one source
+   has nothing to pick or reorder, so it gets the heading and no chips or switch. #}
+{% set overriding = vars | selectattr("overridden") | list %}
+{% set sources = by_source(vars, order or []) %}
+{% set by_file = vars_by != "name" or sources | length < 2 %}
+{% set key_of = {} %}
+{% for g in sources %}{% for v in g.vars %}{% set _ = key_of.update({v.name: g.key}) %}{% endfor %}{% endfor %}
+
+{% macro why(layer) %}{{ layer.label }}{% if layer.scope == "playbook" %}, playbook dir{% endif %}{% endmacro %}
+{# A file and line as the table says them: without the directory every source of this table shares. The whole
+   path is in the link and the tooltip. #}
+{% set shared = sources[0].prefix if sources else "" %}
+{% macro at(layer) %}{% set w = layer | where %}{{ w[shared | length + 1:] if shared and w.startswith(shared ~ "/") else w }}{% endmacro %}
+
+{% macro value_cell(v, shown) %}
       <td class="var-value" data-label="Value">
         {% if shown.kind == "vaulted" %}
           <span class="badge badge-neutral">vaulted</span>
@@ -39,43 +33,130 @@
         {% endif %}
         {% if v.mismatch %}<p class="mismatch-note">{{ v.mismatch }}</p>{% endif %}
       </td>
-      <td class="var-source" data-label="Set in">
-        {% set url = edit_url(v.source, inv_repo) %}
-        {% if v.overridden %}
-          <details class="stack">
-            <summary>
-              <span class="source source-win mono">{{ v.source | where }}</span>
-              <span class="stack-count" title="Overrides {{ v.overridden | length }} lower-precedence source{{ 's' if v.overridden | length != 1 }}">overrides {{ v.overridden | length }}</span>
-              <span class="stack-why stack-why-summary">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %}</span>
-            </summary>
+{% endmacro %}
+
+{# What a variable overrode: the winning source, then each one under it with the value it would have given. #}
+{% macro stack_list(v, url, inv_repo) %}
             <ol class="stack-list">
               <li class="stack-item stack-win">
-                {% if url %}<a class="mono" href="{{ url }}" target="_blank" rel="noopener">{{ v.source | where }}</a>{% else %}<span class="mono">{{ v.source | where }}</span>{% endif %}
-                <span class="stack-why">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %} · wins</span>
+                {% if url %}<a class="mono" href="{{ url }}" target="_blank" rel="noopener" title="{{ v.source | where }}">{{ at(v.source) }}</a>{% else %}<span class="mono" title="{{ v.source | where }}">{{ at(v.source) }}</span>{% endif %}
+                <span class="stack-why">{{ why(v.source) }} · wins</span>
               </li>
               {% for s in v.overridden | reverse %}
                 {% set below = present(s.value) %}
                 {% set surl = edit_url(s.layer, inv_repo) %}
                 <li class="stack-item">
-                  {% if surl %}<a class="mono" href="{{ surl }}" target="_blank" rel="noopener">{{ s.layer | where }}</a>{% else %}<span class="mono">{{ s.layer | where }}</span>{% endif %}
-                  <span class="stack-why">{{ s.layer.label }}{% if s.layer.scope == "playbook" %}, playbook dir{% endif %}</span>
+                  {% if surl %}<a class="mono" href="{{ surl }}" target="_blank" rel="noopener" title="{{ s.layer | where }}">{{ at(s.layer) }}</a>{% else %}<span class="mono" title="{{ s.layer | where }}">{{ at(s.layer) }}</span>{% endif %}
+                  <span class="stack-why">{{ why(s.layer) }}</span>
                   <s class="stack-value mono">{% if below.kind == "vaulted" %}vaulted{% elif below.kind == "block" %}{{ below.text.splitlines()[0] }}{% if below.lines > 1 %} …{% endif %}{% else %}{{ below.text }}{% endif %}</s>
                 </li>
               {% endfor %}
             </ol>
+{% endmacro %}
+
+{# One variable. Under its file's heading the last cell is its line there; A to Z it is the file and the line. #}
+{% macro row(v, key, grouped, inv_repo) %}
+    {% set shown = present(v.value) %}
+    {% set url = edit_url(v.source, inv_repo) %}
+    <tr data-var="{{ v.name }}" data-source="{{ key }}" data-search="{{ (v.name ~ ' ' ~ ('vaulted' if shown.kind == 'vaulted' else shown.text) ~ ' ' ~ (v.source | where) ~ ' ' ~ why(v.source)) | lower | replace('\n', ' ') }}" {% if v.mismatch %}class="row-mismatch"{% endif %}>
+      <th scope="row" class="var-name mono">{{ v.name }}</th>
+      {{ value_cell(v, shown) }}
+      {% if grouped %}
+      <td class="var-source var-line" data-label="Line">
+        {% set line = v.source.line %}
+        {% if v.overridden %}
+          <details class="stack">
+            <summary>
+              {% if line %}<span class="source source-win mono">{{ line }}</span>{% endif %}
+              <span class="stack-count" title="Overrides {{ v.overridden | length }} lower-precedence source{{ 's' if v.overridden | length != 1 }}">overrides {{ v.overridden | length }}</span>
+            </summary>
+            {{ stack_list(v, url, inv_repo) }}
+          </details>
+        {% elif line and url %}<a class="source source-win mono" href="{{ url }}" target="_blank" rel="noopener" aria-label="Line {{ line }} of {{ v.source.path }}">{{ line }}</a>
+        {% elif line %}<span class="source source-win mono">{{ line }}</span>
+        {% else %}<span class="quiet">—</span>{% endif %}
+      </td>
+      {% else %}
+      <td class="var-source" data-label="Set in">
+        {% if v.overridden %}
+          <details class="stack">
+            <summary>
+              <span class="source source-win mono" title="{{ v.source | where }}">{{ at(v.source) }}</span>
+              <span class="stack-count" title="Overrides {{ v.overridden | length }} lower-precedence source{{ 's' if v.overridden | length != 1 }}">overrides {{ v.overridden | length }}</span>
+              <span class="stack-why stack-why-summary">{{ why(v.source) }}</span>
+            </summary>
+            {{ stack_list(v, url, inv_repo) }}
           </details>
         {% else %}
-          {% if url %}<a class="source source-win mono" href="{{ url }}" target="_blank" rel="noopener">{{ v.source | where }}</a>{% else %}<span class="source {{ 'source-unknown' if not v.source.path else 'source-win' }} mono">{{ v.source | where }}</span>{% endif %}
-          <span class="stack-why">{{ v.source.label }}{% if v.source.scope == "playbook" %}, playbook dir{% endif %}</span>
+          {% if url %}<a class="source source-win mono" href="{{ url }}" target="_blank" rel="noopener" title="{{ v.source | where }}">{{ at(v.source) }}</a>{% else %}<span class="source {{ 'source-unknown' if not v.source.path else 'source-win' }} mono" title="{{ v.source | where }}">{{ at(v.source) }}</span>{% endif %}
+          <span class="stack-why">{{ why(v.source) }}</span>
         {% endif %}
       </td>
+      {% endif %}
     </tr>
+{% endmacro %}
+
+<div class="vars-block" id="{{ anchor }}" data-vars>
+<div class="vars-toolbar">
+  {% if show_filter is not defined or show_filter %}
+  <label class="visually-hidden" for="varfilter">Filter variables by name, value or file</label>
+  <input id="varfilter" class="input input-small" type="search" placeholder="Filter by name, value or file" autocomplete="off" enterkeyhint="search" data-varfilter {% if not vars %}disabled{% endif %}>
+  {% endif %}
+  <p class="vars-count tabular" data-varcount aria-live="polite">
+    {{ vars | length }} variable{{ "s" if vars | length != 1 }}{% if overriding %} · {{ overriding | length }} override{{ "s" if overriding | length == 1 }} another source{% endif %}
+  </p>
+  {% if sources | length > 1 %}
+  <nav class="segmented segmented-inline kind-switch vars-by" aria-label="Order of the variables">
+    <a href="?by=file#{{ anchor }}"{% if by_file %} aria-current="page"{% endif %}>By file</a><a href="?by=name#{{ anchor }}"{% if not by_file %} aria-current="page"{% endif %}>A–Z</a>
+  </nav>
+  {% endif %}
+</div>
+
+{% if not vars %}
+  <p class="empty">{{ empty_text }}</p>
+{% else %}
+{% if sources | length > 1 %}
+{# Which sources are shown: all of them until one is picked, then the ones picked. Each says how much it sets. #}
+<div class="source-chips" role="group" aria-label="Sources shown">
+  <button type="button" class="chip chip-toggle" data-source-all aria-pressed="true">All <span class="chip-count">{{ vars | length }}</span></button>
+  {% for g in sources %}<button type="button" class="chip chip-toggle mono" data-source-chip="{{ g.key }}" aria-pressed="false" title="{{ g.layer.path or 'Set outside the repo' }} · {{ why(g.layer) }}">{{ g.label }} <span class="chip-count">{{ g.vars | length }}</span></button>{% endfor %}
+</div>
+{% endif %}
+<div class="table-region">
+{% if by_file %}
+<table class="vars vars-by-file">
+  <thead>
+    <tr><th scope="col">Variable</th><th scope="col">Value</th><th scope="col">Line</th></tr>
+  </thead>
+  {% for g in sources %}
+  <tbody data-group="{{ g.key }}">
+    <tr class="vars-group">
+      <th colspan="3" scope="colgroup">
+        {% set gurl = edit_url(g.layer, inv_repo) %}
+        {% if not g.layer.path %}<span class="source source-unknown mono">set outside the repo</span>
+        {% elif gurl %}<a class="source source-win mono" href="{{ gurl }}" target="_blank" rel="noopener" title="{{ g.layer.path }}">{{ g.short }}</a>
+        {% else %}<span class="source source-win mono" title="{{ g.layer.path }}">{{ g.short }}</span>{% endif %}
+        <span class="vars-group-why">{{ why(g.layer) }} · {{ g.vars | length }} variable{{ "s" if g.vars | length != 1 }}</span>
+      </th>
+    </tr>
+    {% for v in g.vars %}{{ row(v, g.key, true, inv_repo) }}{% endfor %}
+  </tbody>
   {% endfor %}
+</table>
+{% else %}
+<table class="vars">
+  <thead>
+    <tr><th scope="col">Variable</th><th scope="col">Value</th><th scope="col">Set in</th></tr>
+  </thead>
+  <tbody>
+  {% for v in vars %}{{ row(v, key_of[v.name], false, inv_repo) }}{% endfor %}
   </tbody>
 </table>
+{% endif %}
 </div>
 <div class="empty" data-varempty hidden>
-  <p>No variables match “<span data-varterm></span>”.</p>
+  <p>No variables match “<span data-varterm></span>”<span data-varpicked hidden> in the sources picked</span>. The filter reads each variable’s name, its value and the file that set it.</p>
   <button type="button" class="btn btn-quiet" data-varclear>Clear filter</button>
 </div>
 {% endif %}
+</div>

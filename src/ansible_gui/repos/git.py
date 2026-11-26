@@ -21,6 +21,7 @@ import shutil
 import stat
 import subprocess
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,7 +101,7 @@ def _git(args: list[str], cwd: Path, env: dict, timeout: int = 180) -> str:
         raise GitError(f"git {args[0]} took longer than {timeout}s. Is the git server reachable from here?") from None
     if proc.returncode != 0:
         lines = [l for l in (proc.stderr or proc.stdout).strip().splitlines() if l.strip()]
-        raise GitError(_plain(lines[-1] if lines else f"git {args[0]} failed with code {proc.returncode}."))
+        raise GitError(_reason(lines) if lines else f"git {args[0]} failed with code {proc.returncode}.")
     return proc.stdout.strip()
 
 
@@ -148,11 +149,14 @@ def token_env(url: str, token: tuple[str, str]) -> dict:
 
 
 def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str | None = None,
-          token: tuple[str, str] | None = None, *, workdir: Path) -> Fetched:
+          token: tuple[str, str] | None = None, *, workdir: Path,
+          with_key: Callable[[Path], None] | None = None) -> Fetched:
     """Fetch the branch, whole, into the bare clone. Raises GitError.
 
     private_key signs in over SSH, from a file in workdir, a private temp directory the caller wipes; token
-    is (user, token) for HTTPS, handed to git as token_env() says."""
+    is (user, token) for HTTPS, handed to git as token_env() says. with_key(file) is called once the key is
+    written: a certificate it puts beside the key, as file-cert.pub, is presented with it, since that is
+    where ssh looks for the certificate of a key named with -i."""
     if token and not url.startswith("https://"):
         raise GitError("A git token is only sent over https://; this URL would send it unencrypted.")
     bare = home / "git"
@@ -164,6 +168,8 @@ def fetch(home: Path, url: str, branch: str, ssh_config: Path, private_key: str 
         fd = os.open(key, os.O_WRONLY | os.O_CREAT, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(private_key)
+        if with_key:
+            with_key(key)
         ssh += ["-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-i", str(key)]
     env = {**_base_env(), "GIT_SSH_COMMAND": shlex.join(ssh)}
     if token:
@@ -252,6 +258,26 @@ _PLAIN = [
     ("couldn't find remote ref", "That branch doesn’t exist in the repository."),
     ("Could not resolve host", "The git server’s name doesn’t resolve from the ansible-gui server."),
 ]
+
+
+# How git's output ends when the connection itself failed, followed by "Please make sure you have the correct
+# access rights" and "and the repository exists."
+_NO_CONNECTION = "fatal: Could not read from remote repository."
+
+
+def _reason(lines: list[str]) -> str:
+    """The line of git's output that says why it failed: usually its last.
+
+    Not when the connection failed. Then git ends with three lines of advice, and what ssh or the server said
+    is the line before them: "Permission denied (publickey)", "Repository not found". The advice's own last
+    line, "and the repository exists.", was once all a refused pull showed."""
+    if _NO_CONNECTION not in lines:
+        return _plain(lines[-1])
+    said = [l for l in lines[:lines.index(_NO_CONNECTION)] if not l.startswith("Warning: Permanently added")]
+    if not said:
+        return ("The git server closed the connection without saying why: it refused the sign-in, or the "
+                "repository isn’t there. (git: Could not read from remote repository.)")
+    return _plain(said[-1])
 
 
 def _plain(line: str) -> str:

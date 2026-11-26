@@ -121,7 +121,7 @@ def test_deleted_credential_makes_a_visible_error(app, c):
     cred = app.state.creds.by_kind("vault_password")[0]
     make(c, vault_password=str(cred.id))
     sched = app.state.schedules.all()[0]
-    assert sched.credentials == {"vault_password": cred.id}
+    assert sched.credentials == {"vault_password": cred.id, "env_secret": []}
     app.state.creds.delete(cred.id)
     run = app.state.scheduler.fire(sched)
     assert run.status == "error" and "deleted" in run.error
@@ -148,7 +148,7 @@ def test_the_account_is_saved_and_signs_in_every_run(app, c):
     acct = app.state.creds.by_kind("account")[0]
     assert make(c, account=str(acct.id)).status_code == 303
     sched = app.state.schedules.all()[0]
-    assert sched.credentials == {"account": acct.id}
+    assert sched.credentials == {"account": acct.id, "env_secret": []}
     assert f'value="{acct.id}" selected' in c.get(f"/schedules/{sched.id}").text
     run = wait(app, app.state.scheduler.fire(sched).id)
     assert '"ansible_user": "deploy"' in app.state.store.log_path(run.id).read_text()

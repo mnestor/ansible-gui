@@ -25,7 +25,7 @@ flowchart LR
   subgraph data [./data + secret.key]
   end
   app --- data
-  app -- "fetch, materialize, collections, prune, remove\n(deploy key or token, for one pull)" --> fsock[[fetcher.sock]]
+  app -- "fetch, materialize, collections, prune, remove\n(SSH key or token, for one pull)" --> fsock[[fetcher.sock]]
   app -- "cli, run\n(one run's key, become and vault passwords)" --> rsock[[runner.sock]]
   fsock --> fetcher
   rsock --> runner
@@ -134,7 +134,7 @@ run interrupted. Stopping a worker cancels its jobs and kills Ansible's process 
 
 | Kind | Worker | Secrets it carries |
 |---|---|---|
-| `fetch` | fetcher | deploy key or git token |
+| `fetch` | fetcher | the repository's SSH key and its certificate (or its ssoossh enrollment code, which the fetcher redeems for one), or its git token |
 | `materialize` | fetcher | none |
 | `collections` | fetcher | none |
 | `prune`, `prune_collections`, `remove` | fetcher | none |

@@ -36,7 +36,7 @@
 
   <h3 class="section-title section-sub">Variables set on this group</h3>
   <p class="scope-note">What this group itself sets. A host may still override them; open a host to see what it actually gets.</p>
-  {% with vars = group.vars, show_filter = loop.first, empty_text = "This group sets no variables of its own." %}
+  {% with vars = group.vars, order = [group.name], anchor = "vars-" ~ loop.index, show_filter = loop.first, empty_text = "This group sets no variables of its own." %}
     {% include "_vars.html" %}
   {% endwith %}
 </section>

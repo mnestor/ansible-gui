@@ -273,19 +273,27 @@ class Workspace:
         return f"{repo.name if repo else 'removed repo'} / {path}"
 
     # --- git ----------------------------------------------------------------------------
-    def _git_auth(self, repo: Repo) -> tuple[str | None, tuple[str, str] | None, str | None]:
-        """(private key, (user, token), error) for pulling the repo."""
+    def _git_auth(self, repo: Repo) -> tuple[dict, tuple[str, str] | None, str | None]:
+        """(what an SSH pull signs in with, (user, token), error) for pulling the repo. The first is the fetch
+        job's "private_key", with the key's "certificate", or the "ssoossh" enrollment that gets it one and
+        the "public_key" ssoossh asks for."""
         if not repo.ssh_key_id:
-            return None, None, None
+            return {}, None, None
         cred = self.creds.get(repo.ssh_key_id)
         want = "git_token" if git.is_https(repo.url) else "ssh_key"
         if not cred or not cred.readable or cred.kind != want:
-            return None, None, ("its sign-in credential was deleted, can’t be decrypted, or doesn’t suit the URL. "
-                                "Pick another on the Repositories page.")
+            return {}, None, ("its sign-in credential was deleted, can’t be decrypted, or doesn’t suit the URL. "
+                              "Pick another on the Repositories page.")
         secret = self.creds.secret(cred)
-        if want == "ssh_key":
-            return secret["private_key"], None, None
-        return None, (cred.meta["username"], secret["token"]), None
+        if want == "git_token":
+            return {}, (cred.meta["username"], secret["token"]), None
+        key = {"private_key": secret["private_key"]}
+        if cred.meta.get("ssoossh") and secret.get("ssoossh_code"):
+            key["ssoossh"] = {"server": cred.meta["ssoossh"]["server"], "code": secret["ssoossh_code"]}
+            key["public_key"] = cred.meta.get("public_key") or ""
+        elif cred.meta.get("certificate"):
+            key["certificate"] = cred.meta["certificate"]
+        return key, None, None
 
     def _fetch(self, repo: Repo) -> git.Fetched:
         """Fetch into the bare clone. Call it holding git.locked(repo.home). Raises GitError."""
@@ -294,9 +302,8 @@ class Workspace:
             raise git.GitError(error)
         if git.is_ssh(repo.url) and (problem := self.ssh_config_problem()):
             raise git.GitError(f"The SSH config {problem}. SSH pulls connect only the way it says.")
-        res = self.fetcher.call("fetch", {"home": str(repo.home), "url": repo.url, "branch": repo.branch,
-                                          "private_key": key, "token": list(token) if token else None,
-                                          "ssh": self.ssh_job()})
+        res = self.fetcher.call("fetch", {"home": str(repo.home), "url": repo.url, "branch": repo.branch, **key,
+                                          "token": list(token) if token else None, "ssh": self.ssh_job()})
         self.learn_host_keys(res)
         if "error" in res:
             raise git.GitError(str(res["error"]))
