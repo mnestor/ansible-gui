@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 
 from croniter import croniter
 
-from ..credentials.store import PER_RUN, CredentialStore, NAME_RE
+from ..credentials.store import PER_RUN, CredentialStore, NAME_RE, env_secret_ids, with_earlier_env_secrets
 from .store import RunStore, now
 from ..db import Database
 
@@ -88,7 +88,7 @@ class Schedule:
     check_mode: bool
     diff: bool
     verbosity: int
-    credentials: dict  # {"account": 3, ...}
+    credentials: dict  # {"account": 3, ..., "env_secret": [4, 7]}
     next_run_at: datetime | None
     updated_at: datetime
     updated_by: str
@@ -157,7 +157,8 @@ class ScheduleStore:
             raise Invalid(errors)
         enabled = bool(form.get("enabled", True))
         nxt = next_times(cron, 1)[0].astimezone(timezone.utc).isoformat(timespec="seconds") if enabled else None
-        creds = {k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()}
+        creds = {**{k: int(form[k]) for k in PER_RUN if str(form.get(k) or "").isdigit()},
+                 "env_secret": env_secret_ids(form)}
         notify = form.get("notify") if form.get("notify") in ("problems", "always", "never") else "problems"
         values = (name, cron, int(enabled), form.get("playbook_path", form.get("playbook")), form["target"], form["tags"], form["skip_tags"],
                   int(form["mode"] != "apply"), int(form["diff"]), form["verbosity"], json.dumps(creds), nxt, notify,
@@ -198,6 +199,15 @@ class ScheduleStore:
     def delete(self, sid: int) -> None:
         with self._lock:
             self._db.execute("delete from schedules where id=?", (sid,))
+            self._db.commit()
+
+    def keep_earlier_env_secrets(self, ids: list[int]) -> None:
+        """Once, at the first start after environment secrets became a per-run choice: see
+        with_earlier_env_secrets()."""
+        with self._lock:
+            for r in self._db.execute("select id, credentials from schedules"):
+                if (kept := with_earlier_env_secrets(r["credentials"], ids)) is not None:
+                    self._db.execute("update schedules set credentials=? where id=?", (kept, r["id"]))
             self._db.commit()
 
 
@@ -260,17 +270,20 @@ class Scheduler:
             busy = next((r for r in self.runs.for_schedule(s.id, 20) if not r.finished), None)
             if busy:
                 return self._record(s, "skipped", f"Skipped: run #{busy.id} of this schedule was still going.", trigger)
-            chosen: dict = {}
-            for kind, cid in s.credentials.items():
+            chosen: dict = {"env_secret": []}
+            picked = [(kind, cid) for kind, cid in s.credentials.items() if kind != "env_secret"]
+            for kind, cid in [*picked, *(("env_secret", cid) for cid in s.credentials.get("env_secret", []))]:
                 cred = self.creds.get(cid)
                 if not cred or cred.kind != kind:
                     return self._record(s, "error", "Didn’t start: a credential this schedule uses was deleted. "
                                                     "Edit the schedule to pick another.", trigger)
+                if kind == "env_secret":  # only the ones the schedule picked: a run gets no other
+                    chosen[kind].append({"id": cred.id, "name": cred.name, "env": cred.meta.get("env")})
+                    continue
                 chosen[kind] = {"id": cred.id, "name": cred.name}
                 if kind == "account":
                     chosen[kind]["user"] = cred.meta.get("username", "")
-            chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                    for c in self.creds.by_kind("env_secret")]
+            chosen["env_secret"].sort(key=lambda e: str(e["env"]))
             run = self.runs.create(playbook=s.playbook, target=s.target, tags=s.tags, skip_tags=s.skip_tags,
                                    check_mode=s.check_mode, diff=s.diff, verbosity=s.verbosity,
                                    expected_hosts=[], trigger=trigger, credentials=chosen, schedule_id=s.id,

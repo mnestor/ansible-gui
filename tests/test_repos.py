@@ -1,6 +1,7 @@
 """Git repositories: clone on save, pull before each run, cancel and email when a pull fails."""
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -13,6 +14,7 @@ from fastapi.testclient import TestClient
 from ansible_gui.config import Settings, SmtpSettings
 from ansible_gui.web import create_app
 
+from test_credentials import fake_ssoossh, keypair  # noqa: F401 - fixtures
 from test_notify import FakeSMTP, fake_smtp  # noqa: F401 - fixture
 
 FIXTURE = Path(__file__).parent / "fixtures" / "runner"
@@ -225,6 +227,63 @@ def test_delete_removes_clone(app, c, remotes):
     c.post(f"/repos/{extra.id}/delete")
     assert not extra.path.exists() and "extra /" not in c.get("/runs/new").text
 
+
+
+def test_a_new_address_that_cant_be_pulled_leaves_the_repository_on_its_last_commit(app, c, remotes, tmp_path):
+    """Saving another clone URL pulls from it at once. Until a pull from it works the repository stays on the
+    commit it had: a mistyped address, or a key the new server refuses, must not take the inventory away."""
+    setup_repos(c, remotes)
+    hosts = next(r for r in app.state.repos.all() if r.name == "hosts")
+    form = {"name": "hosts", "role": "inventory", "branch": "main", "paths": "inventory/hosts.yml"}
+    r = c.post(f"/repos/{hosts.id}", data={**form, "url": f"file://{tmp_path / 'moved-away.git'}"},
+               follow_redirects=False)
+    assert r.status_code == 303
+    after = app.state.repos.get(hosts.id)
+    assert after.url.endswith("moved-away.git") and after.last_error
+    assert after.last_commit == hosts.last_commit and after.path.is_dir()
+    assert "box1" in c.get("/inventory").text
+    page = c.get("/repos").text
+    assert "Last pull failed" in page and f"the clone stays at {hosts.short}" in page
+    # An address that can be pulled takes over, with another repository's history, whole.
+    moved, _ = make_remote(tmp_path, "moved", {"inventory/hosts.yml":
+                                               "all:\n  hosts:\n    elsewhere:\n      ansible_connection: local\n"})
+    assert c.post(f"/repos/{hosts.id}", data={**form, "url": f"file://{moved}"},
+                  follow_redirects=False).status_code == 303
+    now = app.state.repos.get(hosts.id)
+    assert now.last_commit and now.last_commit != hosts.last_commit and not now.last_error
+    inventory = c.get("/inventory").text
+    assert "elsewhere" in inventory and "box1" not in inventory
+    assert not hosts.path.exists()  # the old address's commit went with the pull that replaced it
+
+
+def fake_ssh(tmp_path: Path, *says: str) -> dict:
+    """git's environment with an ssh that prints these lines and fails, as ssh does when it can't sign in."""
+    from ansible_gui.repos import git as gitsync
+    ssh = tmp_path / "fake-ssh"
+    ssh.write_text("#!/bin/sh\n" + "".join(f"echo {shlex.quote(line)} >&2\n" for line in says) + "exit 255\n")
+    ssh.chmod(0o755)
+    return {**gitsync._base_env(), "GIT_SSH_COMMAND": str(ssh)}
+
+
+@pytest.mark.parametrize("says, shown", [
+    # ssh could not sign in: the reason is the line before git's advice, and has a plain explanation.
+    (["Warning: Permanently added 'git.example.test' (ED25519) to the list of known hosts.",
+      "git@git.example.test: Permission denied (publickey)."],
+     "The git server refused the SSH key. Add its public key as a deploy key. "
+     "(git: git@git.example.test: Permission denied (publickey).)"),
+    # the server let the key in and refused the repository: its own words
+    (["ERROR: Repository not found."], "ERROR: Repository not found."),
+    # nothing but the advice
+    ([], "The git server closed the connection without saying why: it refused the sign-in, or the repository "
+         "isn’t there. (git: Could not read from remote repository.)"),
+])
+def test_a_refused_ssh_pull_shows_the_reason_not_the_end_of_gits_advice(tmp_path, says, shown):
+    """When the connection fails git ends with "Please make sure you have the correct access rights / and the
+    repository exists." Its last line alone, "and the repository exists.", was all the Repositories page said."""
+    from ansible_gui.repos import git as gitsync
+    with pytest.raises(gitsync.GitError) as e:
+        gitsync._git(["ls-remote", "git@git.example.test:me/inventory.git"], tmp_path, fake_ssh(tmp_path, *says))
+    assert str(e.value) == shown
 
 
 def start_slow_run(app, c, remotes, tmp_path):
@@ -729,6 +788,8 @@ info = {{"args": args}}
 if key:
     info["key_mode"] = stat.S_IMODE(os.stat(key).st_mode)
     info["key_first_line"] = open(key).readline().strip()
+    cert = key + "-cert.pub"  # where ssh looks for the certificate of the key -i names
+    info["cert"] = open(cert).read().split()[0] if os.path.exists(cert) else None
 with open({log!r}, "a") as f:
     f.write(json.dumps(info) + "\\n")
 command = args[-1].replace("git-upload-pack", "git upload-pack", 1)
@@ -771,6 +832,115 @@ def test_ssh_deploy_key_is_used_and_kept_private(app, c, remotes, tmp_path, monk
     # the key only exists for the length of the pull
     key_path = calls[0]["args"][calls[0]["args"].index("-i") + 1]
     assert not os.path.exists(key_path)
+
+
+def ssh_calls(tmp_path, monkeypatch):
+    """Put the fake ssh first on the PATH; returns the file it logs its calls to."""
+    import sys
+    log = tmp_path / "ssh-calls.jsonl"
+    bindir = tmp_path / "sshbin"
+    bindir.mkdir()
+    (bindir / "ssh").write_text(FAKE_SSH.format(python=sys.executable, log=str(log)))
+    (bindir / "ssh").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return log
+
+
+def test_an_ssh_pull_presents_the_certificate_ssoossh_issues_for_its_key(app, c, remotes, tmp_path, monkeypatch,
+                                                                         keypair, fake_ssoossh):
+    """A git server that takes only certificates refused every pull: a repository's key signed in alone. The
+    key's enrollment now gets it a certificate before each pull, as it does before each run."""
+    import json
+    log = ssh_calls(tmp_path, monkeypatch)
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "puller", "private_key": key,
+                                 "ssoossh_server": "https://sso.lab", "ssoossh_code": "pull-code"})
+    cred = app.state.creds.by_kind("ssh_key")[0]
+    r = add(c, name="hosts", role="inventory", url=f"ssh://git@git.lab.test{remotes['inv']}",
+            paths="inventory/hosts.yml", ssh_key_id=str(cred.id))
+    assert r.status_code == 303, r.text[-400:]
+    repo = app.state.repos.all()[0]
+    assert not repo.last_error and repo.last_commit, repo.last_error
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls and all(call["cert"] == "ssh-ed25519-cert-v01@openssh.com" for call in calls)
+    assert fake_ssoossh.read_text() == "https://sso.lab pull-code\n"  # asked once for the pull
+    assert "pull-code" not in c.get("/repos").text
+
+    # A code ssoossh refuses: the pull fails, saying so, and the commit stays.
+    c.post(f"/credentials/{cred.id}", data={"kind": "ssh_key", "name": "puller", "ssoossh_server": "https://sso.lab",
+                                            "ssoossh_code": "expired-code"})
+    c.post(f"/repos/{repo.id}/pull")
+    after = app.state.repos.get(repo.id)
+    assert after.last_commit == repo.last_commit
+    assert after.last_error == ("ssoossh couldn’t get a certificate from https://sso.lab: the server refused this "
+                                "enrollment code (expired)")
+
+
+def test_an_ssh_pull_presents_the_certificate_saved_with_its_key(app, c, remotes, tmp_path, monkeypatch, keypair):
+    import json
+    log = ssh_calls(tmp_path, monkeypatch)
+    key, cert = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "puller", "private_key": key, "certificate": cert})
+    r = add(c, name="hosts", role="inventory", url=f"ssh://git@git.lab.test{remotes['inv']}",
+            paths="inventory/hosts.yml", ssh_key_id=str(app.state.creds.by_kind("ssh_key")[0].id))
+    assert r.status_code == 303 and not app.state.repos.all()[0].last_error
+    calls = [json.loads(line) for line in log.read_text().splitlines()]
+    assert calls and all(call["cert"] == "ssh-ed25519-cert-v01@openssh.com" for call in calls)
+
+
+def test_the_repository_form_offers_only_what_can_sign_in_to_its_url(app, c, remotes, keypair):
+    """Tokens are for HTTPS and keys for SSH. The list shows the ones that fit the URL typed, both while there
+    is none to go by, and nothing for a path on this server."""
+    key, _ = keypair
+    c.post("/credentials", data={"kind": "ssh_key", "name": "a-deploy-key", "private_key": key,
+                                 "ssoossh_server": "sso.lab", "ssoossh_code": "code-1"})
+    c.post("/credentials", data={"kind": "git_token", "name": "a-forge-token", "username": "mike", "token": "t0ken"})
+    key_id, token_id = (app.state.creds.by_kind(k)[0].id for k in ("ssh_key", "git_token"))
+
+    def offered(url, picked=""):
+        return c.get("/repos/sign-in", params={"url": url, "ssh_key_id": picked}).text
+
+    both = offered("")
+    assert "a-deploy-key" in both and "a-forge-token" in both and "<optgroup" in both
+    assert both.strip() in c.get("/repos/new").text  # the form opens with the same field
+    https = offered("https://git.example.com/me/ansible.git", str(token_id))
+    assert "a-forge-token" in https and "a-deploy-key" not in https and "<optgroup" not in https
+    assert f'<option value="{token_id}" selected' in https
+    for url in ("git@git.example.com:me/ansible.git", "ssh://git@git.example.com/me/ansible.git"):
+        over_ssh = offered(url, str(token_id))  # the token picked for another URL doesn't follow
+        assert "a-deploy-key" in over_ssh and "a-forge-token" not in over_ssh and " selected" not in over_ssh
+        assert "certificate from ssoossh" in over_ssh  # what the key signs in with is said
+    local = offered("/srv/git/ansible.git")
+    assert "a-deploy-key" not in local and "a-forge-token" not in local and "needs no sign-in" in local
+    # It follows the URL as it is typed.
+    assert 'hx-get="/repos/sign-in"' in both and 'from:#url' in both
+
+    # A saved repository opens on what fits its own URL.
+    add(c, name="hosts", role="inventory", url=f"file://{remotes['inv']}", paths="inventory/hosts.yml")
+    repo = app.state.repos.all()[0]
+    app.state.repos.save({"name": "hosts", "role": "inventory", "url": "git@git.example.com:me/inv.git",
+                          "branch": "main", "paths": "inventory/hosts.yml", "ssh_key_id": str(key_id)}, "t", repo.id)
+    page = c.get(f"/repos/{repo.id}").text
+    assert f'<option value="{key_id}" selected' in page and "a-forge-token" not in page
+
+
+def test_the_playbook_list_is_grouped_by_repository_with_a_chip_for_each(app, c, remotes):
+    """Every row used to lead with its repository's name. The list says it once, as a heading over that
+    repository's playbooks, and with more than one repository a chip each narrows the list to it."""
+    setup_repos(c, remotes)
+    page = c.get("/runs/playbooks").text
+    table = page.split('<table class="history playbooks">')[1].split("</table>")[0]
+    heads = [h.split("</tr>")[0] for h in table.split('<tr class="list-group">')[1:]]
+    # In the repositories' own order, which is by name.
+    assert len(heads) == 2 and ">extra</a>" in heads[0] and "1 playbook" in heads[0] and ">lab</a>" in heads[1]
+    assert 'class="repo-prefix"' not in table  # a row is its path; the heading above it is the repository
+    by_name = {r.name: r.id for r in app.state.repos.all()}
+    lab, extra = by_name["lab"], by_name["extra"]
+    assert f'<tbody data-rowgroup="r{lab}">' in table and f'data-source="r{extra}"' in table
+    chips = page.split('class="source-chips"')[1].split("</div>")[0]
+    assert 'data-rows-all aria-pressed="true">All <span class="chip-count">2</span>' in chips
+    assert f'data-rows-chip="r{lab}" aria-pressed="false">lab <span class="chip-count">1</span>' in chips
+    assert chips.count("data-rows-chip=") == 2
 
 
 def test_pull_now_on_the_pages_that_use_the_repositories(app, c, remotes):

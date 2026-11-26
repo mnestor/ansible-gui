@@ -167,6 +167,22 @@ def test_live_endpoint_streams_from_offset(app, c):
     assert "data-log-append" not in rest
 
 
+def test_a_live_runs_page_follows_its_output_and_a_finished_one_is_read_from_the_top(app, c):
+    """While a run is going its page keeps the foot of the Output box in view: the box grows as lines arrive,
+    and its foot is where they land. data-follow="page" is the hook app.js reads. A finished run's box still
+    opens on its last lines (data-follow), but its page stays where the reader is."""
+    r = c.post("/runs", data={"playbook": "slow.yml", "target": "box1", "mode": "apply", "expected": ["box1"]},
+               follow_redirects=False)
+    run_id = int(r.headers["location"].rsplit("/", 1)[1])
+    live = c.get(f"/runs/{run_id}").text
+    assert 'id="poller"' in live and 'id="log" data-follow="page"' in live
+    c.post(f"/runs/{run_id}/cancel")
+    wait(app, run_id, timeout=30)
+    done = c.get(f"/runs/{run_id}").text
+    assert 'id="poller"' not in done
+    assert 'id="log" data-follow tabindex' in done and 'data-follow="page"' not in done
+
+
 def test_the_log_is_coloured_by_what_each_line_reports_and_the_file_stays_plain(app, c):
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box2", "mode": "apply", "expected": ["box2"]},
                follow_redirects=False)

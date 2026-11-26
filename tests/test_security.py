@@ -55,7 +55,7 @@ def test_a_run_leaves_no_secret_on_disk(tmp_path, monkeypatch):
     c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "vault-pw-2", "is_default": "1"})
     c.post("/credentials", data={"kind": "account", "name": "sudo", "become_password": "become-pw-3",
                                  "is_default": "1"})
-    ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "account")}
+    ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "account", "env_secret")}
     # site.yml prints none of them, so any copy found is one ansible-gui or ansible-runner left behind.
     r = c.post("/runs", data={"playbook": "site.yml", "target": "box1", "mode": "apply", "expected": ["box1"], **ids},
                follow_redirects=False)
@@ -127,8 +127,9 @@ def test_stopping_the_server_mid_run_ends_the_run_and_wipes_its_secrets(tmp_path
     subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     with TestClient(app) as c:  # leaving this block is the server stopping: uvicorn runs the same lifespan
         c.post("/credentials", data={"kind": "vault_password", "name": "v", "password": "vault-pw-2", "is_default": "1"})
-        c.post("/credentials", data={"kind": "account", "name": "deploy", "private_key": key.read_text(),
-                                     "is_default": "1"})
+        c.post("/credentials", data={"kind": "ssh_key", "name": "deploy-key", "private_key": key.read_text()})
+        c.post("/credentials", data={"kind": "account", "name": "deploy", "is_default": "1",
+                                     "ssh_key_id": str(app.state.creds.by_kind("ssh_key")[0].id)})
         ids = {k: str(app.state.creds.by_kind(k)[0].id) for k in ("vault_password", "account")}
         r = c.post("/runs", data={"playbook": "slow.yml", "target": "box1", "mode": "apply", "expected": ["box1"],
                                   **ids}, follow_redirects=False)

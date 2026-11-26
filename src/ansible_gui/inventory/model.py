@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import posixpath
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any
 
 
@@ -69,6 +71,69 @@ class ResolvedVar:
     @property
     def vaulted(self) -> bool:
         return isinstance(self.value, Vaulted)
+
+
+@dataclass
+class SourceGroup:
+    """The variables one source set and won: one file, or one kind of line in the inventory source."""
+    key: str  # "s1", "s2"…: what a page calls it, the same in either order of the table
+    layer: Layer  # the source, without a line
+    label: str  # what a chip calls it: its short path, and which line for the inventory's own
+    vars: list[ResolvedVar]
+    short: str = ""  # its path from where the sources part ways ("" when nothing in the repo sets it)
+    prefix: str = ""  # what was left off the front of it: the directory every source here shares
+
+
+def short_path(path: str, prefix: str) -> str:
+    """`path` without the directory all of a table's sources share. A page says a file's name where it
+    differs from its neighbours: the forty characters of a checkout's path in front of each one say nothing."""
+    return path[len(prefix) + 1:] if prefix and path.startswith(prefix + "/") else path
+
+
+def _rank(layer: Layer, groups: list[str]) -> tuple[int, int, str]:
+    """Where a source falls in Ansible's default VARIABLE_PRECEDENCE, lowest first: the order attribution.py
+    merges its layers in. `groups` is the host's groups in that order (all first)."""
+    group = groups.index(layer.group) if layer.group in groups else len(groups)
+    play = layer.scope == "playbook"
+    if layer.kind == "inventory_group":
+        tier = 0
+    elif layer.kind == "group_vars":
+        tier = (2 if play else 1) if layer.group == "all" else (4 if play else 3)
+    elif layer.kind == "inventory_host":
+        tier = 5
+    elif layer.kind == "host_vars":
+        tier = 7 if play else 6
+    else:  # nothing in the repo sets it: it has no place in the order, and is listed last
+        tier = -1
+    return tier, group, layer.path or ""
+
+
+def by_source(vars: list[ResolvedVar], groups: list[str]) -> list[SourceGroup]:
+    """`vars` under the source that set each, the source that wins over the others first.
+
+    A page of forty variables from seven files names a file forty times when every row carries it. Grouped,
+    each file is named once, with what it sets under it, and the top of the page is what you would edit to
+    change this host. Within a source the variables keep their order (A to Z)."""
+    found: dict[Layer, list[ResolvedVar]] = {}
+    for v in vars:
+        s = v.source
+        found.setdefault(Layer(s.kind, s.path, s.group, s.host, s.scope), []).append(v)
+    ordered = sorted(found, key=lambda layer: _rank(layer, groups), reverse=True)
+    # Paths are shown from where they part ways: next to each other, "/srv/repos/3/abc…/" on every chip says nothing.
+    dirs = {str(PurePosixPath(layer.path).parent) for layer in ordered if layer.path and layer.path.startswith("/")}
+    shared = (posixpath.commonpath(dirs) if dirs else "").rstrip("/")
+    shared = str(PurePosixPath(shared).parent).rstrip("/") if shared and len(dirs) == 1 else shared
+
+    def label(layer: Layer) -> str:
+        if not layer.path:
+            return "outside the repo"
+        path = short_path(layer.path, shared)
+        if layer.kind == "inventory_group":
+            return f"{path} · [{layer.group}]"
+        return f"{path} · host line" if layer.kind == "inventory_host" else path
+
+    return [SourceGroup(f"s{n}", layer, label(layer), found[layer], short_path(layer.path or "", shared), shared)
+            for n, layer in enumerate(ordered, 1)]
 
 
 @dataclass

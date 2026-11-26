@@ -349,7 +349,8 @@ def test_the_default_shown_is_the_one_defaults_main_sets(project):
 def test_the_playbook_list_says_what_each_does_and_offers_its_actions(c):
     page = c.get("/runs/playbooks").text
     row = page.split('href="/runs/new?playbook=0%3Acommented.yml"')[1].split("</tr>")[0]
-    assert "Patches every host.\nReboots only if needed." in row  # the comment's two lines, as written
+    # A short comment is one line and all there is: its two lines read as the sentence they are, nothing to unfold.
+    assert '<div class="playbook-about">Patches every host. Reboots only if needed.</div>' in row
     assert "Builds a lab box from the cloud image" in page.split("0%3Abuild.yml")[1].split("</tr>")[0]  # its role
     assert "Lab check" in page.split("0%3Asite.yml")[1].split("</tr>")[0]  # no comment, no roles: play names
     assert 'href="/runs/templates/new?playbook=0%3Asite.yml"' in page and 'href="/schedules/new?playbook=0%3Asite.yml"' in page
@@ -425,9 +426,59 @@ def test_a_playbooks_top_comment_keeps_its_lines_and_indentation(tmp_path):
     app = create_app(Settings(project_dir=tmp_path, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
                               secret_key="s" * 40))
     c = TestClient(app)
-    shown = html.escape(written, quote=False)
-    assert f'<span class="playbook-about">{shown}</span>' in c.get("/runs/playbooks").text  # the catalogue
-    assert f'<span class="picker-about">{shown}</span>' in c.get("/runs/new").text  # the launcher's picker
+    lead, rest = variables.lead_and_rest(written)
+    assert lead == "Sets up the lab:"  # the list under it starts the rest, with its indentation
+    page = c.get("/runs/playbooks").text
+    assert ('<summary><span class="about-lead">Sets up the lab:</span> <span class="about-toggle">'
+            '<span class="about-closed">Show 3 more lines</span><span class="about-open">Show less</span></span></summary>') in page
+    assert rest == "  - installs the packages\n  - writes the motd\n\nTry it first:  ansible-playbook site.yml --check <b>"
+    folded = f'<div class="about-rest">{html.escape(rest, quote=False)}</div>'
+    assert folded in c.get("/runs/playbooks").text  # the catalogue: unfolded, the comment is as it was written
+    launcher = c.get("/runs/new").text
+    assert '<span class="picker-about">Sets up the lab:</span>' in launcher  # the picker: one line
+    assert folded in launcher  # and the rest under the field, for reading before the run
     css = (Path(variables.__file__).parent.parent / "static" / "app.css").read_text()
-    for rule in (".playbook-about {", ".picker-about {"):  # the browser keeps the breaks only if told to
-        assert "white-space: pre-wrap" in css[css.index(rule):css.index("}", css.index(rule))]
+    rule = ".about-rest {"  # the browser keeps the breaks only if told to
+    assert "white-space: pre-wrap" in css[css.index(rule):css.index("}", css.index(rule))]
+
+
+def test_the_line_a_list_shows_is_the_comments_opening_paragraph():
+    """A long comment shows as one line with the rest folded. Where its author wrapped it says nothing, so the
+    line is the opening paragraph read across the wraps, never the first line cut mid-sentence."""
+    wrapped = ("Install/verify borgmatic on every LXC client and manage\n/etc/borgmatic/config.yaml.\n\n"
+               "  ansible-playbook borgmatic.yml --check\n\nHosts already backing up keep their repository.")
+    assert variables.lead_and_rest(wrapped) == (
+        "Install/verify borgmatic on every LXC client and manage /etc/borgmatic/config.yaml.",
+        "  ansible-playbook borgmatic.yml --check\n\nHosts already backing up keep their repository.")
+    assert variables.lead_and_rest("Hardens the DMZ. See the wiki.\nRuns on dmz_hosts only.") == (
+        "Hardens the DMZ. See the wiki. Runs on dmz_hosts only.", "")
+    assert variables.lead_and_rest("One line.") == ("One line.", "")
+    assert variables.lead_and_rest("") == ("", "")
+    # A command to copy or a list is never read into the line: it starts the rest, as written.
+    assert variables.lead_and_rest("Run it like this:\nansible-playbook x.yml") == ("Run it like this:", "ansible-playbook x.yml")
+    assert variables.lead_and_rest("Sets up\n- one\n- two") == ("Sets up", "- one\n- two")
+    assert variables.lead_and_rest("First\n  indented") == ("First", "  indented")
+    # One long paragraph and nothing after it still folds: a row is one line until it is opened.
+    long = variables.Folded(*variables.lead_and_rest("word " * 40))
+    assert long.folds and not long.rest and not variables.Folded("Short.", "").folds
+
+
+def test_the_playbook_list_can_be_searched_by_name_and_by_what_the_comment_says(tmp_path):
+    (tmp_path / "inventory").mkdir()
+    (tmp_path / "inventory" / "hosts.yml").write_text("all:\n  hosts:\n    box1:\n")
+    (tmp_path / "backup.yml").write_text("# Backs up every host.\n#\n# Needs the Borg repository in host_vars.\n"
+                                         "- hosts: all\n  tasks: []\n")
+    (tmp_path / "patch.yml").write_text("# Patches every host.\n- hosts: all\n  tasks: []\n")
+    app = create_app(Settings(project_dir=tmp_path, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              secret_key="s" * 40))
+    page = TestClient(app).get("/runs/playbooks").text
+    assert 'type="search"' in page and "data-rowfilter" in page and "2 playbooks" in page
+    # One repository: its heading, and nothing to pick between.
+    assert page.count('<tr class="list-group">') == 1 and "source-chips" not in page and 'class="repo-prefix"' not in page
+    backup = page.split(' data-search="')[1].split("</tr>")[0]
+    # Found by what is folded away too; data-head says what is on screen, so a match elsewhere unfolds the row.
+    assert "backup.yml" in backup and "needs the borg repository in host_vars." in backup.split('"')[0]
+    assert 'data-head="' in backup and "borg repository" not in backup.split('data-head="')[1].split('"')[0]
+    assert "No playbooks match" in page
+    patch = page.split(' data-search="')[2].split("</tr>")[0]
+    assert "<details" not in patch and "Patches every host." in patch  # nothing to unfold: no toggle

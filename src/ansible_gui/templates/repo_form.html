@@ -11,6 +11,9 @@
 {% if errors %}<p class="field-error" role="alert">Not saved. {{ errors | length }} thing{{ "s" if errors | length != 1 }} to fix below.</p>{% endif %}
 
 <form class="launcher" method="post" action="/repos{% if repo %}/{{ repo.id }}{% endif %}" hx-boost="false" autocomplete="off">
+  {# One column, as the credential form: without this wrapper the fields were dealt out left and right across
+     the launcher's two columns from 1280px. #}
+  <div class="launcher-fields">
   <fieldset class="field">
     <legend class="label">Holds</legend>
     <div class="segmented segmented-inline">
@@ -35,23 +38,7 @@
   {{ text("url", "Clone URL", "HTTPS or SSH. Leave any user name or token out of it.", "", "https://git.example.com/me/ansible.git") }}
   {{ text("branch", "Branch", "Runs use the tip of this branch. Anyone who can push to it can run commands on this server, which hold every stored credential: opening the inventory page or previewing a run already runs its inventory plugins and <span class=\"mono\">ansible.cfg</span>. Protect the branch, and keep the deploy key read-only.", "input-small", "main") }}
 
-  <div class="field">
-    <label class="label" for="ssh_key_id">Sign in with</label>
-    <select id="ssh_key_id" class="input input-small" name="ssh_key_id" aria-describedby="key-help{% if errors.ssh_key_id %} key-err{% endif %}" {% if errors.ssh_key_id %}aria-invalid="true"{% endif %}>
-      <option value="" data-desc="A public repository">Nothing</option>
-      <optgroup label="Git tokens, for HTTPS URLs">
-        {% for k in git_tokens %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %} data-desc="Git token · user {{ k.meta.username }}">{{ k.name }}</option>
-        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}
-      </optgroup>
-      <optgroup label="SSH keys, for SSH URLs">
-        {% for k in ssh_keys %}<option value="{{ k.id }}" {% if values.ssh_key_id|string == k.id|string %}selected{% endif %} data-desc="SSH key · {{ k.meta.type }} {{ k.meta.fingerprint }}">{{ k.name }}</option>
-        {% else %}<option disabled>None yet: add one under Secrets</option>{% endfor %}
-      </optgroup>
-      {% if repo and repo.ssh_key_id and repo.ssh_key_id not in (ssh_keys + git_tokens) | map(attribute="id") | list %}<option value="{{ repo.ssh_key_id }}" selected>Deleted: pick another</option>{% endif %}
-    </select>
-    <p class="help" id="key-help">For a private repository: a git token with read-only access for HTTPS, or an SSH deploy key. {% if not git_tokens %}<a href="/credentials/new?kind=git_token">Add a git token</a> first; this form isn’t saved when you leave.{% endif %} Stored encrypted in <a href="/credentials/secrets">Secrets</a>, used only to pull.</p>
-    {% if errors.ssh_key_id %}<p class="field-error" id="key-err">{{ errors.ssh_key_id }}</p>{% endif %}
-  </div>
+  {% include "_repo_signin.html" %}
 
   {% if values.role == "inventory" %}
     {{ text("paths", "Inventory files", "Inside the repository, comma-separated, like <span class=\"mono\">lxc/inventory/hosts.yml, lockdown/inventory/hosts.yml</span>. Ansible merges them, each with its own <span class=\"mono\">group_vars</span> and <span class=\"mono\">host_vars</span>. A directory works too.", "input-small", "inventory/hosts.yml") }}
@@ -78,6 +65,7 @@
   <div class="actions">
     <button class="btn btn-primary btn-run" type="submit" data-busy-label="Saving…">{{ "Save and pull" if repo else "Add and pull" }}</button>
     <a class="btn btn-quiet" href="/repos">Back without saving</a>
+  </div>
   </div>
 </form>
 

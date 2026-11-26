@@ -55,6 +55,23 @@ def test_changed_fields_ignore_tag_order_and_spacing():
     assert changed_fields({**base, "skip_tags": "x", "diff": False}, base) == ["diff", "skip_tags"]
 
 
+def test_a_tag_written_with_a_bang_is_one_to_skip(app, c):
+    """Tags is one field, like Targets: !name skips a tag's tasks. Ansible has no such syntax (it has --tags
+    and --skip-tags), so the app takes it apart: what is stored, and what the command line says, stays the two."""
+    r = make(c, tags="hello, !slow,!never", skip_tags="never")
+    assert r.status_code == 303, r.text
+    t = app.state.templates.all()[0]
+    assert (t.tags, t.skip_tags) == ("hello", "never,slow")  # each once; what was already skipped stays first
+    # A link can say it too, and the launcher shows each in its own field for the page without script.
+    page = c.get("/runs/new", params={"playbook": "site.yml", "tags": "!slow,hello"}).text
+    assert 'name="tags" value="hello"' in page and 'name="skip_tags" value="slow"' in page
+    # The one field the script draws: it reads the tags to skip from the field beside it, and hides that field.
+    assert 'data-chip-field="list" data-chip-skip="skip_tags"' in page and "<span class=\"mono\">!name</span>" in page
+    # Tags without a ! are left exactly as they were typed.
+    assert make(c, name="as-typed", tags="b, a").status_code == 303
+    assert next(x for x in app.state.templates.all() if x.name == "as-typed").tags == "b, a"
+
+
 def test_empty_list_says_how_to_make_one(c):
     page = c.get("/runs/templates").text
     assert "No templates yet" in page and "/runs/templates/new" in page

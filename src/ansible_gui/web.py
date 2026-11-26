@@ -28,7 +28,7 @@ from .config import LOOPBACK_HOSTS, Settings, is_web_url, scrub_environment
 from .credentials import ssh as sshtools
 from .facts import FactStore
 from . import ansible_config
-from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid
+from .credentials.store import KINDS, PER_RUN, CredentialStore, Invalid, picked_ids
 
 ACCOUNT_SIDE = ("account",)  # listed under Accounts; the rest are Secrets
 from .inventory.attribution import edit_url
@@ -36,7 +36,7 @@ from .repos import forge
 from .keys import Keys
 from . import overview as ov
 from .notify import NOTIFY_MODES, Notifier
-from .inventory.model import Layer, Vaulted
+from .inventory.model import Layer, Vaulted, by_source
 from .inventory.service import Inventories
 from .repos import git as gitsync
 from .repos.store import Invalid as RepoInvalid
@@ -156,7 +156,40 @@ def command_url(run: Run) -> str:
          "verbosity": str(run.verbosity) if run.verbosity else ""}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
-    return "/runs/command?" + urlencode({k: v for k, v in q.items() if v})
+    q["env_secret"] = env_secrets_of(run)
+    return "/runs/command?" + urlencode({k: v for k, v in q.items() if v}, doseq=True)
+
+
+def env_secrets_of(run: Run) -> list[str]:
+    """The environment secrets a run got, as a link names them: its launcher ticks the same ones."""
+    return [str(e["id"]) for e in run.credentials.get("env_secret") or [] if isinstance(e, dict) and "id" in e]
+
+
+def split_tags(tags: str, skip_tags: str) -> tuple[str, str]:
+    """(the tags to run only, the tags to skip), as a run stores them and Ansible takes them.
+
+    The Tags field takes !name for a tag to skip, as Targets takes !host. That is the form's own shorthand:
+    Ansible has no such syntax, it has --tags and --skip-tags, and "--tags '!name'" would match nothing. So
+    the two are taken apart here, whichever way they arrive (the form, a link). A tags field with no ! in it
+    is left exactly as it was typed."""
+    if "!" not in tags:
+        return tags, skip_tags
+    only: list[str] = []
+    skip = [t.strip() for t in skip_tags.split(",") if t.strip()]
+    for tag in (t.strip() for t in tags.split(",")):
+        name = tag.lstrip("! ").strip()
+        if tag.startswith("!"):
+            if name and name not in skip:
+                skip.append(name)
+        elif tag and tag not in only:
+            only.append(tag)
+    return ",".join(only), ",".join(skip)
+
+
+def ticked_env_secrets(src) -> list[str]:
+    """The environment secrets ticked in a form or named in a link, as credential ids. A form also sends an
+    empty one, so "none ticked" still arrives and a template's own aren't taken in its place."""
+    return list(dict.fromkeys(v for v in map(str, src.getlist("env_secret")) if v.isdigit()))
 
 
 def rerun_url(run: Run, mode: str) -> str:
@@ -167,6 +200,7 @@ def rerun_url(run: Run, mode: str) -> str:
          "template": "" if run.template_id is None else str(run.template_id), "from": str(run.id)}
     for kind in PER_RUN:
         q[kind] = str((run.credentials.get(kind) or {}).get("id", ""))
+    q["env_secret"] = env_secrets_of(run) or ""  # named even when there are none: the template's aren't this run's
     # Secret answers never go in a link: a template keeps its own, anything else is typed again.
     plain = {k: v for k, v in run.prompt_vars.items() if not (isinstance(v, dict) and variables.SECRET in v)}
     if plain:
@@ -175,7 +209,7 @@ def rerun_url(run: Run, mode: str) -> str:
         q["extra_vars"] = run.extra_vars
     if any(isinstance(v, dict) and variables.SECRET in v for v in run.prompt_vars.values()):
         q["rerun"] = str(run.id)  # its secrets stay on the server; an empty secret field reuses them
-    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None})
+    return "/runs/new?" + urlencode({k: v for k, v in q.items() if v is not None}, doseq=True)
 
 
 def rerun_hosts(run: Run, mode: str, hosts: list[str]) -> str:
@@ -227,6 +261,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.creds = creds
     schedules = ScheduleStore(settings.data_dir)
     run_templates = TemplateStore(settings.data_dir)
+    # Saved before environment secrets were picked per run: each keeps the ones it got, which was all of them.
+    env_secrets_now = [c.id for c in creds.by_kind("env_secret")]
+    schedules.keep_earlier_env_secrets(env_secrets_now)
+    run_templates.keep_earlier_env_secrets(env_secrets_now)
     app.state.templates = run_templates
     notifier = Notifier(settings.smtp, store, schedules, settings.public_url)
     executor.on_finish = notifier.run_finished
@@ -260,7 +298,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         account_side=ACCOUNT_SIDE,
         default_account=lambda: creds.default("account"),
         account_name=lambda cid: (lambda c: c.name if c else "")(creds.get(cid) if cid else None),
+        account_key=creds.key_of,
         present=present,
+        by_source=by_source,
         edit_url=lambda layer, inv=None: edit_url((inv.link_template if inv else None) or settings.edit_url, layer),
         commit_link=lambda repo, sha: repo.commit_url(sha) if repo else None,
         playbook_repo=lambda rid: ws.playbook_repo(rid),
@@ -392,6 +432,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def groups_overview(request: Request):
         return inventory_page(request, "overview.html", listing="groups", selected=None)
 
+    def vars_order(request: Request) -> str:
+        """How a variables table is laid out: "file" (under the source that set each, the default) or "name"
+        (A to Z, ?by=name)."""
+        return "name" if request.query_params.get("by") == "name" else "file"
+
     @app.get("/inventory/hosts/{name}", response_class=HTMLResponse)
     def host(request: Request, name: str):
         found = invs.find_host(name)
@@ -402,7 +447,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         neighbours = (names[at - 1] if at > 0 else None, names[at + 1] if 0 <= at < len(names) - 1 else None)
         return inventory_page(request, "host.html", name=name, found=found, selected=("host", name),
                               neighbours=neighbours, position=(at + 1, len(names)),
-                              facts=facts.get(name))
+                              facts=facts.get(name), vars_by=vars_order(request))
 
     @app.get("/inventory/groups/{name}", response_class=HTMLResponse)
     def group(request: Request, name: str):
@@ -411,7 +456,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return inventory_page(request, "missing.html", status=404, listing="groups", kind="group", name=name,
                                   selected=None)
         return inventory_page(request, "group.html", listing="groups", name=name, found=found,
-                              selected=("group", name))
+                              selected=("group", name), vars_by=vars_order(request))
 
     @app.post("/facts/gather")
     async def gather_facts(request: Request):
@@ -429,8 +474,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 chosen[kind] = {"id": cred.id, "name": cred.name}
                 if kind == "account":
                     chosen[kind]["user"] = cred.meta.get("username", "")
-        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                for c in creds.by_kind("env_secret")]
+        chosen["env_secret"] = []  # ansible -m setup reads the hosts; nothing in it takes a token
         run = store.create(kind="facts", playbook="", repo_id=ws.command_repo(inv_repo).id, target=target, tags="",
                            skip_tags="", check_mode=False, diff=False, verbosity=0, expected_hosts=[],
                            credentials=chosen, trigger=auth.display_name(auth.current_user(request)),
@@ -533,17 +577,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             verbosity = max(0, min(4, int(src.get("verbosity") or 0)))
         except ValueError:
             verbosity = 0
+        tags, skip_tags = split_tags((src.get("tags") or "").strip(), (src.get("skip_tags") or "").strip())
         return {
             "playbook": src.get("playbook") or "",
             "target": (src.get("target") or "").strip(),
             "mode": "apply" if src.get("mode") == "apply" else "check",
             "diff": src.get("diff", "1") == "1",
-            "tags": (src.get("tags") or "").strip(),
-            "skip_tags": (src.get("skip_tags") or "").strip(),
+            "tags": tags,
+            "skip_tags": skip_tags,
             "verbosity": verbosity,
             "template": str(src.get("template") or "") if str(src.get("template") or "").isdigit() else "",
             "inventory": str(src.get("inventory") or ""),
             **{kind: str(src.get(kind) or "") for kind in PER_RUN},
+            "env_secret": ticked_env_secrets(src),
             "extra_vars": "\n".join(line.rstrip() for line in str(src.get("extra_vars") or "").splitlines()).strip("\n"),
             "prompt_vars": stored_vars(src),
             "var_raw": variables.raw_fields(src),
@@ -720,6 +766,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if key in PER_RUN:
             cred = creds.get(int(value)) if str(value).isdigit() else None
             return cred.name if cred else "none"
+        if key == "env_secret":
+            found = [creds.get(int(v)) for v in value or [] if str(v).isdigit()]
+            return ", ".join(sorted("$" + str(c.meta.get("env")) for c in found if c)) or "none"
         if key == "target":
             return value or "playbook’s hosts"
         if key == "extra_vars":
@@ -791,8 +840,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             chosen[kind] = {"id": cred.id, "name": cred.name}
             if kind == "account":
                 chosen[kind]["user"] = cred.meta.get("username", "")
-        chosen["env_secret"] = [{"id": c.id, "name": c.name, "env": c.meta.get("env")}
-                                for c in creds.by_kind("env_secret")]
+        # Only the environment secrets ticked: a run gets no other.
+        chosen["env_secret"] = []
+        for cid in form.get("env_secret") or []:
+            cred = creds.get(int(cid)) if str(cid).isdigit() else None
+            if not cred or cred.kind != "env_secret":
+                return {}, ("An environment secret ticked here was deleted. Check what is ticked under More "
+                            "options, then try again.")
+            chosen["env_secret"].append({"id": cred.id, "name": cred.name, "env": cred.meta.get("env")})
+        chosen["env_secret"].sort(key=lambda e: str(e["env"]))
         return chosen, None
 
     def launcher(request: Request, form: dict, form_error: str | None = None, status: int = 200) -> HTMLResponse:
@@ -812,8 +868,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"hosts": sorted(inv.hosts), "groups": sorted(g for g in inv.groups if g != "all" and sizes[g]),
                 "group_sizes": sizes}
 
-    def playbook_summaries(books) -> dict[str, str]:
-        return {b.key: variables.summary(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
+    def playbook_summaries(books) -> dict[str, variables.Folded]:
+        """What each playbook does, as one line and the rest of its comment (variables.lead_and_rest)."""
+        return {b.key: variables.folded(variables.describe(b.repo.path / b.path, b.repo.path)) for b in books}
 
     @app.get("/runs/playbooks", response_class=HTMLResponse)
     def playbook_list(request: Request):
@@ -824,7 +881,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for t in run_templates.all():
             by_book.setdefault(ws.canonical(f"{t.repo_id}:{t.playbook}"), []).append(t)
         q = request.query_params
+        # Under a heading per repository, in the repositories' own order: a row then says only its path.
+        by_repo = [(repo, [b for b in books if b.repo.id == repo.id]) for repo in ws.playbook_repos()]
         return render(request, "playbooks.html", section="runs", playbooks=books, about=about, templates_by=by_book,
+                      by_repo=[(repo, some) for repo, some in by_repo if some],
                       git_repos=[r for r in ws.playbook_repos() if not r.local], pulled=q.get("pulled"))
 
     @app.post("/runs/playbooks/pull")
@@ -953,7 +1013,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "module": (src.get("module") or "").strip() or "ansible.builtin.shell",
                 "args": (src.get("args") or "").strip(), "become": src.get("become") == "1",
                 "verbosity": int(verbosity) if verbosity in ("0", "1", "2", "3", "4") else 0,
-                "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN}}
+                "inventory": str(src.get("inventory") or ""), **{kind: str(src.get(kind) or "") for kind in PER_RUN},
+                "env_secret": ticked_env_secrets(src)}
 
     def command_hosts(form: dict) -> playbooks.Preview:
         """Which hosts the command would reach. It runs with the first playbook repository's ansible.cfg and the
@@ -1182,15 +1243,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                            key=lambda c: (order.index(c.kind), c.name.lower()))
         users = {}
         for owner in [*schedules.all(), *run_templates.all()]:
-            for cid in owner.credentials.values():
+            for cid in picked_ids(owner.credentials):
                 users[cid] = users.get(cid, 0) + 1
         used_by_repo: dict[int, list] = {}
         for r in repos.all():
             if r.ssh_key_id:
                 used_by_repo.setdefault(r.ssh_key_id, []).append(r)
+        key_accounts: dict[int, list] = {}
+        for a in everything:
+            if a.kind == "account" and a.meta.get("ssh_key_id"):
+                key_accounts.setdefault(a.meta["ssh_key_id"], []).append(a)
         return render(request, "credentials.html", section="credentials", view=view, items=items, kinds=KINDS,
-                      token_repos=used_by_repo, saved=q.get("saved"), deleted=q.get("deleted"),
-                      key_file=keys.generated_at, users=users)
+                      token_repos=used_by_repo, key_accounts=key_accounts, saved=q.get("saved"),
+                      deleted=q.get("deleted"), key_file=keys.generated_at, users=users)
 
     def ssh_page(request: Request, hosts_text: str | None = None, hosts_error: str | None = None,
                  status: int = 200) -> HTMLResponse:
@@ -1224,18 +1289,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def cred_form(request: Request, kind: str, cred=None, values: dict | None = None,
                   errors: dict | None = None, status: int = 200) -> HTMLResponse:
-        used_by = [sc for sc in schedules.all() if cred and cred.id in sc.credentials.values()] if cred else []
+        used_by = [sc for sc in schedules.all() if cred and cred.id in picked_ids(sc.credentials)] if cred else []
         used_by_repos = [r for r in repos.all() if cred and r.ssh_key_id == cred.id] if cred else []
+        used_by_accounts = creds.accounts_using(cred.id) if cred and cred.kind == "ssh_key" else []
         return render(request, "credential_form.html", status, section="credentials", kind=kind, kinds=KINDS,
                       cred=cred, values=values or {}, errors=errors or {}, used_by=used_by,
-                      used_by_repos=used_by_repos,
+                      used_by_repos=used_by_repos, used_by_accounts=used_by_accounts,
                       ssh_keys=creds.by_kind("ssh_key"))
 
     @app.get("/credentials/new", response_class=HTMLResponse)
-    def new_credential(request: Request, kind: str = "ssh_key", copy_key_from: str = ""):
+    def new_credential(request: Request, kind: str = "ssh_key"):
         kind = kind if kind in KINDS else "ssh_key"
-        values = {"is_default": not creds.by_kind(kind), "copy_key_from": copy_key_from}
-        return cred_form(request, kind, values=values)
+        return cred_form(request, kind, values={"is_default": not creds.by_kind(kind)})
 
     @app.get("/credentials/{cred_id}", response_class=HTMLResponse)
     def edit_credential(request: Request, cred_id: int):
@@ -1245,29 +1310,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return cred_form(request, cred.kind, cred, values={"name": cred.name, "is_default": cred.is_default,
                                                            "env": cred.meta.get("env", ""),
                                                            "username": cred.meta.get("username", ""),
+                                                           "ssh_key_id": cred.meta.get("ssh_key_id") or "",
                                                            "ssoossh_server": (cred.meta.get("ssoossh") or {}).get("server", "")})
 
     def list_for(kind: str) -> str:
         return "/credentials" if kind in ACCOUNT_SIDE else "/credentials/secrets"
 
-    def copy_into_account(values: dict) -> None:
-        """An account can use a key already saved (a repository's deploy key, say): its value, decrypted here,
-        unless one was pasted in its place."""
-        src = creds.get(int(values["copy_key_from"])) if str(values["copy_key_from"]).isdigit() else None
-        if src and src.kind == "ssh_key" and src.readable and not values["private_key"].strip():
-            values["private_key"] = creds.secret(src)["private_key"]
-            if not values["ssoossh_server"].strip():  # else ssoossh's certificate takes its place
-                values["certificate"] = values["certificate"] or src.meta.get("certificate", "")
-
     async def save_credential(request: Request, cred_id: int | None):
         data = await request.form()
         kind = data.get("kind", "")
         values = {k: data.get(k, "") for k in ("private_key", "certificate", "password", "env", "value", "username", "token",
-                                                "become_password", "copy_key_from", "ssoossh_server", "ssoossh_code")}
-        for flag in ("remove_certificate", "remove_key", "remove_become"):
+                                                "become_password", "ssh_key_id", "ssoossh_server", "ssoossh_code")}
+        for flag in ("remove_certificate", "remove_become"):
             values[flag] = data.get(flag) == "1"
-        if kind == "account":
-            copy_into_account(values)
         is_default = data.get("is_default") == "1"
         try:
             cred = creds.save(kind=kind, name=data.get("name", ""), values=values, is_default=is_default,
@@ -1275,8 +1330,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Invalid as e:
             # Secrets are never echoed back into the page; the form asks for them again.
             keep = {"name": data.get("name", ""), "env": values["env"], "username": values["username"], "is_default": is_default,
-                    "certificate": values["certificate"] if not values["copy_key_from"] else "",
-                    "copy_key_from": values["copy_key_from"], "ssoossh_server": values["ssoossh_server"]}
+                    "certificate": values["certificate"], "ssh_key_id": values["ssh_key_id"],
+                    "ssoossh_server": values["ssoossh_server"]}
             return cred_form(request, kind if kind in KINDS else "ssh_key", creds.get(cred_id) if cred_id else None,
                              keep, e.errors, status=400)
         return RedirectResponse(f"{list_for(cred.kind)}?saved={cred.id}", status_code=303)
@@ -1320,11 +1375,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         changed = ids != ",".join(str(i) for i in sorted(ws.pulling()))
         return Response(status_code=204, headers={"HX-Refresh": "true"} if changed else None)
 
+    def sign_in(url: str, picked, error: str | None = None) -> dict:
+        """What the repository form's "Sign in with" offers for a clone URL: the git tokens for HTTPS, the SSH
+        keys for SSH, nothing for a path on this server, and both while the URL doesn't say which."""
+        url, picked = (url or "").strip(), str(picked or "")
+        kind = ("git_token" if gitsync.is_https(url) else "ssh_key" if gitsync.is_ssh(url)
+                else "none" if url.startswith(("/", "file://")) else "")
+        tokens, ssh_keys = creds.by_kind("git_token"), creds.by_kind("ssh_key")
+        there = {str(c.id) for c in tokens + ssh_keys}
+        return {"signin": {"kind": kind, "picked": picked, "deleted": bool(picked) and picked not in there,
+                           "error": error},
+                "git_tokens": tokens, "ssh_keys": ssh_keys}
+
     def repo_form(request: Request, repo=None, values: dict | None = None, errors: dict | None = None,
                   status: int = 200) -> HTMLResponse:
-        return render(request, "repo_form.html", status, section="repos", repo=repo, values=values or {},
-                      errors=errors or {}, ssh_keys=creds.by_kind("ssh_key"), git_tokens=creds.by_kind("git_token"),
-                      used_by=repo_users(repo) if repo else [])
+        values, errors = values or {}, errors or {}
+        return render(request, "repo_form.html", status, section="repos", repo=repo, values=values, errors=errors,
+                      used_by=repo_users(repo) if repo else [],
+                      **sign_in(values.get("url") or "", values.get("ssh_key_id"), errors.get("ssh_key_id")))
+
+    @app.get("/repos/sign-in", response_class=HTMLResponse)
+    def repo_sign_in(request: Request, url: str = "", ssh_key_id: str = ""):
+        return render(request, "_repo_signin.html", section="repos", **sign_in(url, ssh_key_id))
 
     @app.get("/repos/new", response_class=HTMLResponse)
     def new_repo(request: Request, role: str = ""):
@@ -1433,6 +1505,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "inventory": "" if sched.inventory_id is None else str(sched.inventory_id),
                 "prompt_vars": sched.prompt_vars, "extra_vars": sched.extra_vars, "kept": sched.prompt_vars}
         form.update({k: str(sched.credentials.get(k, "")) for k in PER_RUN})
+        form["env_secret"] = [str(i) for i in sched.credentials.get("env_secret", [])]
         return form
 
     @app.get("/schedules", response_class=HTMLResponse)
@@ -1500,10 +1573,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         form["kept"] = kept_secrets(form, source)
         if form["playbook"] not in known_playbooks():
             return schedule_page(request, form, sched, form_error="Choose one of the playbooks listed.", status=400)
-        for kind in PER_RUN:
-            if form[kind] and not (form[kind].isdigit() and (c := creds.get(int(form[kind]))) and c.kind == kind):
-                return schedule_page(request, form, sched, status=400,
-                                     form_error=f"That {KINDS[kind].lower()} no longer exists. Choose another.")
+        if problem := pick_credentials(form)[1]:
+            return schedule_page(request, form, sched, status=400, form_error=problem)
         inv_repo = chosen_inventory(form)
         if inv_repo is None:
             return schedule_page(request, form, sched, status=400, form_error="Choose the inventory to run against.")

@@ -544,6 +544,52 @@ def describe(playbook: Path, repo_dir: Path) -> About:
     return about
 
 
+_LIST_ITEM = re.compile(r"^([-*+•]|\d+[.)])\s")
+
+
+def lead_and_rest(text: str) -> tuple[str, str]:
+    """(the opening paragraph as one line, what follows as it was written) of a playbook's description.
+
+    A list shows the first as a single line, cut where the row ends, and folds the second under it. The
+    paragraph is read across its line wraps, since where its author wrapped the comment says nothing: cut at
+    the first line it would read "…on every host in mail_hosts: relay through". It ends at an empty line, at
+    a line ending in a colon, and before an indented line or a list item (a command to copy, a list): those
+    start the rest, which keeps its line breaks and indentation."""
+    lines = text.strip("\n").split("\n")
+    lead = [lines[0].strip()]
+    taken = 1
+    while (taken < len(lines) and lines[taken].strip() and not lead[-1].endswith(":")
+           and not lines[taken][:1].isspace() and not _LIST_ITEM.match(lines[taken])):
+        lead.append(lines[taken].strip())
+        taken += 1
+    while taken < len(lines) and not lines[taken].strip():  # the empty lines between the two
+        taken += 1
+    return " ".join(lead), "\n".join(lines[taken:])
+
+
+@dataclass
+class Folded:
+    """A description as a list shows it: one line, and the rest for whoever unfolds it."""
+    lead: str = ""
+    rest: str = ""
+    text: str = ""  # all of it, as written: what a search reads
+
+    @property
+    def more(self) -> int:
+        """How many lines unfolding it adds."""
+        return sum(1 for line in self.rest.split("\n") if line.strip())
+
+    @property
+    def folds(self) -> bool:
+        """Whether there is anything to unfold: more lines, or an opening paragraph longer than a row."""
+        return bool(self.rest) or len(self.lead) > 120
+
+
+def folded(about: About) -> Folded:
+    text = summary(about)
+    return Folded(*lead_and_rest(text), text=text)
+
+
 def summary(about: About) -> str:
     """What a playbook does: its top comment as written, else its roles' descriptions, else its play names."""
     if about.comment:

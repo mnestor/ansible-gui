@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -16,6 +17,8 @@ from ..runs.store import now
 from . import ssh
 from ..db import Database
 
+log = logging.getLogger(__name__)
+
 KINDS = {
     "account": "Account",
     "ssh_key": "SSH key",
@@ -23,13 +26,17 @@ KINDS = {
     "env_secret": "Environment secret",
     "git_token": "Git token",
 }
-# Kinds a run picks one of. Environment secrets go to every run.
+# Kinds a run picks one of. It also picks any number of environment secrets, and gets no other.
 PER_RUN = ("account", "vault_password")
-# An account is who a run signs in as: a user, an SSH key (and certificate), a become password. A separate
-# SSH key is a repository's deploy key; an account can copy one in.
+# An account is who a run signs in as: a user, one of the saved SSH keys, a become password. An SSH key holds
+# what goes with the key: its certificate, or the ssoossh enrollment that fetches one. It signs in for the
+# accounts that pick it and for the repositories pulled over SSH with it.
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]{0,31}\$?$", re.I)
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")  # a template's or a schedule's name
+# A credential's name is only ever shown (the launcher, the run history), never part of a file name or a
+# command, so it may have spaces. An environment secret's variable name is another field, held to ENV_RE.
+CRED_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,63}$")
 ENV_RE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
 # What `ssoossh --server` takes: a host (https assumed), with a port and a path if need be.
 SSOOSSH_RE = re.compile(r"^(https://)?[A-Za-z0-9]([A-Za-z0-9.-]{0,252})(:\d{1,5})?(/[\w./~-]*)?$", re.I)
@@ -57,6 +64,32 @@ class Invalid(ValueError):
         self.errors = errors
 
 
+def picked_ids(credentials: dict) -> set[int]:
+    """Every credential a template or schedule picked, from its `credentials`:
+    {"account": 3, "vault_password": 5, "env_secret": [4, 7]}."""
+    out: set[int] = set()
+    for value in (credentials or {}).values():
+        out.update(v for v in (value if isinstance(value, list) else [value]) if isinstance(v, int))
+    return out
+
+
+def with_earlier_env_secrets(stored: str, ids: list[int]) -> str | None:
+    """A template's or schedule's stored credentials, given the environment secrets it got before they were
+    picked per run: every one there is (`ids`). None when it already lists its own, even an empty list.
+
+    Until then every run got them all, so one saved earlier has no list. Giving it none would take a token
+    away from a schedule that runs unattended; it keeps what it had, to be unticked where it isn't needed."""
+    picked = json.loads(stored or "{}")
+    if "env_secret" in picked:
+        return None
+    return json.dumps({**picked, "env_secret": sorted(ids)})
+
+
+def env_secret_ids(form: dict) -> list[int]:
+    """The environment secrets a form ticked, as a template or schedule stores them."""
+    return sorted({int(v) for v in form.get("env_secret") or [] if str(v).isdigit()})
+
+
 @dataclass
 class Credential:
     id: int
@@ -81,6 +114,68 @@ class CredentialStore:
         self._db = Database(data_dir / "ansible-gui.db")
         self._lock = self._db.lock
         self._db.executescript(SCHEMA)
+        self._keys_out_of_accounts()
+
+    def _keys_out_of_accounts(self) -> None:
+        """Accounts once held a key of their own, with its certificate or ssoossh enrollment. Each such key
+        becomes an SSH key the account picks: the saved one that is the same key with the same certificate
+        arrangement, else a new one named after the account. A saved key with another arrangement is left
+        as it is: a repository's deploy key must not start asking ssoossh for certificates because an
+        account that copied it did. An account that can't be decrypted is left alone.
+
+        A key was also once offered "Pick this by default in the launcher", which never picked one: that
+        mark goes too."""
+        with self._lock:
+            self._db.execute("update credentials set is_default=0 where kind='ssh_key' and is_default=1")
+            self._db.commit()
+
+        def arrangement(meta: dict, secret: dict):
+            if meta.get("ssoossh"):
+                return "ssoossh", meta["ssoossh"].get("server"), secret.get("ssoossh_code")
+            return ("certificate", meta["certificate"].strip()) if meta.get("certificate") else None
+
+        def same_key(key: Credential, acct: Credential, secret: dict) -> bool:
+            if key.meta.get("fingerprint") and acct.meta.get("fingerprint"):
+                return key.meta["fingerprint"] == acct.meta["fingerprint"]  # the key itself, however it was pasted
+            return self.secret(key).get("private_key") == secret["private_key"]
+
+        for acct in self.by_kind("account"):
+            if not acct.readable:
+                continue
+            secret = self.secret(acct)
+            if "private_key" not in secret:
+                continue
+            same = next((k for k in self.by_kind("ssh_key")
+                         if k.readable and same_key(k, acct, secret)
+                         and arrangement(k.meta, self.secret(k)) == arrangement(acct.meta, secret)), None)
+            key_meta = {k: acct.meta[k] for k in ("type", "fingerprint", "comment", "public_key", "certificate",
+                                                  "cert", "ssoossh") if k in acct.meta}
+            key_secret = {k: secret[k] for k in ("private_key", "ssoossh_code") if k in secret}
+            rest = {k: secret[k] for k in ("become_password",) if k in secret}
+            with self._lock:  # the new key and the account that picks it, or neither
+                if same:
+                    key_id, key_name = same.id, same.name
+                else:
+                    key_name = self._free_name(f"{acct.name[:60]} key")
+                    key_id = self._db.execute(
+                        "insert into credentials (name, kind, is_default, meta, secret, created_at, updated_at,"
+                        " updated_by) values (?, 'ssh_key', 0, ?, ?, ?, ?, ?)",
+                        (key_name, json.dumps(key_meta), self._fernet.encrypt(json.dumps(key_secret).encode()),
+                         now(), now(), "upgrade")).lastrowid
+                meta = {"username": acct.meta.get("username", ""), "ssh_key_id": key_id,
+                        "has_become": "become_password" in rest}
+                self._db.execute("update credentials set meta=?, secret=? where id=?",
+                                 (json.dumps(meta), self._fernet.encrypt(json.dumps(rest).encode()), acct.id))
+                self._db.commit()
+            log.warning("The account %s held its own SSH key: it is now the SSH key %s, which the account picks.",
+                        acct.name, key_name)
+
+    def _free_name(self, wanted: str) -> str:
+        name, n = wanted, 1
+        while self._db.execute("select 1 from credentials where lower(name)=lower(?)", (name,)).fetchone():
+            n += 1
+            name = f"{wanted[:64 - len(str(n)) - 1]} {n}"
+        return name
 
     def _row(self, r: sqlite3.Row) -> Credential:
         c = Credential(id=r["id"], name=r["name"], kind=r["kind"], is_default=bool(r["is_default"]),
@@ -106,6 +201,15 @@ class CredentialStore:
     def default(self, kind: str) -> Credential | None:
         return next((c for c in self.by_kind(kind) if c.is_default), None)
 
+    def key_of(self, account: Credential) -> Credential | None:
+        """The SSH key an account signs in with: None if it picked none, or the one it picked is gone."""
+        key_id = account.meta.get("ssh_key_id")
+        key = self.get(key_id) if isinstance(key_id, int) else None
+        return key if key and key.kind == "ssh_key" else None
+
+    def accounts_using(self, key_id: int) -> list[Credential]:
+        return [a for a in self.by_kind("account") if a.meta.get("ssh_key_id") == key_id]
+
     @property
     def fernet(self) -> Fernet:
         """The cipher credentials are stored with; run variables marked secret use it too."""
@@ -125,9 +229,10 @@ class CredentialStore:
         if cred_id and (not existing or existing.kind != kind):
             raise Invalid({"name": "That credential no longer exists."})
         errors: dict[str, str] = {}
-        name = name.strip()
-        if not NAME_RE.match(name):
-            errors["name"] = "Use 1–64 letters, digits, dots, dashes or underscores, starting with a letter or digit."
+        name = " ".join(name.split())  # spaces typed around it or doubled inside it aren't part of the name
+        if not CRED_NAME_RE.match(name):
+            errors["name"] = ("Use 1–64 letters, digits, spaces, dots, dashes or underscores, starting with a "
+                              "letter or digit.")
         else:
             clash = self._db.execute("select id from credentials where lower(name)=lower(?)", (name,)).fetchone()
             if clash and clash["id"] != cred_id:
@@ -138,18 +243,21 @@ class CredentialStore:
         secret: dict = {}
 
         if kind == "ssh_key":
-            self._key(values, old, meta, secret, errors, existing, required=True)
+            self._key(values, old, meta, secret, errors, existing)
+            self._ssoossh(values, old, meta, secret, errors)
+            is_default = False  # picked by an account or a repository, never by the launcher
         elif kind == "account":
             login = values.get("username", "").strip()
             if login and not USER_RE.match(login):
                 errors["username"] = "Use a login name like ansible or deploy: letters, digits, dot, dash, underscore."
-            meta["username"] = login
-            if values.get("remove_key"):
-                for k in ("type", "fingerprint", "comment", "public_key", "certificate", "cert", "ssoossh"):
-                    meta.pop(k, None)
-                old = {k: v for k, v in old.items() if k not in ("private_key", "ssoossh_code")}
-            self._key(values, old, meta, secret, errors, existing, required=False)
-            self._ssoossh(values, old, meta, secret, errors)
+            meta = {"username": login}  # nothing of a key: the account names a saved one
+            picked = str(values.get("ssh_key_id") or "").strip()
+            if picked:
+                key = self.get(int(picked)) if picked.isdigit() else None
+                if key and key.kind == "ssh_key":
+                    meta["ssh_key_id"] = key.id
+                else:
+                    errors["ssh_key_id"] = "That SSH key no longer exists. Choose another."
             pw = values.get("become_password", "")
             if values.get("remove_become"):
                 pass
@@ -157,10 +265,9 @@ class CredentialStore:
                 secret["become_password"] = pw
             elif old.get("become_password"):
                 secret["become_password"] = old["become_password"]
-            meta["has_key"] = "private_key" in secret
             meta["has_become"] = "become_password" in secret
-            if not (login or meta["has_key"] or meta["has_become"]) and not errors:
-                errors["username"] = "Give the account at least a user, a key or a become password."
+            if not (login or "ssh_key_id" in meta or meta["has_become"]) and not errors:
+                errors["username"] = "Give the account at least a user, an SSH key or a become password."
         elif kind == "vault_password":
             pw = values.get("password", "")
             if pw:
@@ -186,10 +293,10 @@ class CredentialStore:
             is_default = False
 
         elif kind == "git_token":
-            user = values.get("username", "").strip()
-            if not re.match(r"^[\w.@+-]{1,128}$", user):
+            git_user = values.get("username", "").strip()  # not `user`: that is who is saving this
+            if not re.match(r"^[\w.@+-]{1,128}$", git_user):
                 errors["username"] = "Enter the user name the git server expects with this token."
-            meta["username"] = user
+            meta["username"] = git_user
             token = values.get("token", "").strip()
             if token:
                 secret["token"] = token
@@ -221,8 +328,8 @@ class CredentialStore:
         return self.get(new_id)
 
     @staticmethod
-    def _key(values, old, meta, secret, errors, existing, required: bool) -> None:
-        """An SSH private key and its optional certificate, for an SSH key or an account."""
+    def _key(values, old, meta, secret, errors, existing) -> None:
+        """An SSH key's private key and its optional certificate."""
         key_text = ssh.normalize(values.get("private_key", ""))
         if key_text:
             try:
@@ -234,7 +341,7 @@ class CredentialStore:
                 errors["private_key"] = str(e)
         elif old.get("private_key"):
             secret["private_key"] = old["private_key"]
-        elif required:
+        else:
             errors["private_key"] = "Paste the private key."
         cert_text = values.get("certificate", "").strip()
         if values.get("remove_certificate"):
@@ -259,12 +366,12 @@ class CredentialStore:
 
     @staticmethod
     def _ssoossh(values, old, meta, secret, errors) -> None:
-        """An account's certificate fetched from ssoossh at every run, with an enrollment code from
-        `ssoossh service enroll` for this key. It takes the place of a pasted certificate. An empty server
-        stops it."""
+        """An SSH key's certificate fetched from ssoossh whenever the key signs in (a run, a pull), with the
+        enrollment code `ssoossh service enroll` printed for this key. It takes the place of a pasted
+        certificate. An empty server stops it."""
         server = values.get("ssoossh_server", "").strip().rstrip("/")
         code = values.get("ssoossh_code", "").strip()
-        if (values.get("remove_key") and "private_key" not in secret) or not (server or code):
+        if not (server or code):
             meta.pop("ssoossh", None)
             return
         key_changed = secret.get("private_key") != old.get("private_key")
@@ -276,10 +383,8 @@ class CredentialStore:
         elif not SSOOSSH_RE.match(server):
             errors["ssoossh_server"] = "Enter the server’s address, like https://ssoossh.example.com."
         if not (code or kept):
-            errors["ssoossh_code"] = ("Paste the enrollment code again: it was for the key this account had."
+            errors["ssoossh_code"] = ("Paste the enrollment code again: it was for the key saved here before."
                                       if old.get("ssoossh_code") else "Paste the enrollment code.")
-        if "private_key" not in secret and "private_key" not in errors:
-            errors["ssoossh_code"] = "Add the private key this enrollment code is for."
         if values.get("certificate", "").strip() and "certificate" not in errors:
             errors["certificate"] = "Paste a certificate or fetch one from ssoossh, not both."
         if not errors:
