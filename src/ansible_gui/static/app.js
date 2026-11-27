@@ -1,4 +1,4 @@
-// Small client behaviours: sidebar search and tabs, variable and fact filters, busy buttons.
+// Small client behaviours: list search and tabs, variable and fact filters, busy buttons.
 // Re-run after every htmx swap, since hx-boost replaces the body.
 (function () {
   // setup() runs after every htmx swap (including the 1s run poll), so each
@@ -584,4 +584,38 @@
   document.addEventListener("htmx:sendError", (e) => pollTrouble(e, true));
   document.addEventListener("htmx:responseError", (e) => pollTrouble(e, true));
   document.addEventListener("htmx:afterRequest", (e) => { if (e.detail.successful) pollTrouble(e, false); });
+
+  // The launcher's side column (wide screens) moves with the page, never in a scroll box of its own. Short, it
+  // stays stuck at the top as before. Taller than the window, its sticky top goes negative by the difference, so
+  // it scrolls along with the page and stops once its end is in view, above its Run button, which then floats at
+  // the foot of the window as it does on narrow screens, so it is never scrolled out of reach.
+  const wide = window.matchMedia("(min-width: 1280px)");
+  const GAP = 24; // --s6, the column's margin from the window's edges
+  function fitSide() {
+    const side = document.querySelector(".launcher-side");
+    if (!side) return;
+    const launcher = side.closest(".launcher");
+    const btn = side.querySelector(".btn-run");
+    const floating = launcher.classList.contains("launcher-tall");
+    // Measured as if the button were in the column, so floating it (which shortens the column) can't flip it back.
+    const height = side.offsetHeight + (floating && btn ? btn.offsetHeight + 16 : 0);
+    const tall = wide.matches && height > window.innerHeight - 2 * GAP;
+    launcher.classList.toggle("launcher-tall", tall);
+    // The column's end stops above the floating button (its height, the 16px it floats at, 16px more), not under it.
+    const clear = tall && btn ? btn.offsetHeight + 32 : GAP;
+    side.style.top = tall ? `${window.innerHeight - clear - side.offsetHeight}px` : "";
+  }
+  let sideObserver = null;
+  function watchSide() {
+    const side = document.querySelector(".launcher-side");
+    if (sideObserver) sideObserver.disconnect();
+    if (!side) return;
+    sideObserver = new ResizeObserver(fitSide); // the preview redraws, a host list unfolds
+    sideObserver.observe(side);
+    fitSide();
+  }
+  document.addEventListener("DOMContentLoaded", watchSide);
+  document.addEventListener("htmx:afterSettle", watchSide);
+  window.addEventListener("resize", fitSide, { passive: true });
+  wide.addEventListener("change", fitSide);
 })();

@@ -74,7 +74,8 @@
 
   </div>
   <div class="launcher-side">
-    <div id="preview" class="preview" aria-live="polite">
+    <p id="preview-status" class="visually-hidden" role="status"></p>
+    <div id="preview" class="preview">
     {% include "_run_preview.html" %}
   </div>
   <p class="help">A run starts only if the previous run of this schedule has finished; otherwise it’s recorded as skipped. Runs missed while the server was down aren’t caught up.</p>

@@ -321,24 +321,103 @@ def test_each_field_says_what_the_inventory_already_sets_on_the_targets(c):
     page = c.get("/runs/new", params={"playbook": "build.yml", "target": "box1"}).text
     note = page.split('id="inv-build_count">')[1].split("</p>")[0]
     assert "Inventory" in note and ">3<" in note and "on box1" in note and "host_vars/box1.yml" in note
-    assert "Not in the inventory for this host." in page.split('id="inv-build_size">')[1].split("</p>")[0]
+    # A field the inventory doesn't set has no note: the Variables card says it once, for all of them.
+    assert page.split('id="inv-build_size">')[1].startswith("</p>")
+    summary = page.split('id="inv-summary">')[1].split("</p>")[0]
+    assert "The inventory sets 1 of these 8 variables for this host" in summary
     assert "cloud-user" in page.split('id="inv-ansible_user">')[1].split("</p>")[0]  # under Connect as
     # The preview redraws the notes when the targets change.
     preview = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "lab"}).text
     count = preview.split('id="inv-build_count" hx-swap-oob="true">')[1].split("</p>")[0]
     assert "on 1 of 2 hosts" in count
+    assert "for these 2 hosts" in preview.split('id="inv-summary" hx-swap-oob="true">')[1].split("</p>")[0]
 
 
-def test_the_preview_lists_the_inventory_values_the_run_overrides(c):
+def side_of(page: str) -> str:
+    return page.split('class="launcher-side"')[1] if 'class="launcher-side"' in page else page
+
+
+def block(side: str, name: str) -> str:
+    """One overridden variable's block in the preview."""
+    return side.split(f'<li class="override" data-var="{name}">')[1].split("</li><!-- /override -->")[0]
+
+
+@needs_ansible
+def test_the_preview_lists_each_overridden_variable_once_with_what_it_replaces(c):
     c.post("/credentials", data={"kind": "account", "name": "dep", "username": "deploy"})
     acct = c.app.state.creds.by_kind("account")[0]
     page = c.get("/runs/new", params={"playbook": "build.yml", "target": "lab", "var.build_count": "5",
                                       "account": str(acct.id)}).text
-    side = page.split('class="launcher-side"')[1]
-    assert "Inventory values this run overrides" in side
-    box1 = side.split('target-host">box1</span>')[1].split("</li>\n      \n")[0]
-    assert "build_count</span> <s class=\"mono\">3</s>" in box1 and "deploy" in box1 and "host_vars/box1.yml" in box1
-    assert "none: it keeps its inventory values" in side.split('target-host">box2</span>')[1]
+    side = side_of(page)
+    assert "Replaces inventory values" in side
+    count = block(side, "build_count")
+    assert '<span class="visually-hidden">now</span><span class="mono override-now">5</span>' in count
+    assert '<span class="visually-hidden">replaces</span><s class="mono">3</s>' in count
+    assert "host_vars/box1.yml" in count and "box1" in count
+    assert "cloud-user" in block(side, "ansible_user") and "deploy" in block(side, "ansible_user")
+    # The account sets ansible_ssh_user too, but only as the login's twin: it isn't news.
+    assert "ansible_ssh_user" not in side
+    # The old per-host rows are gone; the hosts are one list.
+    assert "target-host" not in side and "keeps its inventory values" not in side
+    hosts = side.split('class="preview-sub">Hosts')[1]
+    assert "box1" in hosts and "box2" in hosts
+    # The button's help line says it, above the details.
+    actions = side.split('class="actions"')[1].split("</div>")[0]
+    assert "Replaces inventory values for 2 variables, listed below." in actions
+    assert "Replaces inventory values · 2 variables" in side
+
+
+@needs_ansible
+def test_hosts_past_the_fifth_are_checked_and_many_hosts_fold(c, project):
+    hosts = "".join(f"        box{i}:\n          ansible_connection: local\n" for i in range(1, 8))
+    (project / "inventory" / "hosts.yml").write_text(f"all:\n  children:\n    lab:\n      hosts:\n{hosts}")
+    for i in (6, 7):
+        (project / "inventory" / "host_vars" / f"box{i}.yml").write_text("build_count: 9\n")
+    c.post("/inventory/reload")
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "lab", "var.build_count": "5"}).text
+    count = block(side_of(page), "build_count")
+    nine = count.split('<s class="mono">9</s>')[1].split("</details>")[0]
+    assert "2 files" in nine  # one line for the value, though each host has its own host_vars file
+    assert "<summary" in nine and "2 hosts" in nine and "box6" in nine and "box7" in nine
+
+
+@needs_ansible
+def test_the_preview_says_so_when_the_run_changes_no_inventory_value(c):
+    nothing = side_of(c.get("/runs/new", params={"playbook": "build.yml", "target": "lab"}).text)
+    assert "Replaces inventory values" not in nothing and "change any inventory value" not in nothing
+    new_only = side_of(c.get("/runs/new", params={"playbook": "build.yml", "target": "lab",
+                                                  "var.build_size": "large"}).text)
+    assert "Replaces inventory values" not in new_only
+    assert ('The run sets <span class="mono">build_size</span> without changing any inventory value on these hosts.'
+            in new_only)
+    same = c.get("/runs/new", params={"playbook": "build.yml", "target": "box1", "var.build_count": "3"}).text
+    assert "Replaces inventory values" not in side_of(same)
+    note = same.split('id="inv-build_count">')[1].split("</p>")[0]
+    assert "Same as the inventory’s value" in note
+
+
+@needs_ansible
+def test_a_field_with_a_value_says_it_replaces_the_inventorys(c):
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "box1", "var.build_count": "5"}).text
+    note = page.split('id="inv-build_count">')[1].split("</p>")[0]
+    assert "Replaces</span> the inventory’s value <s class=\"mono inv-value\">3</s>" in note and "host_vars/box1.yml" in note
+    c.post("/credentials", data={"kind": "account", "name": "dep", "username": "deploy"})
+    acct = c.app.state.creds.by_kind("account")[0]
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "box1", "account": str(acct.id)}).text
+    user = page.split('id="inv-ansible_user">')[1].split("</p>")[0]
+    assert "Replaces" in user and "cloud-user" in user
+
+
+@needs_ansible
+def test_the_preview_cant_say_nothing_changes_when_the_inventory_didnt_load(tmp_path, project):
+    app = create_app(Settings(project_dir=project, inventory=["inventory/hosts.yml"], data_dir=tmp_path / "data",
+                              secret_key="s" * 40, inventory_binary="ansible-inventory-missing"))
+    side = side_of(TestClient(app).get("/runs/new", params={"playbook": "build.yml", "target": "lab",
+                                                            "var.build_count": "5"}).text)
+    assert "Can’t check for overrides: the inventory didn’t load." in side
+    assert "without changing any inventory value" not in side
+    page = TestClient(app).get("/runs/new", params={"playbook": "build.yml", "target": "lab"}).text
+    assert "Can’t check what the inventory sets: it didn’t load." in page.split('id="inv-summary">')[1].split("</p>")[0]
 
 
 def test_the_default_shown_is_the_one_defaults_main_sets(project):
@@ -403,7 +482,7 @@ def test_the_yaml_view_carries_values_both_ways_and_stores_like_the_fields(app, 
 def test_a_preview_sent_mid_switch_keeps_the_field_values(c):
     page = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "box1", "vars_mode": "yaml",
                                           "var.build_count": "5", "extra_vars": ""}).text
-    assert "build_count" in page.split('class="override-list"')[1]
+    assert 'data-var="build_count"' in page
 
 
 def test_a_playbooks_top_comment_keeps_its_lines_and_indentation(tmp_path):
@@ -482,3 +561,22 @@ def test_the_playbook_list_can_be_searched_by_name_and_by_what_the_comment_says(
     assert "No playbooks match" in page
     patch = page.split(' data-search="')[2].split("</tr>")[0]
     assert "<details" not in patch and "Patches every host." in patch  # nothing to unfold: no toggle
+
+
+@needs_ansible
+def test_only_the_count_is_announced_when_the_preview_redraws(c):
+    page = c.get("/runs/new", params={"playbook": "build.yml", "target": "lab"}).text
+    assert 'id="preview" class="preview">' in page  # not a live region: it holds the button and long lists
+    assert '<p id="preview-status" class="visually-hidden" role="status"></p>' in page
+    preview = c.get("/runs/preview", params={"playbook": "0:build.yml", "target": "lab", "var.build_count": "5"}).text
+    status = preview.split('<p id="preview-status" hx-swap-oob="innerHTML">')[1].split("</p>")[0]
+    assert status == "2 hosts. Replaces inventory values for 1 variable, listed below."
+
+
+def test_the_launcher_copy_says_what_it_means(c):
+    page = c.get("/runs/new", params={"playbook": "build.yml"}).text
+    assert "a value here wins over the inventory and the role’s defaults" in page
+    summary = page.split("optional variables")[1].split("</summary>")[0]
+    assert ",..." not in summary and " more</span>" in summary
+    empty = c.get("/runs/new").text
+    assert 'aria-describedby="run-why"' in empty and 'id="run-why"' in empty

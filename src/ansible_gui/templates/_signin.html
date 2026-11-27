@@ -25,7 +25,7 @@
       {% for c in accounts %}<option value="{{ c.id }}" {% if form.account == c.id|string %}selected{% endif %} data-desc="{{ account_summary(c) }}">{{ c.name }}{% if c.is_default %} (default){% endif %}</option>{% endfor %}
       {% if form.account and form.account not in ids %}<option value="{{ form.account }}" selected>Deleted: pick another</option>{% endif %}
     </select>
-    {% if notes is not none %}<p class="inv-note" id="inv-ansible_user">{{ inv_note(notes.get("ansible_user")) }}</p>{% endif %}
+    {% if notes is not none %}<p class="inv-note" id="inv-ansible_user">{{ inv_note(notes.get("ansible_user"), alone=True) }}</p>{% endif %}
     <p class="help" id="account-help">{% if accounts %}The user, SSH key and become password the run uses. <a href="/credentials">Accounts</a>{% else %}No accounts yet, so runs use the inventory’s user and the SSH config. <a href="/credentials/new?kind=account">Add an account</a>: a user, its SSH key and its become password, picked together.{% endif %}</p>
   </div>
 {% endmacro %}

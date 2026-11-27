@@ -36,6 +36,7 @@
   --font-mono: "Red Hat Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
   --fs-2xs: 11px;
   --fs-xs: 12px;
+  --fs-mono: 13px; /* the run log and code wells: mono read line by line */
   --fs-sm: 14px;
   --fs-md: 15px;
   --fs-lg: 18px;
@@ -45,11 +46,12 @@
   --radius-control: 8px;
   --radius-card: 16px;
   --radius-pill: 999px;
-  --sidebar: 288px;
   --rail: 200px;
   --rail-icon: 64px;
   --icon: 20px;
   --ease: 160ms ease-out;
+  /* The run log is dark in both themes, so its status colours are always the dark theme's. */
+  --log-ok: #2ee48a; --log-changed: #fbbf24; --log-failed: #ff8a8a; --log-unreachable: #f075b5; --log-muted: #9aa1b3;
 
   color-scheme: light;
 }
@@ -159,23 +161,12 @@ ul, ol { padding: 0; list-style: none; }
 .banner-changed { background: color-mix(in oklab, var(--changed) 12%, var(--canvas)); margin-bottom: var(--s6); padding-inline: var(--s4);
   border: 1px solid color-mix(in oklab, var(--changed) 25%, transparent); border-radius: var(--radius-control); }
 .banner-changed strong { color: var(--changed); }
-.banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ok); font-weight: 600; }
 .banner-neutral { background: color-mix(in oklab, var(--ink-muted) 12%, var(--canvas)); color: var(--ink); }
 
 /* Layout */
-.layout { display: grid; grid-template-columns: minmax(0, 1fr); }
-@media (min-width: 900px) {
-  .layout { grid-template-columns: var(--sidebar) minmax(0, 1fr); }
-  .layout > .sidebar { position: sticky; top: 0; max-height: 100dvh; overflow-y: auto; }
-}
-.sidebar { background: var(--well); border-right: 1px solid var(--rule); padding: var(--s4); display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .content { padding: var(--s6) var(--s4) var(--s10); min-width: 0; }
 @media (min-width: 640px) { .content { padding: var(--s10) var(--s10) var(--s10); } }
-@media (max-width: 899px) {
-  .sidebar { border-right: 0; border-bottom: 1px solid var(--rule); }
-  body.has-selection .sidebar { display: none; }
-  body:not(.has-selection) .content { padding-top: var(--s4); }
-}
+@media (max-width: 899px) { .content { padding-top: var(--s4); } }
 .backlink { display: none; color: var(--ink-muted); text-decoration: none; font-weight: 600; margin-bottom: var(--s4); }
 @media (max-width: 899px) { body.has-selection .backlink { display: inline-block; } }
 
@@ -268,7 +259,7 @@ a.chip:hover { background: color-mix(in oklab, var(--accent) 14%, var(--plane));
 .well {
   background: var(--code); border: 1px solid var(--rule);
   padding: var(--s2) var(--s3); border-radius: var(--radius-control);
-  font-size: var(--fs-xs); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--fs-mono); line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere;
   max-width: 100%;
 }
 
@@ -302,7 +293,7 @@ a.chip:hover { background: color-mix(in oklab, var(--accent) 14%, var(--plane));
 .value-more pre { margin-top: var(--s1); }
 .row-muted th, .row-muted td { color: var(--ink-muted); }
 .row-mismatch { background: color-mix(in oklab, var(--changed) 8%, var(--well)); }
-.mismatch-note { color: var(--changed); font-weight: 600; margin-top: var(--s1); font-size: var(--fs-xs); }
+.mismatch-note { color: var(--changed); font-weight: 600; margin-top: var(--s1); font-size: var(--fs-sm); }
 
 /* Variables under the source that set them (By file). One heading row per source, in the table's own columns:
    the path in the winning-source accent (everything under it, it won), then what it applies to and how much
@@ -355,7 +346,7 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .stack-list { margin-top: var(--s2); padding-left: var(--s3); border-left: 2px solid color-mix(in oklab, var(--accent) 30%, var(--rule)); display: flex; flex-direction: column; gap: var(--s2); }
 .stack-item a, .stack-item > .mono { text-decoration: none; color: var(--ink-muted); overflow-wrap: anywhere; }
 .stack-win a, .stack-win > .mono { color: var(--accent-ink); font-weight: 600; }
-.stack-value { display: block; color: var(--ink-muted); font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.stack-value { display: block; color: var(--ink-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 
 /* Phone: rows become stacked blocks, nothing hidden */
 @media (max-width: 639px) {
@@ -446,8 +437,12 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 @media (min-width: 1280px) {
   .launcher { display: grid; grid-template-columns: minmax(0, 680px) minmax(280px, 340px); column-gap: var(--s10);
     align-items: start; max-width: none; }
-  .launcher-side { position: sticky; top: var(--s6); max-height: calc(100dvh - 2 * var(--s6));
-    overflow-y: auto; }
+  /* Sticky at the top. A column taller than the window moves with the page instead (app.js sets a negative
+     top: no scroll box inside the page) and its Run button floats, as below 1280px. */
+  .launcher-side { position: sticky; top: var(--s6); }
+  .launcher-tall .launcher-side .btn-run { position: fixed; z-index: 30; right: var(--s6); bottom: max(var(--s4), env(safe-area-inset-bottom));
+    min-height: 48px; padding-inline: var(--s5); box-shadow: var(--shadow-pop); }
+  .launcher-tall { padding-bottom: 88px; } /* the form's last field clears the button, as below 1280px */
 }
 /* Icon buttons: a square target (44px on touch) with the action's name as a tooltip on hover (after a beat) and focus. */
 .btn-icon { position: relative; padding: 0; width: 36px; }
@@ -535,15 +530,35 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 /* A row that is unfolded keeps its name and its actions together at the top. */
 .playbooks tbody th, .playbooks tbody td { vertical-align: top; }
 .playbooks tbody td.col-wide { padding-top: calc(var(--s3) + 2px); }
-/* The first targeted hosts, each with the inventory values this run overrides on it. */
-.target-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
-.target-host { font-weight: 600; }
-.override-list { list-style: none; margin: var(--s1) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1);
-  font-size: var(--fs-xs); }
-.override-list li { overflow-wrap: anywhere; }
-.override-list s { color: var(--ink-muted); }
-.override-where { color: var(--ink-muted); }
-.preview-sub { margin: 0; font-size: var(--fs-xs); font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; }
+/* The inventory values the run's variables replace: one block per variable, its new value in the winning
+   source's look, then each value it replaces struck through, with its file and the hosts it was on. */
+.override-vars { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s3); }
+.override { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; font-size: var(--fs-xs); }
+.override-name { font-weight: 600; overflow-wrap: anywhere; }
+.override-now { color: var(--accent-ink); font-weight: 600; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.override-was { list-style: none; margin: 0; padding: 0 0 0 var(--s3); display: flex; flex-direction: column; gap: var(--s2);
+  border-left: 1px solid var(--rule-strong); }
+/* Each value replaced is three lines, always in the same order: the value, its file, its hosts. */
+.override-was li { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; overflow-wrap: anywhere; color: var(--ink-muted); }
+.override-was li > * { max-width: 100%; }
+.override-was s { color: var(--ink-muted); }
+/* Decision text: the names and values compared are 14px; the files and host counts around them stay meta. */
+.override-name, .override-was s { font-size: var(--fs-sm); }
+.override-where, .override-on { color: var(--ink-muted); }
+.override-hosts { display: inline; }
+.override-more { display: block; }
+.override-hosts summary, .override-more summary { display: inline-flex; align-items: center; cursor: pointer;
+  font-weight: 600; color: var(--ink-muted); transition: color var(--ease); }
+/* The chevron is decoration: its alt text is empty, so screen readers don't read it out (the first line is the
+   fallback for browsers without alt text in content). */
+.override-hosts summary::after, .override-more summary::after { content: " ⌄"; content: " ⌄" / ""; white-space: pre; }
+.override-hosts[open] summary::after, .override-more[open] summary::after { content: " ⌃"; content: " ⌃" / ""; }
+.override-hosts summary:hover, .override-more summary:hover { color: var(--accent-ink); }
+.override-hosts .chips { margin-top: var(--s1); }
+.override-more > .override-vars, .override-more > .override-was { margin-top: var(--s3); }
+@media (pointer: coarse) { .override-hosts summary, .override-more summary { min-height: 44px; } }
+@media (max-width: 639px) { .override { font-size: var(--fs-sm); } }
+.preview-sub { margin: 0; font-size: var(--fs-2xs); font-weight: 600; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; }
 /* Each group is one card; a role's variables inside Variables are separated by a hairline, never a card in a card. */
 .form-section { display: flex; flex-direction: column; gap: var(--s5); min-width: 0; padding: var(--s5);
   background: var(--well); border: 1px solid var(--rule); border-radius: var(--radius-card); box-shadow: var(--shadow-card); }
@@ -560,7 +575,7 @@ a.source-win:hover, .stack-item a:hover { text-decoration: underline; }
 .prompt-group { display: flex; flex-direction: column; gap: var(--s2); border: 0; padding: 0; margin: 0; min-width: 0; }
 .prompt-more-body { display: flex; flex-direction: column; gap: var(--s5); margin-top: var(--s4); }
 /* What the inventory already sets, right under the field it bears on. */
-.inv-note { margin: 0; font-size: var(--fs-xs); color: var(--ink-muted); overflow-wrap: anywhere; }
+.inv-note { margin: 0; font-size: var(--fs-sm); color: var(--ink-muted); overflow-wrap: anywhere; }
 .inv-note:empty { display: none; }
 .inv-label { font-weight: 600; color: var(--ink); }
 .inv-value { color: var(--ink); }
@@ -608,7 +623,7 @@ select.input { appearance: auto; }
 
 /* The run log is a terminal in both themes */
 .log {
-  max-height: 70vh; overflow: auto; white-space: pre; font-size: var(--fs-xs); line-height: 1.6;
+  max-height: 70vh; overflow: auto; white-space: pre; font-size: var(--fs-mono); line-height: 1.6;
   background: var(--nav-bg); color: var(--nav-text); border-color: var(--nav-line);
   border-radius: var(--radius-card); padding: var(--s4) var(--s5); box-shadow: var(--shadow-card);
 }
@@ -619,7 +634,7 @@ select.input { appearance: auto; }
    Red is only ever something that failed. A diff's removed lines are what was there before, so they are
    muted, as a replaced value is everywhere else here; its added lines, what the file becomes, are the ones
    that stand out. Ansible's own red for them made every changed file look like an error. */
-.log { --ok: #2ee48a; --changed: #fbbf24; --danger: #ff8a8a; --unreachable: #f075b5; --ink-muted: #9aa1b3; }
+.log { --ok: var(--log-ok); --changed: var(--log-changed); --danger: var(--log-failed); --unreachable: var(--log-unreachable); --ink-muted: var(--log-muted); }
 .ll-ok, .ll-add { color: var(--ok); }
 .ll-changed, .ll-warn { color: var(--changed); }
 .ll-failed { color: var(--danger); }
@@ -657,7 +672,7 @@ textarea.input { width: 100%; max-width: 720px; resize: vertical; line-height: 1
 .btn-danger:hover, .btn-danger[data-armed] { background: var(--danger); color: var(--canvas); border-color: var(--danger); }
 .summary-note { font-weight: 400; }
 .page .banner { border-radius: var(--radius-control); margin-bottom: var(--s6); padding-inline: var(--s4); max-width: 960px; }
-.banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); }
+.banner-ok { background: color-mix(in oklab, var(--ok) 12%, var(--canvas)); color: var(--ink); font-weight: 600; }
 .page .section-head, .page .help-block { max-width: 960px; }
 .table-region + .help { margin-top: var(--s2); }
 #email { margin-top: var(--s10); }

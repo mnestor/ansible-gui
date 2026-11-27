@@ -1,13 +1,45 @@
-{# What the inventory already sets for a variable on the targeted hosts: under its field, so "leave empty" is an informed choice. #}
-{% macro inv_note(n) -%}
-{%- if n and n.state == "none" -%}
-Not in the inventory for {{ "this host" if n.total == 1 else "these " ~ n.total ~ " hosts" }}.
+{# What the inventory already sets for a variable on the targeted hosts: under its field, so "leave empty" is an informed choice.
+   Once the field has a value, it says what that value replaces, so an override shows where it is made.
+   In the Variables card a field the inventory doesn't set has no note: inv_summary says that once for all of them.
+   `alone` is a field with no such summary (Sign in as, for ansible_user), which says it itself. #}
+{% macro inv_note(n, alone=False) -%}
+{%- if n and n.state == "unknown" -%}
+{%- if alone %}Can’t check what the inventory sets: it didn’t load.{% endif -%}
+{%- elif n and n.state == "none" -%}
+{%- if alone %}Not in the inventory for {{ "this host" if n.total == 1 else "these " ~ n.total ~ " hosts" }}.{% endif -%}
 {%- elif n -%}
+{%- set on_hosts = ("on " ~ n.host if n.total == 1 else "on all " ~ n.total ~ " hosts") if n.count == n.total else "on " ~ n.count ~ " of " ~ n.total ~ " hosts" -%}
+{%- if n.replaces == "same" -%}
+<span class="inv-label">Same as the inventory’s value</span> {{ on_hosts if n.state == "same" else "on each host" }}.
+{%- elif n.replaces and n.state == "same" -%}
+<span class="inv-label">Replaces</span> the inventory’s value <s class="mono inv-value">{{ n.value }}</s> {{ on_hosts }}, from <span class="mono">{{ n.where }}</span>.
+{%- elif n.replaces -%}
+<span class="inv-label">Replaces</span> the inventory’s per-host values: {% for h, v in n["items"] %}<span class="mono">{{ h }}: <s class="inv-value">{{ v }}</s></span>{{ ", " if not loop.last }}{% endfor %}{% if n.more %} and {{ n.more }} more{% endif %}.
+{%- else -%}
 <span class="inv-label">Inventory</span>
 {% if n.state == "same" -%}
-sets <span class="mono inv-value">{{ n.value }}</span> {% if n.count == n.total %}{{ "on " ~ n.host if n.total == 1 else "on all " ~ n.total ~ " hosts" }}{% else %}on {{ n.count }} of {{ n.total }} hosts{% endif %}, from <span class="mono">{{ n.where }}</span>.
+sets <span class="mono inv-value">{{ n.value }}</span> {{ on_hosts }}, from <span class="mono">{{ n.where }}</span>.
 {%- else -%}
 sets it per host: {% for h, v in n["items"] %}<span class="mono">{{ h }}: <span class="inv-value">{{ v }}</span></span>{{ ", " if not loop.last }}{% endfor %}{% if n.more %} and {{ n.more }} more{% endif %}.
 {%- endif %}
+{%- endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{# Once, in the Variables card's head: how many of the playbook's variables the inventory sets on the targeted hosts. #}
+{% macro inv_summary(notes, names) -%}
+{%- set known = [] %}{% for n in names %}{% if notes.get(n) %}{% set _ = known.append(notes.get(n)) %}{% endif %}{% endfor -%}
+{%- if known and known[0].state == "unknown" -%}
+Can’t check what the inventory sets: it didn’t load.
+{%- elif known -%}
+{%- set set_ = known | rejectattr("state", "equalto", "none") | list -%}
+{%- set hosts = "this host" if known[0].total == 1 else "these " ~ known[0].total ~ " hosts" -%}
+{%- if known | length == 1 -%}
+{%- if not set_ %}The inventory doesn’t set this variable for {{ hosts }}.{% endif -%}
+{%- elif not set_ -%}
+The inventory sets none of these variables for {{ hosts }}.
+{%- else -%}
+The inventory sets {{ set_ | length }} of these {{ known | length }} variables for {{ hosts }}; the note under each says what.
+{%- endif -%}
 {%- endif -%}
 {%- endmacro %}

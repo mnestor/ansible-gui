@@ -660,14 +660,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return [], []
         return variables.discover(pb.repo.path / pb.path, pb.repo.path)
 
-    def inventory_notes(prompts: list, hosts: list[str], inv_repo) -> tuple[list[str], dict]:
+    def inventory_notes(prompts: list, hosts: list[str], inv_repo, sets: dict | None = None) -> tuple[list[str], dict]:
         """For each prompt, and for ansible_user (Connect as): what the inventory already sets on the targeted
-        hosts. Returns (every name, so a redraw can clear a note; notes by name)."""
+        hosts, and whether the run's value (`sets`, from run_sets) replaces it. Returns (every name, so a redraw
+        can clear a note; notes by name)."""
+        sets = sets or {}
         names = [p.name for p in prompts if p.name != "ansible_user"] + ["ansible_user"]
         state = invs.get(inv_repo.id)[1] if inv_repo else None
         inv = state.inventory if state else None
-        if not inv or not hosts:
+        if not hosts:
             return names, {}
+        if not inv:  # chosen, but it didn't load: say so rather than nothing
+            return names, ({n: {"state": "unknown"} for n in names} if inv_repo else {})
 
         def short(v) -> str:
             text = "vaulted" if isinstance(v, Vaulted) else variables.show_value(v)
@@ -681,18 +685,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 notes[name] = {"state": "none", "total": len(hosts)}
                 continue
             values = {short(v.value) for _, v in found}
+            now = sets.get(name)
+            whole = {"vaulted" if isinstance(v.value, Vaulted) else variables.show_value(v.value) for _, v in found}
+            replaces = None if now is None else ("same" if whole == {now} and now != "secret" else "replaces")
             if len(values) == 1:
                 where = sorted({v.source.path or v.source.label for _, v in found})
                 notes[name] = {"state": "same", "value": values.pop(), "count": len(found), "total": len(hosts),
-                               "host": found[0][0], "where": where[0] if len(where) == 1 else f"{len(where)} files"}
+                               "host": found[0][0], "where": where[0] if len(where) == 1 else f"{len(where)} files",
+                               "replaces": replaces}
             else:
                 notes[name] = {"state": "mixed", "items": [(h, short(v.value)) for h, v in found[:4]],
-                               "more": max(0, len(found) - 4)}
+                               "more": max(0, len(found) - 4), "replaces": replaces, "total": len(hosts)}
         return names, notes
 
-    def run_overrides(form: dict, prompts: list, hosts: list[str], inv_repo, first: int = 5) -> tuple[list, bool]:
-        """For the first targeted hosts: each inventory value the run's variables override there,
-        {name, was, now, where}. Second: whether the run sets any variable at all."""
+    def run_sets(form: dict, prompts: list) -> tuple[dict[str, str], set[str]]:
+        """What the run's variables set, as shown: {name: value}, a secret as "secret". Second: the names that
+        only mirror another (the account's login sets ansible_ssh_user alongside ansible_user)."""
         form = effective(form, prompts)
         sets: dict[str, str] = {}
         vals, _ = variables.values(form_answers(form, prompts), prompts, creds.fernet, kept_secrets(form))
@@ -702,22 +710,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for k, v in free.items():
             sets.setdefault(str(k), variables.show_value(v))
         login, _ = login_for(form)
+        twins = set()
         if login:
             sets["ansible_user"] = sets["ansible_ssh_user"] = login
+            twins.add("ansible_ssh_user")
+        return sets, twins
+
+    def run_overrides(sets: dict[str, str], twins: set[str], hosts: list[str], inv_repo) -> dict:
+        """Which inventory values the run's variables replace on the targeted hosts, by variable: every host,
+        so "nothing changes" is only said when it was checked.
+        {checked, sets, vars: [{name, now, groups: [{was, where, hosts}]}], also: [names that change nothing]}."""
         state = invs.get(inv_repo.id)[1] if inv_repo else None
         inv = state.inventory if state else None
-        out = []
-        for h in hosts[:first]:
-            host = inv.hosts.get(h) if inv else None
-            found = []
-            for name, now_text in sets.items():
+        out = {"checked": inv is not None, "sets": bool(sets), "vars": [], "also": []}
+        if inv is None:
+            return out
+        for name, now in sets.items():
+            groups: dict[str, dict] = {}  # by the value replaced: host_vars give each host a file of its own
+            for h in hosts:
+                host = inv.hosts.get(h)
                 v = host.var(name) if host else None
-                if v is not None:
-                    was = "vaulted" if v.vaulted else variables.show_value(v.value)
-                    found.append({"name": name, "was": was[:40], "now": now_text[:40],
-                                  "where": v.source.path or v.source.label})
-            out.append((h, found))
-        return out, bool(sets)
+                if v is None:
+                    continue
+                was = "vaulted" if v.vaulted else variables.show_value(v.value)
+                if was == now and now != "secret":
+                    continue
+                g = groups.setdefault(was[:40], {"was": was[:40], "files": set(), "hosts": []})
+                g["files"].add(v.source.path or v.source.label)
+                g["hosts"].append(h)
+            if groups:
+                ranked = sorted(groups.values(), key=lambda g: (-len(g["hosts"]), g["was"]))
+                for g in ranked:
+                    files = g.pop("files")
+                    g["where"] = files.pop() if len(files) == 1 else f"{len(files)} files"
+                out["vars"].append({"name": name, "now": now[:40], "groups": ranked})
+            elif name not in twins:
+                out["also"].append(name)
+        return out
 
     def form_answers(form: dict, prompts: list) -> dict:
         """What the prompt fields show: the fields as sent, or else the stored values (template, schedule, link)."""
@@ -807,10 +836,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         prompts, bare_roles = prompts_for(form["playbook"], w)
         form["answers"] = form_answers(form, prompts)
         kept = form["kept"] if form.get("kept") is not None else kept_secrets(form)
-        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
-        overrides, run_sets = run_overrides(form, prompts, pv.hosts, inv_repo)
+        sets, twins = run_sets(form, prompts)
+        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo, sets)
         return dict(
-            note_names=note_names, notes=notes, overrides=overrides, run_sets=run_sets,
+            note_names=note_names, notes=notes, overrides=run_overrides(sets, twins, pv.hosts, inv_repo),
             from_template=template, changes=changes, prompts=prompts, bare_roles=bare_roles,
             commit_notice=commit_notice(form, w), commit_problem=commit_problem,
             saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v},
@@ -925,10 +954,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         pv = preview_for(form["playbook"], form["target"], inv_repo, w)
         template, changes = template_changes(form)
         prompts = prompts_for(form["playbook"], w)[0]
-        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo)
-        overrides, run_sets = run_overrides(form, prompts, pv.hosts, inv_repo)
+        sets, twins = run_sets(form, prompts)
+        note_names, notes = inventory_notes(prompts, pv.hosts, inv_repo, sets)
         return render(request, "_run_preview.html", section="runs", form=form, preview=pv, form_error=None,
-                      note_names=note_names, notes=notes, oob=True, overrides=overrides, run_sets=run_sets,
+                      note_names=note_names, notes=notes, oob=True,
+                      overrides=run_overrides(sets, twins, pv.hosts, inv_repo),
                       from_template=template, changes=changes,
                       purpose=request.query_params.get("purpose", "run"),
                       editing=request.query_params.get("editing") == "1")
@@ -949,7 +979,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         kept = kept_secrets(form, source)
         inv_repo = chosen_inventory(form, w)
         note_names, notes = inventory_notes(prompts, preview_for(form["playbook"], form["target"], inv_repo, w).hosts,
-                                            inv_repo)
+                                            inv_repo, run_sets(form, prompts)[0])
         return render(request, "_run_vars.html", form=form, prompts=prompts, bare_roles=bare_roles, notes=notes,
                       kept_from=q.get("kept_from", ""),
                       saved_secrets={k for k, v in kept.items() if isinstance(v, dict) and variables.SECRET in v})
